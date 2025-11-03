@@ -1,27 +1,60 @@
 import asyncio
 import json
 import re
+import argparse
 from playwright.async_api import async_playwright, TimeoutError
 
-# --- Конфигурация ---
-URL = "https://www.dtek-dnem.com.ua/ua/shutdowns"
-ADDRESS_DATA = [
-    {"selector": "input#city", "value": "м. Дніпро", "autocomplete": "div#cityautocomplete-list"},
-    {"selector": "input#street", "value": "вул. Сонячна Набережна", "autocomplete": "div#streetautocomplete-list"},
-    {"selector": "input#house_num", "value": "6", "autocomplete": "div#house_numautocomplete-list"},
-]
+# --- Конфигурация по умолчанию ---
+DEFAULT_CITY = "м. Дніпро"
+DEFAULT_STREET = "вул. Сонячна Набережна"
+DEFAULT_HOUSE = "6"
 OUTPUT_FILENAME = "discon-fact.json"
 SCREENSHOT_FILENAME = "discon-fact.png"
-# --------------------
+# --------------------------------
 
-async def run():
+def parse_args():
+    """Парсит аргументы командной строки."""
+    parser = argparse.ArgumentParser(
+        description="Скрипт Playwright для парсинга графика отключений ДТЕК."
+    )
+    parser.add_argument(
+        '--city', 
+        type=str, 
+        default=DEFAULT_CITY, 
+        help=f'Название города (по умолчанию: "{DEFAULT_CITY}")'
+    )
+    parser.add_argument(
+        '--street', 
+        type=str, 
+        default=DEFAULT_STREET, 
+        help=f'Название улицы (по умолчанию: "{DEFAULT_STREET}")'
+    )
+    parser.add_argument(
+        '--house', 
+        type=str, 
+        default=DEFAULT_HOUSE, 
+        help=f'Номер дома (по умолчанию: "{DEFAULT_HOUSE}")'
+    )
+    return parser.parse_args()
+
+async def run(args):
+    # Динамическое определение данных адреса на основе аргументов
+    ADDRESS_DATA = [
+        {"selector": "input#city", "value": args.city, "autocomplete": "div#cityautocomplete-list"},
+        {"selector": "input#street", "value": args.street, "autocomplete": "div#streetautocomplete-list"},
+        {"selector": "input#house_num", "value": args.house, "autocomplete": "div#house_numautocomplete-list"},
+    ]
+    
     print("--- 1. Запуск Playwright ---")
+    print(f"Используемый адрес: {args.city}, {args.street}, {args.house}")
+    
     async with async_playwright() as p:
         # slow_mo=300ms для замедления действий
         browser = await p.chromium.launch(headless=False, slow_mo=300)
         page = await browser.new_page()
 
         try:
+            URL = "https://www.dtek-dnem.com.ua/ua/shutdowns"
             print(f"Загрузка страницы: {URL}")
             await page.goto(URL, wait_until="load", timeout=60000)
 
@@ -51,7 +84,7 @@ async def run():
                 
                 next_selector = ADDRESS_DATA[i+1]["selector"] if i < len(ADDRESS_DATA) - 1 else None
                 
-                print(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector}")
+                print(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
                 
                 # 3.1. Имитация ввода (type) с задержкой 100мс между символами
                 await page.type(selector, value, delay=100)
@@ -84,7 +117,7 @@ async def run():
             await page.locator(screenshot_selector).screenshot(path=SCREENSHOT_FILENAME)
             print(f"Скриншот элемента сохранен в файл: {SCREENSHOT_FILENAME}")
 
-            # --- 5. Парсинг и формирование JSON (Добавлено поле 'group') ---
+            # --- 5. Парсинг и формирование JSON ---
             print("\nНачало парсинга данных о графике отключений...")
             
             # 5.1 Получение даты
@@ -156,4 +189,5 @@ async def run():
             print("Браузер закрыт. Скрипт завершен.")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    cli_args = parse_args()
+    asyncio.run(run(cli_args))
