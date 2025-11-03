@@ -50,7 +50,7 @@ async def run(args):
     
     async with async_playwright() as p:
         # slow_mo=300ms для замедления действий
-        browser = await p.chromium.launch(headless=False, slow_mo=300)
+        browser = await p.chromium.launch(headless=True, slow_mo=300)
         page = await browser.new_page()
 
         try:
@@ -188,12 +188,12 @@ async def run(args):
             print(f"Данные сохранены в файл: {OUTPUT_FILENAME}")
             
             # --- 6. Завершение работы ---
-            print("\n--- Завершение. Браузер открыт ---")
-            input("Нажмите Enter, чтобы закрыть браузер и завершить скрипт...")
+            #print("\n--- Завершение. Браузер открыт ---")
+            #input("Нажмите Enter, чтобы закрыть браузер и завершить скрипт...")
 
         except Exception as e:
             print(f"\nПроизошла ошибка в процессе выполнения скрипта: {e}")
-            input("Нажмите Enter, чтобы закрыть браузер...") 
+            #input("Нажмите Enter, чтобы закрыть браузер...") 
         
         finally:
             await browser.close()
