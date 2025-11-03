@@ -38,7 +38,7 @@ def parse_args():
     return parser.parse_args()
 
 async def run(args):
-    # Динамическое определение данных адреса на основе аргументов
+    # Динамическое определение данных адреса на основе аргументов для ввода
     ADDRESS_DATA = [
         {"selector": "input#city", "value": args.city, "autocomplete": "div#cityautocomplete-list"},
         {"selector": "input#street", "value": args.street, "autocomplete": "div#streetautocomplete-list"},
@@ -46,7 +46,7 @@ async def run(args):
     ]
     
     print("--- 1. Запуск Playwright ---")
-    print(f"Используемый адрес: {args.city}, {args.street}, {args.house}")
+    print(f"Адрес для ввода: {args.city}, {args.street}, {args.house}")
     
     async with async_playwright() as p:
         # slow_mo=300ms для замедления действий
@@ -112,6 +112,14 @@ async def run(args):
             results_selector = "#discon-fact > div.discon-fact-tables"
             await page.wait_for_selector(results_selector, state="visible", timeout=20000)
             print("Результаты загружены.")
+            
+            # --- ИСПРАВЛЕНИЕ: Извлечение фактических значений из input полей ---
+            print("\nИзвлечение фактических значений адреса из полей ввода...")
+            city_final = await page.locator("#discon_form input#city").input_value()
+            street_final = await page.locator("#discon_form input#street").input_value()
+            house_final = await page.locator("#discon_form input#house_num").input_value()
+            
+            print(f"Фактический адрес: {city_final}, {street_final}, {house_final}")
 
             screenshot_selector = "div.discon-fact.active"
             await page.locator(screenshot_selector).screenshot(path=SCREENSHOT_FILENAME)
@@ -163,6 +171,9 @@ async def run(args):
 
             # 5.4 Формирование итогового JSON
             final_data = [{
+                "city": city_final,          # Фактическое значение из поля
+                "street": street_final,      # Фактическое значение из поля
+                "house_num": house_final,    # Фактическое значение из поля
                 "group": group_text,
                 "date": date_text,
                 "slots": slots

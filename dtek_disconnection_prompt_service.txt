@@ -29,6 +29,9 @@ JSON файл имеет следующую структуру:
 
 [
   {
+    "city": "м. Дніпро",
+    "street": "вул. Сонячна Набережна",
+    "house_num": "6",
     "group": "3.2",
     "date": "02.11.2025",
     "slots": [
@@ -38,6 +41,10 @@ JSON файл имеет следующую структуру:
     ]
   }
 ]
+
+Значение "city" берется из value of #discon_form #city
+Значение "street" берется из value of #discon_form #street
+Значение "house_num" берется из value of #discon_form #house_num
 
 Значение "group" берется из "#discon_form #group-name > span"
 
