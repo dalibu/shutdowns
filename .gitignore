@@ -1,0 +1,72 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+\.env/
+
+# Pytest
+.pytest_cache/
+.coverage
+coverage.xml
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+
+# Playwright and browser artifacts (local runs)
+.playwright/
+ms-playwright/
+
+# Local output files produced by the scripts
+discon-fact.json
+*.png
+full_debug.png
+discon-fact_*.png
+
+# Logs
+*.log
+
+# Misc
+*.sqlite3
+*.db
+
+# Node/npm if ever present
+node_modules/
+
+# Ignore PyCharm caches
+*.iml
+
+# user secrets / env files
+.env.local
+.env.*.local
+
+# Coverage reports
+htmlcov/
+
+# pip cache
+pip-wheel-metadata/
+
+# Ignore wheel and egg
+*.whl
+*.egg
