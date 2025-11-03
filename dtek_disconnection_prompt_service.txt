@@ -4,7 +4,7 @@
 
 Вносит в следующие поля следующие данные:
 input #city=м. Дніпро
-input #street=вул. Сонячна набережна
+input #street=вул. Сонячна Набережна
 input #house_num=6
 
 и выводит данные #discon-fact > div.discon-fact-tables в JSON.
@@ -19,6 +19,7 @@ JSON файл имеет следующую структуру:
 
 [
   {
+    "group": "3.2",
     "date": "02.11.2025",
     "slots": [
       { "time": "15 – 16", "disconection": full },
@@ -27,6 +28,8 @@ JSON файл имеет следующую структуру:
     ]
   }
 ]
+
+Значение "group" берется из "#discon_form #group-name > span"
 
 Значение "date" берется из #discon-fact > div.dates > div.date.active > div:nth-child(2) > span
 

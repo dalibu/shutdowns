@@ -14,18 +14,15 @@ OUTPUT_FILENAME = "discon-fact.json"
 SCREENSHOT_FILENAME = "discon-fact.png"
 # --------------------
 
-def log(msg):
-    print(f"\033[92m[LOG]\033[0m {msg}")
-
 async def run():
-    log("--- 1. Запуск Playwright ---")
+    print("--- 1. Запуск Playwright ---")
     async with async_playwright() as p:
-        # slow_mo=300ms для замедления действий (клики, ожидания)
+        # slow_mo=300ms для замедления действий
         browser = await p.chromium.launch(headless=False, slow_mo=300)
         page = await browser.new_page()
 
         try:
-            log(f"Загрузка страницы: {URL}")
+            print(f"Загрузка страницы: {URL}")
             await page.goto(URL, wait_until="load", timeout=60000)
 
             # --- 2. Проверка и закрытие модального окна ---
@@ -33,20 +30,20 @@ async def run():
             close_button_selector = "button.modal__close.m-attention__close"
             
             try:
-                log(f"Проверка наличия модального окна...")
+                print(f"Проверка наличия модального окна...")
                 modal_container = page.locator(modal_container_selector)
                 await modal_container.wait_for(state="visible", timeout=5000)
                 
-                log("Модальное окно найдено. Закрытие...")
+                print("Модальное окно найдено. Закрытие...")
                 await page.click(close_button_selector)
                 
                 await modal_container.wait_for(state="hidden")
-                log("Модальное окно успешно закрыто.")
+                print("Модальное окно успешно закрыто.")
                 
             except TimeoutError:
-                log("Модальное окно не найдено. Продолжение основного сценария.")
+                print("Модальное окно не найдено. Продолжение основного сценария.")
             
-            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ (ИСПРАВЛЕНО: используем page.type с delay) ---
+            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ ---
             for i, data in enumerate(ADDRESS_DATA):
                 selector = data["selector"]
                 value = data["value"]
@@ -54,19 +51,19 @@ async def run():
                 
                 next_selector = ADDRESS_DATA[i+1]["selector"] if i < len(ADDRESS_DATA) - 1 else None
                 
-                log(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector}")
+                print(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector}")
                 
                 # 3.1. Имитация ввода (type) с задержкой 100мс между символами
                 await page.type(selector, value, delay=100)
                 
                 # 3.2. Ожидание появления списка автозаполнения
                 await page.wait_for_selector(autocomplete_selector, state="visible", timeout=10000)
-                log(f"Список автозаполнения {autocomplete_selector} появился.")
+                print(f"Список автозаполнения {autocomplete_selector} появился.")
                 
                 # 3.3. Прямой клик по первому элементу
                 first_item_selector = f"{autocomplete_selector} > div:first-child"
                 await page.click(first_item_selector)
-                log(f"Выбран первый элемент: {first_item_selector}")
+                print(f"Выбран первый элемент: {first_item_selector}")
 
                 # 3.4. Ожидание, пока список автозаполнения исчезнет
                 await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
@@ -74,27 +71,32 @@ async def run():
                 # 3.5. Ожидание активации следующего поля
                 if next_selector:
                     await page.wait_for_selector(f"{next_selector}:not([disabled])", timeout=10000)
-                    log(f"Следующее поле {next_selector} стало активным.")
+                    print(f"Следующее поле {next_selector} стало активным.")
                 elif i == len(ADDRESS_DATA) - 1:
-                    log("Ввод последнего поля завершен. Ожидание результатов...")
+                    print("Ввод последнего поля завершен. Ожидание результатов...")
 
             # --- 4. Ожидание результата и скриншот ---
             results_selector = "#discon-fact > div.discon-fact-tables"
             await page.wait_for_selector(results_selector, state="visible", timeout=20000)
-            log("Результаты загружены.")
+            print("Результаты загружены.")
 
             screenshot_selector = "div.discon-fact.active"
             await page.locator(screenshot_selector).screenshot(path=SCREENSHOT_FILENAME)
-            log(f"Скриншот элемента сохранен в файл: {SCREENSHOT_FILENAME}")
+            print(f"Скриншот элемента сохранен в файл: {SCREENSHOT_FILENAME}")
 
-            # --- 5. Парсинг и формирование JSON ---
-            log("\nНачало парсинга данных о графике отключений...")
+            # --- 5. Парсинг и формирование JSON (Добавлено поле 'group') ---
+            print("\nНачало парсинга данных о графике отключений...")
             
             # 5.1 Получение даты
             date_selector = "#discon-fact > div.dates > div.date.active > div:nth-child(2) > span"
             date_text = await page.locator(date_selector).inner_text()
             
-            # 5.2 Получение таблицы и данных
+            # 5.2 Получение группы
+            group_selector = "#discon_form #group-name > span"
+            group_text = await page.locator(group_selector).inner_text()
+            print(f"Парсинг группы: {group_text}")
+            
+            # 5.3 Получение таблицы и данных
             table_selector = "#discon-fact > div.discon-fact-tables table"
             table = page.locator(table_selector)
             time_headers = await table.locator("thead > tr > th:is(:nth-child(n+2))").all()
@@ -124,30 +126,34 @@ async def run():
                     })
                     
             if not slots:
-                log("Примечание: На указанную дату отключения не запланированы.")
+                print("Примечание: На указанную дату отключения не запланированы.")
 
-            # 5.3 Формирование итогового JSON
-            final_data = [{"date": date_text, "slots": slots}]
+            # 5.4 Формирование итогового JSON
+            final_data = [{
+                "group": group_text,
+                "date": date_text,
+                "slots": slots
+            }]
             json_output = json.dumps(final_data, indent=4, ensure_ascii=False)
             
-            log(f"\n--- Результат парсинга ({len(slots)} слотов) ---")
-            log(json_output)
+            print(f"\n--- Результат парсинга ({len(slots)} слотов) ---")
+            print(json_output)
             
             with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
                 f.write(json_output)
-            log(f"Данные сохранены в файл: {OUTPUT_FILENAME}")
+            print(f"Данные сохранены в файл: {OUTPUT_FILENAME}")
             
             # --- 6. Завершение работы ---
-            log("\n--- Завершение. Браузер открыт ---")
+            print("\n--- Завершение. Браузер открыт ---")
             input("Нажмите Enter, чтобы закрыть браузер и завершить скрипт...")
 
         except Exception as e:
-            log(f"\nПроизошла ошибка в процессе выполнения скрипта: {e}")
+            print(f"\nПроизошла ошибка в процессе выполнения скрипта: {e}")
             input("Нажмите Enter, чтобы закрыть браузер...") 
         
         finally:
             await browser.close()
-            log("Браузер закрыт. Скрипт завершен.")
+            print("Браузер закрыт. Скрипт завершен.")
 
 if __name__ == "__main__":
     asyncio.run(run())
