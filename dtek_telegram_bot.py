@@ -53,72 +53,69 @@ async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
         try:
             async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
                 if response.status == 404:
-                    # Корректно бросаем ValueError для обработки "Адрес не найден"
                     raise ValueError("Графік для цієї адреси не знайдено.")
                 
                 response.raise_for_status()
                 return await response.json()
 
         except aiohttp.ClientError as e:
-            # Ошибки сети, таймауты, DNS и т.д.
             logger.error(f"API Connection Error: {e}")
             raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
-        # Все остальные ошибки (например, JSONDecodeError) будут отловлены в общем except в command_check_handler
+
 
 def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
     """
-    Консолидирует слоты отключений для одной даты и возвращает строку с временем.
+    Консолидирует слоты отключений и возвращает строку со временем ИЛИ статус "немає".
     """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
     if not outage_slots:
-        return f"✅ **{date}**: *Відключення не заплановані.*"
+        # ✅ Возвращаем статус отсутствия отключений
+        return "Відключення не заплановані" 
 
     first_slot = outage_slots[0]
     last_slot = outage_slots[-1]
 
     # --- Расчет времени начала отключения ---
     try:
-        time_parts = re.split(r'\s*[-\–]\s*', first_slot.get('time', '0-0'))
-        start_hour = int(time_parts[0])
+        time_parts_start = re.split(r'\s*[-\–]\s*', first_slot.get('time', '0-0'))
+        start_hour = int(time_parts_start[0])
         
         if first_slot.get('disconection') == 'full':
             outage_start_min = start_hour * 60 
         else:
-            # 'half' начало: +30 минут
             outage_start_min = start_hour * 60 + 30
     except Exception as e:
         logger.error(f"Error parsing start time for {date}: {first_slot}. Error: {e}")
-        return f"❌ **{date}**: *Помилка парсингу часу початку.*"
+        return "Помилка парсингу часу початку"
 
     # --- Расчет времени конца отключения ---
     try:
-        time_parts = re.split(r'\s*[-\–]\s*', last_slot.get('time', '0-0'))
-        end_hour = int(time_parts[1])
+        time_parts_end = re.split(r'\s*[-\–]\s*', last_slot.get('time', '0-0'))
+        end_hour = int(time_parts_end[1])
         
         if last_slot.get('disconection') == 'full':
             outage_end_min = end_hour * 60
         else: 
-            # 'half' конец: -30 минут
             outage_end_min = end_hour * 60 - 30
 
     except Exception as e:
         logger.error(f"Error parsing end time for {date}: {last_slot}. Error: {e}")
-        return f"❌ **{date}**: *Помилка парсингу часу кінця.*"
+        return "Помилка парсингу часу кінця"
         
-    # Финальное форматирование
     if outage_start_min >= outage_end_min:
-         return f"✅ **{date}**: *Відключення не заплановані (або помилка часу).* "
+         return "Відключення не заплановані (або помилка часу)"
 
     start_time_final = format_minutes_to_hh_m(outage_start_min)
     end_time_final = format_minutes_to_hh_m(outage_end_min)
     
-    return f"📅 **{date}**: `{start_time_final} - {end_time_final}`"
+    # ❌ Возвращаем только строку времени
+    return f"{start_time_final} - {end_time_final}"
 
 
 def format_shutdown_message(data: dict) -> str:
     """
-    Форматирует агрегированный JSON-ответ, показывая график для ВСЕХ доступных дней.
+    Форматирует агрегированный JSON-ответ в новый, компактный формат.
     """
     
     city = data.get("city", "Н/Д")
@@ -127,39 +124,40 @@ def format_shutdown_message(data: dict) -> str:
     group = data.get("group", "Н/Д")
     schedule = data.get("schedule", {})
     
+    # 1. Формирование заголовка (адрес + очередь)
     message = (
-        f"💡 **Графік відключень ДТЕК**\n"
         f"🏠 Адреса: `{city}, {street}, {house}`\n"
-        f"👥 Черга: `{group}`\n"
-        f"---"
+        f"👥 Черга: `{group}`"
     )
     
     if not schedule:
         return message + "\n❌ *Не вдалося отримати графік відключень.*"
 
-    # Сортируем даты по дате, если возможно, или по ключу
+    # Сортируем даты
     try:
         sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
     except ValueError:
         sorted_dates = sorted(schedule.keys())
     
     schedule_lines = []
-    has_outage = False 
     
     for date in sorted_dates:
         slots = schedule[date]
-        line = _process_single_day_schedule(date, slots)
-        schedule_lines.append(line)
+        # Получаем только время или статус 'Відключення не заплановані'
+        result_str = _process_single_day_schedule(date, slots)
         
-        if "Відключення не заплановані" not in line and "Помилка" not in line:
-            has_outage = True
+        if "Відключення не заплановані" in result_str or "Помилка" in result_str:
+            # ✅ Для отсутствия отключений
+            line = f"✅ **{date}**: {result_str}"
+        else:
+            # ❌ Для отключений
+            line = f"❌ **{date}**: `{result_str}` (💡 світла не буде)"
+
+        schedule_lines.append(line)
 
     final_schedule_output = "\n".join(schedule_lines)
-
-    if has_outage:
-        return message + "\n❌ **Світла НЕ БУДЕ:**\n" + final_schedule_output
-    else:
-        return message + "\n✅ **На найближчі дні відключення не заплановані.**"
+    
+    return message + "\n" + final_schedule_output
 
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
@@ -172,7 +170,6 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
     if len(parts) < 3:
         raise ValueError("Адреса має бути введена у форматі: **Місто, Вулиця, Будинок**.")
     
-    # Берем первые три части
     city = parts[0]
     street = parts[1]
     house = parts[2]
@@ -182,7 +179,6 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
 
 # --- 3. Обработчики команд (aiogram v3) ---
 
-# Обработчик /start и /help 
 async def command_start_handler(message: types.Message) -> None:
     """Обработчик команды /start и /help."""
     text = (
@@ -197,13 +193,11 @@ async def command_start_handler(message: types.Message) -> None:
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
-# Обработчик /cancel (возвращает информационное сообщение)
 async def command_cancel_handler(message: types.Message) -> None:
     """Обработчик команды /cancel."""
     await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку.")
 
 
-# Обработчик /check (сразу принимает и обрабатывает адрес)
 async def command_check_handler(message: types.Message) -> None:
     """Обработка однострочного ввода адреса."""
     text_args = message.text.replace('/check', '', 1).strip()
@@ -216,7 +210,7 @@ async def command_check_handler(message: types.Message) -> None:
         # 1. Парсинг адреса
         city, street, house = parse_address_from_text(text_args)
         
-        await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...", reply_markup=ReplyKeyboardRemove())
+        await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
 
         # 2. Логика API
         data = await get_shutdowns_data(city, street, house)
@@ -245,13 +239,11 @@ async def main() -> None:
         logger.error("BOT_TOKEN не встановлено. Перевірте змінні оточення.")
         return
     
-    # Инициализация с настройкой Markdown по умолчанию для aiogram v3
     default_props = DefaultBotProperties(parse_mode="Markdown")
     bot = Bot(BOT_TOKEN, default=default_props) 
     
     dp = Dispatcher()
 
-    # Установка команд (для меню в Telegram)
     commands = [
         BotCommand(command="check", description="Перевірити графік за адресою"),
         BotCommand(command="cancel", description="Скасувати поточну дію"),
@@ -259,7 +251,6 @@ async def main() -> None:
     ]
     await bot.set_my_commands(commands)
     
-    # Регистрация обработчиков
     dp.message.register(command_start_handler, Command("start", "help"))
     dp.message.register(command_cancel_handler, Command("cancel"))
     dp.message.register(command_check_handler, Command("check")) 
