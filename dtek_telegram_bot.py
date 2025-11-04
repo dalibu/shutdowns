@@ -1,156 +1,174 @@
-import os
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
-import asyncio
-# Импортируем функцию run из вашего dtek_parser.py
-from dtek_parser import run 
+import requests
+import os
+import re
 
-# --- Конфигурация Telegram ---
-TOKEN = '8588962191:AAEe1sWtQHDRdkYGy7xz94uJ6X_hBL0kk-0'
+# Импорт для работы с переменными окружения (локальная разработка)
+from dotenv import load_dotenv
 
-# Включаем логирование
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
+# Импорты aiogram 3.x
+from aiogram import Bot, Dispatcher, types, Router 
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart, Command 
+
+# --- 1. КОНФИГУРАЦИЯ ---
+
+# 📌 ИЗМЕНЕНО: Чтение токена бота из новой переменной окружения
+DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN") 
+# Если DTEK_API_URL не задан, используется значение по умолчанию (http://localhost:8000/shutdowns)
+DTEK_API_URL = os.getenv("DTEK_API_URL", "http://localhost:8000/shutdowns") 
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Состояния разговора ---
-CITY, STREET, HOUSE = range(3)
+# Инициализация роутера для регистрации обработчиков
+router = Router() 
 
-# --- Вспомогательная функция для запуска парсера ---
-
-async def execute_parser(context, city, street, house):
-    """Запускает парсер и обрабатывает результат."""
-    chat_id = context.job.data['chat_id']
+# --- 2. ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
+def format_shutdown_message(data: dict) -> str:
+    """Форматирует JSON-ответ от API в красивое сообщение для Telegram."""
     
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="⌛ Запускаю парсинг ДТЕК. Это может занять до минуты..."
+    city = data.get("city", "Н/Д")
+    street = data.get("street", "Н/Д")
+    house = data.get("house_num", "Н/Д")
+    group = data.get("group", "Н/Д")
+    date = data.get("date", "Н/Д")
+    slots = data.get("slots", [])
+    
+    # Формирование заголовка
+    message = (
+        f"💡 **Графік відключень ДТЕК**\n"
+        f"🏠 Адреса: `{city}, {street}, {house}`\n"
+        f"📅 Дата: **{date}**\n"
+        f"👥 Група: `{group}`\n"
+        f"---"
     )
+    
+    if not slots:
+        return message + "\n✅ *На цю дату відключення не заплановані.*"
+
+    # Формирование списка слотов
+    slot_messages = []
+    for slot in slots:
+        time = slot.get('time')
+        status = slot.get('disconection')
+        
+        status_icon = "❌" if status == "full" else "⚠️" if status == "half" else "✅"
+        status_text = "Світла НЕ БУДЕ" if status == "full" else "Можливе відключення" if status == "half" else "Світло БУДЕ"
+        
+        slot_messages.append(f"{status_icon} `{time}`: {status_text}")
+
+    message += "\n\n" + "\n".join(slot_messages)
+    
+    return message
+
+
+# --- 3. TELEGRAM HANDLERS ---
+
+@router.message(CommandStart())
+async def command_start_handler(message: types.Message) -> None:
+    """Обрабатывает команду /start."""
+    welcome_text = (
+        "👋 Привіт! Я бот для перевірки графіків відключень ДТЕК.\n\n"
+        "Будь ласка, надішліть мені команду у форматі:\n"
+        "`/check [Місто] [Вулиця] [Номер дому]`\n\n"
+        "**Приклад:**\n"
+        "`/check м. Дніпро вул. Сонячна набережна 6`"
+    )
+    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(Command(commands=["check"]))
+async def check_shutdowns_handler(message: types.Message) -> None:
+    """
+    Обрабатывает команду /check, отправляет запрос к API и возвращает результат.
+    """
+    text_parts = message.text.split(maxsplit=1)
+    text_without_command = text_parts[1].strip() if len(text_parts) > 1 else ""
+    
+    # Пытаемся разделить аргументы на 3 части: Город, Улица, Дом
+    args = text_without_command.split(maxsplit=2)
+    
+    if len(args) < 3:
+        error_text = (
+            "⚠️ **Некоректний формат команди!**\n"
+            "Використовуйте: `/check [Місто] [Вулиця] [Номер дому]`\n"
+            "Наприклад: `/check м. Дніпро вул. Сонячна набережна 6`"
+        )
+        await message.answer(error_text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    city, street, house = args
+    
+    await message.answer("⏳ Перевіряю графік. Це може зайняти до 30 секунд...")
 
     try:
-        # Вызов асинхронной функции run из dtek_parser
-        png_path, json_data = await run(city=city, street=street, house=house)
-
-        # 1. Отправка скриншота
-        with open(png_path, 'rb') as photo_file:
-            await context.bot.send_photo(
-                chat_id=chat_id, 
-                photo=photo_file,
-                caption=f"✅ **График отключений**\n\n**Группа:** {json_data[0].get('group', 'N/A')}\n**Дата:** {json_data[0].get('date', 'N/A')}",
-                parse_mode='Markdown'
-            )
+        # --- API Request ---
+        params = {
+            "city": city,
+            "street": street,
+            "house": house
+        }
         
-        # 2. Отправка JSON-файла
-        with open(png_path.with_suffix('.json'), 'rb') as json_file:
-            await context.bot.send_document(
-                chat_id=chat_id, 
-                document=json_file,
-                filename="data.json"
-            )
+        logger.info(f"Sending API request to {DTEK_API_URL} for: {city}, {street}, {house}")
+        
+        # Запрос к вашему API-сервису
+        response = requests.get(DTEK_API_URL, params=params, timeout=45) 
+        
+        response.raise_for_status() 
+        
+        data = response.json()
+        
+        # Форматирование и отправка результата
+        formatted_message = format_shutdown_message(data)
+        await message.answer(formatted_message, parse_mode=ParseMode.MARKDOWN)
+
+    except requests.exceptions.HTTPError as http_err:
+        if response.status_code == 404:
+             error_detail = response.json().get('detail', 'Адреса не знайдена або таймаут.')
+             await message.answer(f"❌ **Помилка 404:** {error_detail}")
+        else:
+             logger.error(f"HTTP Error: {http_err}. Full response: {response.text}")
+             await message.answer(f"❌ **Помилка API (HTTP {response.status_code}):** Спробуйте пізніше.")
+
+    except requests.exceptions.ConnectionError:
+        await message.answer("❌ **Помилка підключення:** Сервіс парсингу недоступний. Перевірте Docker-контейнер.")
+
+    except requests.exceptions.Timeout:
+        await message.answer("❌ **Таймаут:** Парсер не встиг відповісти за 45 секунд. Спробуйте ще раз.")
 
     except Exception as e:
-        logger.error(f"Ошибка парсинга для {city}, {street}, {house}: {e}")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ **Произошла ошибка при получении данных.**\n\nПроверьте введенный адрес или попробуйте позже.\nОшибка: {e}"
-        )
-    finally:
-        # Очистка локальных файлов
-        if os.path.exists(png_path):
-            os.remove(png_path)
-        if os.path.exists(png_path.with_suffix('.json')):
-            os.remove(png_path.with_suffix('.json'))
+        logger.error(f"Unknown error in bot: {e}")
+        await message.answer(f"❌ Виникла невідома помилка: {e}")
 
-
-# --- Обработчики команд ---
-
-async def start(update: Update, context) -> int:
-    """Начинает разговор и запрашивает город."""
-    await update.message.reply_text(
-        "👋 Привет! Я бот для проверки графика отключений ДТЕК.\n\n"
-        "**Пожалуйста, введите название города** (например, 'м. Дніпро'):"
-    )
-    context.user_data['address'] = {}
-    return CITY
-
-async def get_city(update: Update, context) -> int:
-    """Сохраняет город и запрашивает улицу."""
-    context.user_data['address']['city'] = update.message.text
-    await update.message.reply_text(
-        "👍 Город принят. **Теперь введите название улицы** (например, 'вул. Сонячна набережна'):"
-    )
-    return STREET
-
-async def get_street(update: Update, context) -> int:
-    """Сохраняет улицу и запрашивает номер дома."""
-    context.user_data['address']['street'] = update.message.text
-    await update.message.reply_text(
-        "🏡 Улица принята. **Введите номер дома** (например, '6'):"
-    )
-    return HOUSE
-
-async def get_house(update: Update, context) -> int:
-    """Сохраняет номер дома, запускает парсер и завершает разговор."""
-    context.user_data['address']['house'] = update.message.text
+# --- 4. ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА ---
+async def main() -> None:
     
-    address = context.user_data['address']
+    # 📌 КРИТИЧЕСКАЯ ПРОВЕРКА ТОКЕНА
+    if not DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN:
+        logger.error("!!! КРИТИЧЕСКАЯ ОШИБКА: DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN не установлен в переменных окружения. !!!")
+        logger.error("Для локального запуска создайте файл .env и добавьте DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН")
+        return # Останавливаем выполнение
+
+    # Инициализация объектов Bot и Dispatcher
+    bot = Bot(token=DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN, parse_mode=ParseMode.HTML)
+    dp = Dispatcher()
+
+    # Регистрация роутера в диспетчере
+    dp.include_router(router)
+
+    # Удаление старых обновлений и запуск Long Polling
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    # Загружаем переменные окружения из файла .env (если он существует)
+    load_dotenv()
     
-    await update.message.reply_text(
-        f"🔍 Адрес: **{address['city']}**, **{address['street']}**, **{address['house']}**.\n"
-        "Сейчас я проверю данные. Это может занять некоторое время."
-    )
-    
-    # Добавляем задачу парсинга в очередь для асинхронного выполнения
-    # context.job_queue.run_once(execute_parser, 1, data={'chat_id': update.effective_chat.id}, name='parser')
-    
-    # В простом варианте, запускаем напрямую, чтобы избежать задержки с job_queue
-    await execute_parser(
-        context.job, 
-        address['city'], 
-        address['street'], 
-        address['house']
-    )
-
-    context.user_data.clear() # Очистка данных пользователя
-    return ConversationHandler.END
-
-async def cancel(update: Update, context) -> int:
-    """Отменяет разговор."""
-    await update.message.reply_text('🚫 Запрос отменен. Начните снова командой /start.')
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-def main():
-    """Запускает бота."""
-    application = Application.builder().token(TOKEN).build()
-
-    # Устанавливаем заглушку для job_queue.job
-    class DummyJob:
-        def __init__(self, chat_id):
-            self.data = {'chat_id': chat_id}
-    
-    async def dummy_executor(update: Update, context):
-        context.job = DummyJob(update.effective_chat.id)
-        return await get_house(update, context)
-
-    # Определяем обработчик разговора
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_city)],
-            STREET: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_street)],
-            HOUSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, dummy_executor)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
-
-    application.add_handler(conv_handler)
-
-    print("Бот запущен. Нажмите Ctrl+C для остановки.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+    try:
+        import asyncio
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user.")
