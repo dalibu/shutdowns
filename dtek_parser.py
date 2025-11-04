@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import logging
 from logging import DEBUG, INFO, WARNING, ERROR
+from typing import List, Dict, Any 
 
 # --- 1. Конфигурация Логирования ---
-LOGGING_LEVEL = INFO  # Установите DEBUG для максимальной детализации
+LOGGING_LEVEL = INFO 
 logger = logging.getLogger(__name__)
 logger.setLevel(LOGGING_LEVEL)
 
@@ -32,16 +33,24 @@ OUTPUT_FILENAME = "discon-fact.json"
 SCREENSHOT_FILENAME = "discon-fact.png"
 # ------------------------------------
 
-async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False) -> tuple[Path, list]:
+# Вспомогательная функция (оставлена для возможности будущих правок)
+def _clean_address_part(part: str, prefixes: list[str]) -> str:
+    """Удаляет известные префиксы из части адреса."""
+    for prefix in prefixes:
+        if part.lower().startswith(prefix.lower()):
+            return part[len(prefix):].lstrip(' .').strip()
+    return part.strip()
+
+
+async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False) -> Dict[str, Any]:
     """
-    Основная логика парсинга, выполняемая Playwright.
+    Основная логика парсинга.
+    Возвращает единый словарь с общей информацией и вложенным графиком по дням.
     """
     
-    # Определяем режим headless
     run_headless = not is_debug
     logger.info(f"Режим запуска: {'Headless (фоновый)' if run_headless else 'Headful (отладка)'}")
     
-    # Динамическое определение данных адреса для ввода
     ADDRESS_DATA = [
         {"selector": "input#city", "value": city, "autocomplete": "div#cityautocomplete-list"},
         {"selector": "input#street", "value": street, "autocomplete": "div#streetautocomplete-list"},
@@ -54,8 +63,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
     logger.info(f"--- 1. Запуск Playwright для адреса: {city}, {street}, {house} ---")
 
     async with async_playwright() as p:
-        # Устанавливаем headless в зависимости от is_debug
-        browser = await p.chromium.launch(headless=run_headless, slow_mo=300)
+        browser = await p.chromium.launch(headless=run_headless)
         page = await browser.new_page()
         
         try:
@@ -67,21 +75,15 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             # --- 2. Проверка и закрытие модального окна ---
             modal_container_selector = "div.modal__container.m-attention__container"
             close_button_selector = "button.modal__close.m-attention__close"
-            logger.debug(f"Проверка наличия модального окна...")
             try:
                 modal_container = page.locator(modal_container_selector)
                 await modal_container.wait_for(state="visible", timeout=5000)
-                
-                logger.info("Модальное окно найдено. Закрытие...")
                 await page.click(close_button_selector)
-                
                 await modal_container.wait_for(state="hidden")
-                logger.debug("Модальное окно успешно закрыто.")
             except TimeoutError:
-                logger.debug("Модальное окно не найдено.")
                 pass
 
-            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ (Упрощенный) ---
+            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ ---
             for i, data in enumerate(ADDRESS_DATA):
                 selector = data["selector"]
                 value = data["value"]
@@ -90,132 +92,125 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 is_last_field = (i == len(ADDRESS_DATA) - 1)
                 next_selector = ADDRESS_DATA[i+1]["selector"] if not is_last_field else None
                 
-                # Селектор, который сигнализирует об успешном выборе
                 success_selector = "#discon-fact > div.discon-fact-tables" if is_last_field else f"{next_selector}:not([disabled])"
                 
                 logger.info(f"[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
                 
-                # 3.1. Ввод
                 await page.fill(selector, "") 
                 await page.type(selector, value, delay=100)
                 
-                # 3.2. Ожидание появления списка автозаполнения
                 await page.wait_for_selector(autocomplete_selector, state="visible", timeout=10000)
-                logger.debug("Список автозаполнения появился.")
                 
-                # 3.3. Клик по ПЕРВОМУ элементу
                 first_item_selector = f"{autocomplete_selector} > div:first-child"
                 await page.click(first_item_selector)
-                logger.debug(f"Кликнут элемент: {first_item_selector}")
 
-                # 3.4. Ожидание, пока список автозаполнения исчезнет
                 await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
-                logger.debug("Список автозаполнения исчез после клика.")
 
-                # 3.5. Логирование фактического выбранного значения
                 final_value = await page.locator(f"#discon_form {selector}").input_value()
                 logger.info(f"Выбранное значение: {final_value}")
 
-                # 3.6. Ожидание активации следующего поля / загрузки результатов
                 try:
                     if not is_last_field:
-                        # Ожидаем, что следующее поле станет НЕ disabled
                         await page.wait_for_selector(success_selector, timeout=10000)
-                        logger.info(f"Следующее поле {next_selector} стало активным.")
                     else:
-                        # Для последнего поля ожидаем загрузки блока результатов
                         await page.wait_for_selector(success_selector, state="visible", timeout=20000)
                         logger.info("Результаты загружены.")
                 except TimeoutError as e:
-                    # Если не удалось активировать следующий шаг, это ошибка адреса/парсинга
                     raise TimeoutError(f"Ошибка активации следующего шага или загрузки результатов. Проверьте правильность введенного адреса.") from e
 
 
-            # --- 4. Извлечение данных ---
+            # --- 4. Извлечение общей информации и скриншот ---
             
-            # Извлечение фактических значений
             city_final = await page.locator("#discon_form input#city").input_value()
             street_final = await page.locator("#discon_form input#street").input_value()
             house_final = await page.locator("#discon_form input#house_num").input_value()
-            logger.info(f"Фактический адрес (итоговый): {city_final}, {street_final}, {house_final}")
 
-            screenshot_selector = "div.discon-fact.active"
-            await page.locator(screenshot_selector).screenshot(path=png_path)
-            logger.debug(f"Скриншот элемента сохранен в файл: {png_path}")
-
-            # --- 5. Парсинг и формирование JSON ---
-            logger.info("Начало парсинга данных о графике отключений...")
-            
-            # Получение даты и группы
-            date_selector = "#discon-fact > div.dates > div.date.active > div:nth-child(2) > span"
-            date_text = await page.locator(date_selector).inner_text()
-            
             group_selector = "#discon_form #group-name > span"
             await page.wait_for_selector(group_selector, state="visible", timeout=5000) 
             group_text = await page.locator(group_selector).inner_text()
-            logger.debug(f"Парсинг группы: {group_text}")
             group_final = group_text.replace("Черга", "").strip()
-            logger.debug(f"Группа (итоговая): {group_final}")
             
-            # Парсинг таблицы
-            table_selector = "#discon-fact > div.discon-fact-tables table"
-            table = page.locator(table_selector)
-            time_headers = await table.locator("thead > tr > th:is(:nth-child(n+2))").all()
-            data_cells = await table.locator("tbody > tr:first-child > td:is(:nth-child(n+2))").all()
+            screenshot_selector = "div.discon-fact.active"
+            await page.locator(screenshot_selector).screenshot(path=png_path)
             
-            slots = []
-            if not time_headers or not data_cells:
-                 logger.warning("Не удалось найти заголовки времени или ячейки данных в таблице.")
-            
-            for th_element, td_element in zip(time_headers, data_cells):
-                time_text_content = await th_element.inner_text()
-                time_slot = re.sub(r'\s+', ' ', time_text_content.strip()).replace('\n', ' – ')
-                td_classes = await td_element.get_attribute("class") or ""
-                
-                disconection_status = None
-                if "cell-scheduled" in td_classes:
-                    disconection_status = "full"
-                elif "cell-first-half" in td_classes or "cell-second-half" in td_classes:
-                    disconection_status = "half"
-                
-                if disconection_status:
-                    slots.append({"time": time_slot, "disconection": disconection_status})
-
-            if not slots:
-                logger.info("На указанную дату отключения не запланированы.")
-
-            # Формирование итогового JSON
-            final_data = [{
+            # 📌 Инициализируем агрегированный словарь
+            aggregated_result = {
                 "city": city_final,
                 "street": street_final,
                 "house_num": house_final,
                 "group": group_final,
-                "date": date_text,
-                "slots": slots
-            }]
+                "schedule": {} # Здесь будут храниться слоты по датам
+            }
+
+            # --- 5. Парсинг и формирование JSON для ДВУХ ДНЕЙ ---
             
-            logger.info(f"Парсинг завершен. Найдено {len(slots)} слотов.")
+            table_locators = page.locator("#discon-fact > div.discon-fact-tables > div.discon-fact-table")
+            date_locators = page.locator("#discon-fact > div.dates > div.date")
+
+            for i in range(await table_locators.count()):
+                table_container = table_locators.nth(i)
+                
+                # 5.1. Извлечение даты
+                try:
+                    date_element = date_locators.nth(i).locator("div:nth-child(2) > span")
+                    date_text = await date_element.inner_text()
+                except Exception:
+                    logger.warning(f"Не удалось извлечь дату для таблицы {i+1}.")
+                    date_text = f"Н/Д ({i+1})"
+                
+                # 5.2. Парсинг слотов внутри текущей таблицы (с использованием <table>)
+                current_table = table_container.locator("table")
+                
+                time_headers = await current_table.locator("thead > tr > th:is(:nth-child(n+2))").all()
+                data_cells = await current_table.locator("tbody > tr:first-child > td:is(:nth-child(n+2))").all()
+                
+                slots = []
+                if not time_headers or not data_cells:
+                     logger.warning(f"Не удалось найти заголовки/ячейки в таблице {i+1}. Пропускаем.")
+                     continue
+
+                for th_element, td_element in zip(time_headers, data_cells):
+                    time_text_content = await th_element.inner_text()
+                    time_slot = re.sub(r'\s+', ' ', time_text_content.strip()).replace('\n', '–').replace(' – ', '–') 
+                    
+                    td_classes = await td_element.get_attribute("class") or ""
+                    
+                    disconection_status = "false" # Свет будет
+                    if "cell-scheduled" in td_classes:
+                        disconection_status = "full"
+                    elif "cell-first-half" in td_classes or "cell-second-half" in td_classes:
+                        disconection_status = "half"
+                    
+                    if disconection_status != "false":
+                        slots.append({"time": time_slot, "disconection": disconection_status})
+
+                logger.info(f"Парсинг завершен для {date_text}. Найдено {len(slots)} слотов.")
+
+                # 📌 Добавляем слоты в секцию schedule по дате
+                aggregated_result["schedule"][date_text] = slots
             
-            # В режиме отладки ждем ручного закрытия
+            if not aggregated_result["schedule"]:
+                logger.info("График отключений не найден ни для одного дня.")
+
             if is_debug:
                  input("Нажмите Enter, чтобы закрыть браузер...")
 
-            return png_path, final_data
+            # 📌 Возвращаем ЕДИНЫЙ агрегированный словарь
+            return aggregated_result
 
         except Exception as e:
             logger.error(f"Произошла ошибка в Playwright: {type(e).__name__}: {e}")
-            # Очистка в случае ошибки
             if os.path.exists(json_path): os.remove(json_path)
             if os.path.exists(png_path): os.remove(png_path)
             raise e
         
         finally:
             await browser.close()
-            logger.debug("Браузер закрыт.")
 
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ CLI (остаются без изменений) ---
 def parse_args():
-    """Парсит аргументы командной строки (для режима CLI)."""
+    # ... (код parse_args) ...
     parser = argparse.ArgumentParser(
         description="Скрипт Playwright для парсинга графика отключений ДТЕК."
     )
@@ -239,7 +234,7 @@ def parse_args():
     )
     parser.add_argument(
         '--debug', 
-        action='store_true',  # Флаг, который становится True при наличии
+        action='store_true',  
         help='Запускает браузер в режиме Headful (с окном) для отладки.'
     )
     return parser.parse_args()
@@ -247,13 +242,12 @@ def parse_args():
 
 # --- Точка входа для CLI ---
 async def cli_entry_point():
-    """Обрабатывает аргументы командной строки и сохраняет файлы локально."""
     args = parse_args()
     logger.info("--- Запуск в режиме CLI ---")
     
     try:
-        # Передаем статус debug в сервисную функцию
-        png_path, final_data = await run_parser_service(
+        # 📌 run_parser_service теперь возвращает Dict
+        final_data = await run_parser_service(
             city=args.city, 
             street=args.street, 
             house=args.house,
@@ -266,11 +260,9 @@ async def cli_entry_point():
         with open(json_path, "w", encoding="utf-8") as f:
             f.write(json_output)
             
-        logger.info(f"Результат парсинга ({len(final_data[0]['slots'])} слотов):")
-        # 📌 Теперь вывод полного JSON-объекта только на уровне DEBUG
+        logger.info(f"Результат парсинга ({len(final_data.get('schedule', {}))} дней графика):")
         logger.debug(json_output)
         logger.info(f"Данные сохранены в файл: {json_path}")
-        logger.info(f"Скриншот сохранен в файл: {png_path}")
 
     except Exception as e:
         logger.error("Завершение работы с ошибкой.")
@@ -280,5 +272,4 @@ async def cli_entry_point():
 
 
 if __name__ == "__main__":
-    # Если скрипт запущен напрямую, выполняется CLI-логика
     asyncio.run(cli_entry_point())

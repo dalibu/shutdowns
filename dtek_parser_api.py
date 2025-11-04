@@ -1,59 +1,63 @@
-import asyncio
-from fastapi import FastAPI, HTTPException
-from pathlib import Path
 import os
-import json
 import logging
-# Импортируем вашу функцию из dtek_parser.py
-from dtek_parser import run_parser_service, DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Dict, Any
 
-# Настройка логирования для API
-logger = logging.getLogger("uvicorn") 
+# Импорт функции парсинга (убедитесь, что dtek_parser.py находится в том же каталоге или доступен)
+# В Docker это часто работает через структуру пакетов, убедитесь, что ваш запуск это поддерживает.
+try:
+    from .dtek_parser import run_parser_service 
+except ImportError:
+    # Запасной вариант для локального запуска
+    from dtek_parser import run_parser_service
 
-# --- Инициализация FastAPI ---
-app = FastAPI(title="DTEK Shutdown Parser API")
+# --- Конфигурация Логирования ---
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
+# --------------------------------
 
-@app.get("/status")
-async def get_status():
-    """Проверка доступности сервиса."""
-    return {"status": "ok", "message": "DTEK Parser is running."}
+# Создаем приложение FastAPI
+app = FastAPI(title="DTEK Shutdown Parser API", version="1.0")
 
-@app.get("/shutdowns")
-async def get_shutdowns(
-    city: str = DEFAULT_CITY, 
-    street: str = DEFAULT_STREET, 
-    house: str = DEFAULT_HOUSE,
-    debug: bool = False # Флаг для режима отладки Playwright
-):
+# --- Модели Pydantic для ответа ---
+class Slot(BaseModel):
+    time: str
+    disconection: str
+
+class FullScheduleResponse(BaseModel):
+    city: str
+    street: str
+    house_num: str
+    group: str
+    schedule: Dict[str, List[Slot]]
+
+# --- API Endpoint ---
+@app.get("/shutdowns", response_model=FullScheduleResponse)
+async def get_shutdowns(city: str, street: str, house: str):
     """
-    Получает информацию о плановых отключениях света по адресу.
+    Возвращает полный, агрегированный график отключений на сегодня и завтра.
     """
-    if not all([city, street, house]):
-        raise HTTPException(status_code=400, detail="City, street, and house are required parameters.")
-
+    logger.info(f"API Request received for: {city}, {street} {house}")
     try:
-        logger.info(f"API Request received for: {city}, {street}, {house}")
+        # 1. Получаем агрегированный словарь от парсера
+        # Формат: { Общие данные, "schedule": { "Дата1": [слоты], "Дата2": [слоты] } }
+        aggregated_data = await run_parser_service(city, street, house)
         
-        # Запуск вашей асинхронной функции парсинга
-        png_path, result_data = await run_parser_service(
-            city=city, 
-            street=street, 
-            house=house, 
-            is_debug=debug
-        )
-        
-        # Удаляем временный скриншот
-        if os.path.exists(png_path):
-            os.remove(png_path)
-        
-        return result_data[0] # Возвращаем первый (и единственный) объект из списка
+        if not aggregated_data or not aggregated_data.get("schedule"):
+            raise HTTPException(status_code=404, detail="Графік для цієї адреси не знайдено.")
 
-    except TimeoutError as e:
-        logger.error(f"Timeout/Address Error: {e}")
-        # Возвращаем 404 или 400, если адрес не найден или таймаут
-        raise HTTPException(status_code=404, detail=f"Address not found or service timed out: {e}")
+        # 2. Возвращаем полный, чистый агрегированный результат
+        return aggregated_data
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Internal processing error: {e}")
+        # Возвращаем 500
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
-
-# --- Запуск (Uvicorn будет запускать этот файл) ---s

@@ -1,70 +1,83 @@
-import logging
-import requests
 import os
 import re
 import asyncio
+import logging
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command 
+from aiogram.types import BotCommand, ReplyKeyboardRemove
+from aiogram.client.default import DefaultBotProperties
+from typing import List, Dict, Any
+import aiohttp
 
-# Импорт для работы с переменными окружения (для локальной разработки)
-from dotenv import load_dotenv
-
-# Импорты aiogram 3.x
-from aiogram import Bot, Dispatcher, types, Router 
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command 
-from aiogram.client.default import DefaultBotProperties # Для настройки parse_mode
-
-# --- 1. ПЕРЕМЕННЫЕ (Будут заполнены позже в __main__) ---
-DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = None 
-DTEK_API_URL = None 
+# --- 1. Конфигурація ---
+# Токен бота берется из переменных окружения
+BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
+# URL вашего FastAPI парсера (должен быть доступен изнутри Docker)
+API_BASE_URL = os.getenv("API_BASE_URL", "http://dtek_api:8000") 
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    'dtek_bot | %(levelname)s:%(name)s:%(message)s', 
+    datefmt='%H:%M:%S'
+)
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
+# ------------------------
 
-# Инициализация роутера для регистрации обработчиков
-router = Router() 
 
-# --- 2. ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
-def format_shutdown_message(data: dict) -> str:
+# --- 2. Вспомогательные функции ---
+
+def format_minutes_to_hh_m(minutes: int) -> str:
+    """Форматирует общее количество минут в HH:MM."""
+    h = minutes // 60
+    m = minutes % 60
+    return f"{h}:{m:02d}"
+
+async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     """
-    Форматирует JSON-ответ от API в красивое сообщение для Telegram.
-    Реализована логика консолидации блоков и интерпретации 'half' как 30-минутного отключения.
+    Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
     """
+    logger.info(f"API Request: {API_BASE_URL}/shutdowns?city={city}&street={street}&house={house}")
     
-    # Извлечение данных
-    city = data.get("city", "Н/Д")
-    street = data.get("street", "Н/Д")
-    house = data.get("house_num", "Н/Д")
-    group = data.get("group", "Н/Д")
-    date = data.get("date", "Н/Д")
-    slots = data.get("slots", [])
+    params = {
+        "city": city,
+        "street": street,
+        "house": house
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
+                if response.status == 404:
+                    raise ValueError("Графік для цієї адреси не знайдено.")
+                
+                response.raise_for_status()
+                return await response.json()
 
-    # Формирование заголовка
-    message = (
-        f"💡 **Графік відключень ДТЕК**\n"
-        f"📅 Дата: **{date}**\n"
-        f"🏠 Адреса: `{city}, {street}, {house}`\n"
-        f"👥 Черга: `{group}`\n"
-        f"---"
-    )
-    
+        except aiohttp.ClientError as e:
+            logger.error(f"HTTP/Client error to API: {e}")
+            raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
+        except Exception as e:
+            logger.error(f"Unknown error in API call: {e}")
+            raise Exception(f"Невідома помилка: {e}")
+
+
+def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
+    """
+    Консолидирует слоты отключений для одной даты и возвращает строку с временем.
+    """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
     if not outage_slots:
-        if slots:
-            return message + "\n✅ *На цю дату відключення не заплановані.*"
-        else:
-            return message + "\n❌ *Не вдалося отримати графік відключень (пусті слоти).* "
+        return f"✅ **{date}**: *Відключення не заплановані.*"
 
     first_slot = outage_slots[0]
     last_slot = outage_slots[-1]
-
-    # --- Вспомогательная функция для форматирования минут в HH:MM ---
-    def format_minutes_to_hh_m(minutes: int) -> str:
-        h = minutes // 60
-        m = minutes % 60
-        # 📌 ИСПРАВЛЕНИЕ: Всегда возвращаем формат HH:MM
-        return f"{h}:{m:02d}"
 
     # --- Расчет времени начала отключения ---
     try:
@@ -73,12 +86,11 @@ def format_shutdown_message(data: dict) -> str:
         
         if first_slot.get('disconection') == 'full':
             outage_start_min = start_hour * 60 
-        else: # 'half' outage
+        else:
             outage_start_min = start_hour * 60 + 30
-
     except Exception as e:
-        logger.error(f"Error parsing start time from slot: {first_slot}. Error: {e}")
-        return message + "\n❌ *Помилка парсингу часу початку. Перевірте формат даних.*"
+        logger.error(f"Error parsing start time for {date}: {first_slot}. Error: {e}")
+        return f"❌ **{date}**: *Помилка парсингу часу початку.*"
 
     # --- Расчет времени конца отключения ---
     try:
@@ -87,140 +99,173 @@ def format_shutdown_message(data: dict) -> str:
         
         if last_slot.get('disconection') == 'full':
             outage_end_min = end_hour * 60
-        else: # 'half' outage
+        else: 
             outage_end_min = end_hour * 60 - 30
 
     except Exception as e:
-        logger.error(f"Error parsing end time from slot: {last_slot}. Error: {e}")
-        return message + "\n❌ *Помилка парсингу часу кінця. Перевірте формат даних.*"
+        logger.error(f"Error parsing end time for {date}: {last_slot}. Error: {e}")
+        return f"❌ **{date}**: *Помилка парсингу часу кінця.*"
         
-    # 2. Финальное форматирование
-    
+    # Финальное форматирование
     if outage_start_min >= outage_end_min:
-         return message + "\n✅ *На цю дату відключення не заплановані (або помилка часу).* "
+         return f"✅ **{date}**: *Відключення не заплановані (або помилка часу).* "
 
     start_time_final = format_minutes_to_hh_m(outage_start_min)
     end_time_final = format_minutes_to_hh_m(outage_end_min)
     
-    final_message = f"❌ **Світла НЕ БУДЕ: {start_time_final} - {end_time_final}**"
+    return f"📅 **{date}**: `{start_time_final} - {end_time_final}`"
 
-    return message + "\n" + final_message
+
+def format_shutdown_message(data: dict) -> str:
+    """
+    Форматирует агрегированный JSON-ответ, показывая график для ВСЕХ доступных дней.
+    """
     
-# --- 3. TELEGRAM HANDLERS (Остаются без изменений) ---
-
-@router.message(CommandStart())
-async def command_start_handler(message: types.Message) -> None:
-    """Обрабатывает команду /start."""
-    welcome_text = (
-        "👋 Привіт! Я бот для перевірки графіків відключень ДТЕК.\n\n"
-        "Будь ласка, надішліть мені команду у форматі:\n"
-        "`/check [Місто], [Вулиця], [Номер дому]`\n\n"
-        "**Приклад:**\n"
-        "`/check м. Дніпро, вул. Сонячна набережна, 6`"
+    # Извлечение общих данных
+    city = data.get("city", "Н/Д")
+    street = data.get("street", "Н/Д")
+    house = data.get("house_num", "Н/Д")
+    group = data.get("group", "Н/Д")
+    schedule = data.get("schedule", {})
+    
+    # Формирование заголовка
+    message = (
+        f"💡 **Графік відключень ДТЕК**\n"
+        f"🏠 Адреса: `{city}, {street}, {house}`\n"
+        f"👥 Черга: `{group}`\n"
+        f"---"
     )
-    await message.answer(welcome_text, parse_mode=ParseMode.MARKDOWN)
+    
+    if not schedule:
+        return message + "\n❌ *Не вдалося отримати графік відключень.*"
+
+    # Сортируем даты для последовательного вывода
+    sorted_dates = sorted(schedule.keys())
+    
+    schedule_lines = []
+    has_outage = False 
+    
+    for date in sorted_dates:
+        slots = schedule[date]
+        line = _process_single_day_schedule(date, slots)
+        schedule_lines.append(line)
+        
+        if "Відключення не заплановані" not in line and "Помилка" not in line:
+            has_outage = True
+
+    final_schedule_output = "\n".join(schedule_lines)
+
+    if has_outage:
+        return message + "\n❌ **Світла НЕ БУДЕ:**\n" + final_schedule_output
+    else:
+        return message + "\n✅ **На найближчі дні відключення не заплановані.**"
 
 
-@router.message(Command(commands=["check"]))
-async def check_shutdowns_handler(message: types.Message) -> None:
-    """
-    Обрабатывает команду /check, используя запятые в качестве разделителя.
-    """
-    global DTEK_API_URL 
+def parse_address_from_text(text: str) -> tuple[str, str, str]:
+    """Извлекает город, улицу и дом из строки, разделенной запятыми."""
+    # Удаляем команду /check и лишние пробелы
+    text = text.replace('/check', '', 1).strip()
     
-    # 1. Удаляем команду /check и лишние пробелы
-    text_parts = message.text.split(maxsplit=1)
-    text_args = text_parts[1].strip() if len(text_parts) > 1 else ""
+    # Разбиваем по запятой и чистим части
+    parts = [p.strip() for p in text.split(',') if p.strip()]
     
-    # 2. Делим аргументы по запятой (,) и убираем пробелы вокруг
-    args = [part.strip() for part in text_args.split(',')]
+    if len(parts) < 3:
+        raise ValueError("Адреса має бути введена у форматі: **Місто, Вулиця, Будинок**.")
     
-    # Проверяем, что получили ровно 3 непустых аргумента
-    if len(args) != 3 or any(not arg for arg in args):
-        error_text = (
-            "⚠️ **Некоректний формат команди!**\n"
-            "Використовуйте: `/check [Місто], [Вулиця], [Номер дому]`\n"
-            "Наприклад: `/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
-            "*Перевірте, що ви ввели рівно три елементи, розділені комами.*"
-        )
-        await message.answer(error_text, parse_mode=ParseMode.MARKDOWN)
+    # Берем первые три части
+    city = parts[0]
+    street = parts[1]
+    house = parts[2]
+        
+    return city, street, house
+
+
+# --- 3. Обработчики команд ---
+
+# Обработчик /start и /help (без FSM)
+async def command_start_handler(message: types.Message) -> None:
+    """Обработчик команды /start и /help."""
+    text = (
+        "👋 **Вітаю! Я бот для перевірки графіків відключень ДТЕК.**\n\n"
+        "Для перевірки графіку, введіть команду **/check**, додавши адресу у форматі:\n"
+        "`/check Місто, Вулиця, Будинок`\n\n"
+        "**Наприклад:**\n"
+        "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
+        "**Команди:**\n"
+        "/check - перевірити графік за адресою."
+    )
+    await message.answer(text, reply_markup=ReplyKeyboardRemove())
+
+# Обработчик /cancel (теперь просто информационный, так как FSM нет)
+async def command_cancel_handler(message: types.Message) -> None:
+    """Обработчик команды /cancel."""
+    await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку.")
+
+
+# Обработчик /check (сразу принимает и обрабатывает адрес)
+async def command_check_handler(message: types.Message) -> None:
+    """Обработка однострочного ввода адреса."""
+    text_args = message.text.replace('/check', '', 1).strip()
+    
+    if not text_args:
+        await message.answer("Будь ласка, введіть повну адресу в одному повідомленні, розділену комами (наприклад, `/check м. Дніпро, вул. Сонячна набережна, 6`).")
         return
 
-    city, street, house = args
-    
-    await message.answer("⏳ Перевіряю графік. Це може зайняти до 30 секунд...")
-
     try:
-        # --- API Request ---
-        params = {
-            "city": city,
-            "street": street,
-            "house": house
-        }
+        city, street, house = parse_address_from_text(text_args)
         
-        logger.info(f"Sending API request to {DTEK_API_URL} for: {city}, {street}, {house}")
-        
-        # Запрос к вашему API-сервису
-        response = requests.get(DTEK_API_URL, params=params, timeout=45) 
-        
-        response.raise_for_status() 
-        
-        data = response.json()
-        
-        # Форматирование и отправка результата
-        formatted_message = format_shutdown_message(data)
-        await message.answer(formatted_message, parse_mode=ParseMode.MARKDOWN)
+        # 📌 ИЗМЕНЕННАЯ ФРАЗА
+        await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...", reply_markup=ReplyKeyboardRemove())
 
-    except requests.exceptions.HTTPError as http_err:
-        if response.status_code == 404:
-             error_detail = response.json().get('detail', 'Адреса не знайдена або таймаут.')
-             await message.answer(f"❌ **Помилка 404:** {error_detail}")
-        else:
-             logger.error(f"HTTP Error: {http_err}. Full response: {response.text}")
-             await message.answer(f"❌ **Помилка API (HTTP {response.status_code}):** Спробуйте пізніше.")
+        # Логика API
+        data = await get_shutdowns_data(city, street, house)
+        response_text = format_shutdown_message(data)
+        await message.answer(response_text, parse_mode="Markdown")
 
-    except requests.exceptions.ConnectionError:
-        await message.answer("❌ **Помилка підключення:** Сервіс парсингу недоступний. Перевірте Docker-контейнер.")
-
-    except requests.exceptions.Timeout:
-        await message.answer("❌ **Таймаут:** Парсер не встиг відповісти за 45 секунд. Спробуйте ще раз.")
-
+    except ValueError as e:
+        await message.answer(f"❌ **Помилка вводу/помилка API:** {e}")
+    except ConnectionError as e:
+        await message.answer(f"❌ **Помилка:** {e}")
     except Exception as e:
-        logger.error(f"Unknown error in bot: {e}")
-        await message.answer(f"❌ Виникла невідома помилка: {e}")
+        logger.error(f"Critical error during parsing for user {message.from_user.id}: {e}")
+        await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
-# --- 4. ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА ---
+
+# --- 4. Main Execution ---
+
 async def main() -> None:
+    """Главная функция для запуска бота."""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN не встановлено. Перевірте файл .env")
+        return
     
-    # Инициализация объектов Bot с DefaultBotProperties
-    bot = Bot(
-        token=DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN, 
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    # Исправленная инициализация для aiogram v3
+    default_props = DefaultBotProperties(parse_mode="Markdown")
+    bot = Bot(BOT_TOKEN, default=default_props) 
+    
     dp = Dispatcher()
 
-    # Регистрация роутера в диспетчере
-    dp.include_router(router)
+    # Установка команд
+    commands = [
+        BotCommand(command="/check", description="Перевірити графік за адресою"),
+        BotCommand(command="/cancel", description="Скасувати поточну дію"),
+        BotCommand(command="/help", description="Довідка")
+    ]
+    await bot.set_my_commands(commands)
+    
+    # Регистрация обработчиков
+    dp.message.register(command_start_handler, Command("start", "help"))
+    dp.message.register(command_cancel_handler, Command("cancel"))
+    dp.message.register(command_check_handler, Command("check")) 
 
-    # Удаление старых обновлений и запуск Long Polling
-    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Бот запущено. Початок опитування...")
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    # Сначала загружаем .env, затем читаем переменные
-    load_dotenv()
-    
-    # Читаем переменные после загрузки .env
-    DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
-    DTEK_API_URL = os.getenv("DTEK_API_URL", "http://dtek_api:8000/shutdowns") 
-
-    # Выводим ошибку, если токен не найден
-    if not DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN:
-        logger.error("!!! КРИТИЧЕСКАЯ ОШИБКА: DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN не установлен в переменных окружения. !!!")
-        logger.error("Для локального запуска создайте файл .env и добавьте DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН")
-    else:
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user.")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот зупинено вручну.")
+    except Exception as e:
+        logger.critical(f"Критична помилка виконання: {e}")
