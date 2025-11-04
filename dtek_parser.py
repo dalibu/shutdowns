@@ -6,13 +6,13 @@ from playwright.async_api import async_playwright, TimeoutError
 import os
 from pathlib import Path
 import logging
-from logging import DEBUG, INFO, WARNING, ERROR # Импортируем уровни для удобства
+from logging import DEBUG, INFO, WARNING, ERROR
 
 # --- 1. Конфигурация Логирования ---
 LOGGING_LEVEL = INFO  # Установите DEBUG для максимальной детализации
 logger = logging.getLogger(__name__)
 logger.setLevel(LOGGING_LEVEL)
-# Настройка формата (как в Java, с уровнем и временем)
+# Настройка формата
 handler = logging.StreamHandler()
 formatter = logging.Formatter(
     '%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
@@ -31,10 +31,21 @@ OUTPUT_FILENAME = "discon-fact.json"
 SCREENSHOT_FILENAME = "discon-fact.png"
 # ------------------------------------
 
-async def run_parser_service(city: str, street: str, house: str) -> tuple[Path, list]:
+async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False) -> tuple[Path, list]:
     """
     Основная логика парсинга, выполняемая Playwright.
+    
+    Args:
+        city, street, house: Данные адреса для ввода.
+        is_debug: Если True, браузер запускается в headful режиме.
+
+    Returns:
+      Кортеж: (Path к PNG файлу, List с данными JSON)
     """
+    
+    # Определяем режим headless
+    run_headless = not is_debug
+    logger.info(f"Режим запуска: {'Headless (фоновый)' if run_headless else 'Headful (отладка)'}")
     
     # Динамическое определение данных адреса для ввода
     ADDRESS_DATA = [
@@ -49,8 +60,8 @@ async def run_parser_service(city: str, street: str, house: str) -> tuple[Path, 
     logger.info(f"--- 1. Запуск Playwright для адреса: {city}, {street}, {house} ---")
 
     async with async_playwright() as p:
-        # headless=True для работы в сервисе (CLI или Bot)
-        browser = await p.chromium.launch(headless=True, slow_mo=300)
+        # Устанавливаем headless в зависимости от is_debug
+        browser = await p.chromium.launch(headless=run_headless, slow_mo=300)
         page = await browser.new_page()
         
         try:
@@ -87,26 +98,21 @@ async def run_parser_service(city: str, street: str, house: str) -> tuple[Path, 
                 await page.type(selector, value, delay=100)
                 
                 await page.wait_for_selector(autocomplete_selector, state="visible", timeout=10000)
-                logger.debug(f"Список автозаполнения {autocomplete_selector} появился.")
                 
                 first_item_selector = f"{autocomplete_selector} > div:first-child"
                 await page.click(first_item_selector)
-                logger.debug(f"Выбран первый элемент: {first_item_selector}")
                 
                 await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
                 
                 if next_selector:
                     await page.wait_for_selector(f"{next_selector}:not([disabled])", timeout=10000)
-                    logger.debug(f"Следующее поле {next_selector} стало активным.")
-                elif i == len(ADDRESS_DATA) - 1:
-                    logger.debug("Ввод последнего поля завершен. Ожидание результатов...")
 
             # --- 4. Ожидание результата, скриншот и извлечение данных ---
             results_selector = "#discon-fact > div.discon-fact-tables"
             await page.wait_for_selector(results_selector, state="visible", timeout=20000)
             logger.info("Результаты загружены.")
             
-            # Извлечение фактических значений из input полей
+            # Извлечение фактических значений
             city_final = await page.locator("#discon_form input#city").input_value()
             street_final = await page.locator("#discon_form input#street").input_value()
             house_final = await page.locator("#discon_form input#house_num").input_value()
@@ -166,6 +172,11 @@ async def run_parser_service(city: str, street: str, house: str) -> tuple[Path, 
             }]
             
             logger.info(f"Парсинг завершен. Найдено {len(slots)} слотов.")
+            
+            # В режиме отладки ждем ручного закрытия
+            if is_debug:
+                 input("Нажмите Enter, чтобы закрыть браузер...")
+
             return png_path, final_data
 
         except Exception as e:
@@ -203,6 +214,11 @@ def parse_args():
         default=DEFAULT_HOUSE, 
         help=f'Номер дома (по умолчанию: "{DEFAULT_HOUSE}")'
     )
+    parser.add_argument(
+        '--debug', 
+        action='store_true',  # Флаг, который становится True при наличии
+        help='Запускает браузер в режиме Headful (с окном) для отладки.'
+    )
     return parser.parse_args()
 
 
@@ -213,11 +229,12 @@ async def cli_entry_point():
     logger.info("\n--- Запуск в режиме CLI ---")
     
     try:
-        # Вызов основной сервисной функции
+        # Передаем статус debug в сервисную функцию
         png_path, final_data = await run_parser_service(
             city=args.city, 
             street=args.street, 
-            house=args.house
+            house=args.house,
+            is_debug=args.debug
         )
         
         # Сохранение JSON в режиме CLI
