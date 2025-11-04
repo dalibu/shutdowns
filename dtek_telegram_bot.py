@@ -44,7 +44,7 @@ def format_shutdown_message(data: dict) -> str:
         f"💡 **Графік відключень ДТЕК**\n"
         f"🏠 Адреса: `{city}, {street}, {house}`\n"
         f"📅 Дата: **{date}**\n"
-        f"👥 Група: `{group}`\n"
+        f"👥 Черга: `{group}`\n"
         f"---"
     )
     

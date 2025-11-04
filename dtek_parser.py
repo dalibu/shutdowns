@@ -12,6 +12,7 @@ from logging import DEBUG, INFO, WARNING, ERROR
 LOGGING_LEVEL = INFO  # Установите DEBUG для максимальной детализации
 logger = logging.getLogger(__name__)
 logger.setLevel(LOGGING_LEVEL)
+
 # Настройка формата
 handler = logging.StreamHandler()
 formatter = logging.Formatter(
@@ -152,7 +153,9 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             group_selector = "#discon_form #group-name > span"
             await page.wait_for_selector(group_selector, state="visible", timeout=5000) 
             group_text = await page.locator(group_selector).inner_text()
-            logger.info(f"Парсинг группы: {group_text} на дату: {date_text}")
+            logger.debug(f"Парсинг группы: {group_text}")
+            group_final = group_text.replace("Черга", "").strip()
+            logger.debug(f"Группа (итоговая): {group_final}")
             
             # Парсинг таблицы
             table_selector = "#discon-fact > div.discon-fact-tables table"
@@ -186,7 +189,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 "city": city_final,
                 "street": street_final,
                 "house_num": house_final,
-                "group": group_text,
+                "group": group_final,
                 "date": date_text,
                 "slots": slots
             }]
