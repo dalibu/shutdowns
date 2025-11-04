@@ -34,13 +34,6 @@ SCREENSHOT_FILENAME = "discon-fact.png"
 async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False) -> tuple[Path, list]:
     """
     Основная логика парсинга, выполняемая Playwright.
-    
-    Args:
-        city, street, house: Данные адреса для ввода.
-        is_debug: Если True, браузер запускается в headful режиме.
-
-    Returns:
-      Кортеж: (Path к PNG файлу, List с данными JSON)
     """
     
     # Определяем режим headless
@@ -68,6 +61,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             URL = "https://www.dtek-dnem.com.ua/ua/shutdowns"
             logger.info(f"Загрузка страницы: {URL}")
             await page.goto(URL, wait_until="load", timeout=60000)
+            logger.debug("Страница успешно загружена.")
 
             # --- 2. Проверка и закрытие модального окна ---
             modal_container_selector = "div.modal__container.m-attention__container"
@@ -86,37 +80,58 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 logger.debug("Модальное окно не найдено.")
                 pass
 
-            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ ---
+            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ (Упрощенный) ---
             for i, data in enumerate(ADDRESS_DATA):
                 selector = data["selector"]
                 value = data["value"]
                 autocomplete_selector = data["autocomplete"]
-                next_selector = ADDRESS_DATA[i+1]["selector"] if i < len(ADDRESS_DATA) - 1 else None
                 
-                logger.info(f"[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
+                is_last_field = (i == len(ADDRESS_DATA) - 1)
+                next_selector = ADDRESS_DATA[i+1]["selector"] if not is_last_field else None
                 
+                # Селектор, который сигнализирует об успешном выборе
+                success_selector = "#discon-fact > div.discon-fact-tables" if is_last_field else f"{next_selector}:not([disabled])"
+                
+                logger.info(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
+                
+                # 3.1. Ввод
+                await page.fill(selector, "") 
                 await page.type(selector, value, delay=100)
                 
+                # 3.2. Ожидание появления списка автозаполнения
                 await page.wait_for_selector(autocomplete_selector, state="visible", timeout=10000)
+                logger.debug("Список автозаполнения появился.")
                 
+                # 3.3. Клик по ПЕРВОМУ элементу
                 first_item_selector = f"{autocomplete_selector} > div:first-child"
                 await page.click(first_item_selector)
-                
-                await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
-                
-                if next_selector:
-                    await page.wait_for_selector(f"{next_selector}:not([disabled])", timeout=10000)
+                logger.debug(f"Кликнут элемент: {first_item_selector}")
 
-            # --- 4. Ожидание результата, скриншот и извлечение данных ---
-            results_selector = "#discon-fact > div.discon-fact-tables"
-            await page.wait_for_selector(results_selector, state="visible", timeout=20000)
-            logger.info("Результаты загружены.")
+                # 3.4. Ожидание, пока список автозаполнения исчезнет
+                await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
+                logger.debug("Список автозаполнения исчез после клика.")
+
+                # 3.5. Логирование фактического выбранного значения
+                final_value = await page.locator(f"#discon_form {selector}").input_value()
+                logger.info(f"Выбранное значение: {final_value}")
+
+                # 3.6. Ожидание активации следующего поля / загрузки результатов
+                if not is_last_field:
+                    # Ожидаем, что следующее поле станет НЕ disabled
+                    await page.wait_for_selector(success_selector, timeout=10000)
+                    logger.info(f"Следующее поле {next_selector} стало активным.")
+                else:
+                    # Для последнего поля ожидаем загрузки блока результатов
+                    await page.wait_for_selector(success_selector, state="visible", timeout=20000)
+                    logger.info("Результаты загружены.")
+
+            # --- 4. Извлечение данных ---
             
             # Извлечение фактических значений
             city_final = await page.locator("#discon_form input#city").input_value()
             street_final = await page.locator("#discon_form input#street").input_value()
             house_final = await page.locator("#discon_form input#house_num").input_value()
-            logger.info(f"Фактический адрес (из полей): {city_final}, {street_final}, {house_final}")
+            logger.info(f"Фактический адрес (итоговый): {city_final}, {street_final}, {house_final}")
 
             screenshot_selector = "div.discon-fact.active"
             await page.locator(screenshot_selector).screenshot(path=png_path)
