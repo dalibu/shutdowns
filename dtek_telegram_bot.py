@@ -14,7 +14,6 @@ from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties # Для настройки parse_mode
 
 # --- 1. ПЕРЕМЕННЫЕ (Будут заполнены позже в __main__) ---
-# Объявляем глобальные переменные, которые будут заполнены после load_dotenv()
 DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = None 
 DTEK_API_URL = None 
 
@@ -27,15 +26,19 @@ router = Router()
 
 # --- 2. ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
 def format_shutdown_message(data: dict) -> str:
-    """Форматирует JSON-ответ от API в красивое сообщение для Telegram."""
+    """
+    Форматирует JSON-ответ от API в красивое сообщение для Telegram.
+    Реализована логика консолидации блоков и интерпретации 'half' как 30-минутного отключения.
+    """
     
+    # Извлечение данных
     city = data.get("city", "Н/Д")
     street = data.get("street", "Н/Д")
     house = data.get("house_num", "Н/Д")
     group = data.get("group", "Н/Д")
     date = data.get("date", "Н/Д")
     slots = data.get("slots", [])
-    
+
     # Формирование заголовка
     message = (
         f"💡 **Графік відключень ДТЕК**\n"
@@ -45,26 +48,65 @@ def format_shutdown_message(data: dict) -> str:
         f"---"
     )
     
-    if not slots:
-        return message + "\n✅ *На цю дату відключення не заплановані.*"
-
-    # Формирование списка слотов
-    slot_messages = []
-    for slot in slots:
-        time = slot.get('time')
-        status = slot.get('disconection')
-        
-        status_icon = "❌" if status == "full" else "⚠️" if status == "half" else "✅"
-        status_text = "Світла НЕ БУДЕ" if status == "full" else "Можливе відключення" if status == "half" else "Світло БУДЕ"
-        
-        slot_messages.append(f"{status_icon} `{time}`: {status_text}")
-
-    message += "\n\n" + "\n".join(slot_messages)
+    outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
-    return message
+    if not outage_slots:
+        if slots:
+            return message + "\n✅ *На цю дату відключення не заплановані.*"
+        else:
+            return message + "\n❌ *Не вдалося отримати графік відключень (пусті слоти).* "
 
+    first_slot = outage_slots[0]
+    last_slot = outage_slots[-1]
 
-# --- 3. TELEGRAM HANDLERS ---
+    # --- Вспомогательная функция для форматирования минут в HH:MM ---
+    def format_minutes_to_hh_m(minutes: int) -> str:
+        h = minutes // 60
+        m = minutes % 60
+        # 📌 ИСПРАВЛЕНИЕ: Всегда возвращаем формат HH:MM
+        return f"{h}:{m:02d}"
+
+    # --- Расчет времени начала отключения ---
+    try:
+        time_parts = re.split(r'\s*[-\–]\s*', first_slot.get('time', '0-0'))
+        start_hour = int(time_parts[0])
+        
+        if first_slot.get('disconection') == 'full':
+            outage_start_min = start_hour * 60 
+        else: # 'half' outage
+            outage_start_min = start_hour * 60 + 30
+
+    except Exception as e:
+        logger.error(f"Error parsing start time from slot: {first_slot}. Error: {e}")
+        return message + "\n❌ *Помилка парсингу часу початку. Перевірте формат даних.*"
+
+    # --- Расчет времени конца отключения ---
+    try:
+        time_parts = re.split(r'\s*[-\–]\s*', last_slot.get('time', '0-0'))
+        end_hour = int(time_parts[1])
+        
+        if last_slot.get('disconection') == 'full':
+            outage_end_min = end_hour * 60
+        else: # 'half' outage
+            outage_end_min = end_hour * 60 - 30
+
+    except Exception as e:
+        logger.error(f"Error parsing end time from slot: {last_slot}. Error: {e}")
+        return message + "\n❌ *Помилка парсингу часу кінця. Перевірте формат даних.*"
+        
+    # 2. Финальное форматирование
+    
+    if outage_start_min >= outage_end_min:
+         return message + "\n✅ *На цю дату відключення не заплановані (або помилка часу).* "
+
+    start_time_final = format_minutes_to_hh_m(outage_start_min)
+    end_time_final = format_minutes_to_hh_m(outage_end_min)
+    
+    final_message = f"❌ **Світла НЕ БУДЕ: {start_time_final} - {end_time_final}**"
+
+    return message + "\n" + final_message
+    
+# --- 3. TELEGRAM HANDLERS (Остаются без изменений) ---
 
 @router.message(CommandStart())
 async def command_start_handler(message: types.Message) -> None:
@@ -83,7 +125,6 @@ async def command_start_handler(message: types.Message) -> None:
 async def check_shutdowns_handler(message: types.Message) -> None:
     """
     Обрабатывает команду /check, используя запятые в качестве разделителя.
-    Ожидаемый формат: /check [Місто], [Вулиця], [Номер дому]
     """
     global DTEK_API_URL 
     
@@ -132,7 +173,6 @@ async def check_shutdowns_handler(message: types.Message) -> None:
 
     except requests.exceptions.HTTPError as http_err:
         if response.status_code == 404:
-             # Ловит ошибки, возвращаемые FastAPI (например, неверный адрес или таймаут парсера)
              error_detail = response.json().get('detail', 'Адреса не знайдена або таймаут.')
              await message.answer(f"❌ **Помилка 404:** {error_detail}")
         else:
@@ -152,7 +192,7 @@ async def check_shutdowns_handler(message: types.Message) -> None:
 # --- 4. ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА ---
 async def main() -> None:
     
-    # Инициализация объектов Bot с DefaultBotProperties (исправление ошибки aiogram 3.7+)
+    # Инициализация объектов Bot с DefaultBotProperties
     bot = Bot(
         token=DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN, 
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -173,7 +213,7 @@ if __name__ == "__main__":
     
     # Читаем переменные после загрузки .env
     DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
-    DTEK_API_URL = os.getenv("DTEK_API_URL", "http://localhost:8000/shutdowns") 
+    DTEK_API_URL = os.getenv("DTEK_API_URL", "http://dtek_api:8000/shutdowns") 
 
     # Выводим ошибку, если токен не найден
     if not DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN:
