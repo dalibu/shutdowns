@@ -2,21 +2,21 @@ import logging
 import requests
 import os
 import re
+import asyncio
 
-# Импорт для работы с переменными окружения (локальная разработка)
+# Импорт для работы с переменными окружения (для локальной разработки)
 from dotenv import load_dotenv
 
 # Импорты aiogram 3.x
 from aiogram import Bot, Dispatcher, types, Router 
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command 
+from aiogram.client.default import DefaultBotProperties # Для настройки parse_mode
 
-# --- 1. КОНФИГУРАЦИЯ ---
-
-# 📌 ИЗМЕНЕНО: Чтение токена бота из новой переменной окружения
-DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN") 
-# Если DTEK_API_URL не задан, используется значение по умолчанию (http://localhost:8000/shutdowns)
-DTEK_API_URL = os.getenv("DTEK_API_URL", "http://localhost:8000/shutdowns") 
+# --- 1. ПЕРЕМЕННЫЕ (Будут заполнены позже в __main__) ---
+# Объявляем глобальные переменные, которые будут заполнены после load_dotenv()
+DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = None 
+DTEK_API_URL = None 
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +84,10 @@ async def check_shutdowns_handler(message: types.Message) -> None:
     """
     Обрабатывает команду /check, отправляет запрос к API и возвращает результат.
     """
+    # Используем глобальные переменные DTEK_API_URL
+    global DTEK_API_URL 
+    
+    # Разделяем команду и остальной текст
     text_parts = message.text.split(maxsplit=1)
     text_without_command = text_parts[1].strip() if len(text_parts) > 1 else ""
     
@@ -147,12 +151,15 @@ async def main() -> None:
     
     # 📌 КРИТИЧЕСКАЯ ПРОВЕРКА ТОКЕНА
     if not DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN:
-        logger.error("!!! КРИТИЧЕСКАЯ ОШИБКА: DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN не установлен в переменных окружения. !!!")
-        logger.error("Для локального запуска создайте файл .env и добавьте DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН")
-        return # Останавливаем выполнение
+        # Этого не должно случиться, если код в __name__ == "__main__" отработал корректно
+        logger.error("!!! ВНУТРЕННЯЯ ОШИБКА: Токен не был загружен. Прерывание. !!!")
+        return 
 
-    # Инициализация объектов Bot и Dispatcher
-    bot = Bot(token=DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN, parse_mode=ParseMode.HTML)
+    # Инициализация объектов Bot с DefaultBotProperties (исправление ошибки aiogram 3.7+)
+    bot = Bot(
+        token=DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN, 
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
 
     # Регистрация роутера в диспетчере
@@ -164,11 +171,19 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    # Загружаем переменные окружения из файла .env (если он существует)
+    # 📌 ИСПРАВЛЕНИЕ: Сначала загружаем .env, затем читаем переменные
     load_dotenv()
     
-    try:
-        import asyncio
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user.")
+    # Читаем переменные после загрузки .env
+    DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
+    DTEK_API_URL = os.getenv("DTEK_API_URL", "http://localhost:8000/shutdowns") 
+
+    # Выводим ошибку, если токен все еще пустой, и не запускаем main
+    if not DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN:
+        logger.error("!!! КРИТИЧЕСКАЯ ОШИБКА: DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN не установлен в переменных окружения. !!!")
+        logger.error("Для локального запуска создайте файл .env и добавьте DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN=ВАШ_ТОКЕН")
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user.")
