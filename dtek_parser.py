@@ -92,7 +92,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 # Селектор, который сигнализирует об успешном выборе
                 success_selector = "#discon-fact > div.discon-fact-tables" if is_last_field else f"{next_selector}:not([disabled])"
                 
-                logger.info(f"\n[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
+                logger.info(f"[{i+1}/{len(ADDRESS_DATA)}] Ввод данных в поле: {selector} (Значение: {value})")
                 
                 # 3.1. Ввод
                 await page.fill(selector, "") 
@@ -246,7 +246,7 @@ def parse_args():
 async def cli_entry_point():
     """Обрабатывает аргументы командной строки и сохраняет файлы локально."""
     args = parse_args()
-    logger.info("\n--- Запуск в режиме CLI ---")
+    logger.info("--- Запуск в режиме CLI ---")
     
     try:
         # Передаем статус debug в сервисную функцию
@@ -264,8 +264,8 @@ async def cli_entry_point():
             f.write(json_output)
             
         logger.info(f"Результат парсинга ({len(final_data[0]['slots'])} слотов):")
-        # 📌 Вывод полного JSON-объекта в лог
-        logger.info(json_output)
+        # 📌 Теперь вывод полного JSON-объекта только на уровне DEBUG
+        logger.debug(json_output)
         logger.info(f"Данные сохранены в файл: {json_path}")
         logger.info(f"Скриншот сохранен в файл: {png_path}")
 
