@@ -3,12 +3,13 @@ import re
 import asyncio
 import logging
 from datetime import datetime
+from typing import List, Dict, Any
+
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command 
 from aiogram.types import BotCommand, ReplyKeyboardRemove
 from aiogram.client.default import DefaultBotProperties
-from typing import List, Dict, Any
-import aiohttp
 
 # --- 1. Конфигурація ---
 # Токен бота берется из переменных окружения
@@ -30,7 +31,7 @@ if not logger.handlers:
 # ------------------------
 
 
-# --- 2. Вспомогательные функции ---
+# --- 2. Вспомогательные функции (Бизнес-логика) ---
 
 def format_minutes_to_hh_m(minutes: int) -> str:
     """Форматирует общее количество минут в HH:MM."""
@@ -41,7 +42,6 @@ def format_minutes_to_hh_m(minutes: int) -> str:
 async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     """
     Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
-    (Скопировано из dtek_telegram_bot.py)
     """
     params = {
         "city": city,
@@ -49,23 +49,21 @@ async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
         "house": house
     }
     
-    # aioresponses будет перехватывать этот вызов
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
                 if response.status == 404:
-                    # 📌 Генерируем ValueError (как ожидалось в тесте)
+                    # Корректно бросаем ValueError для обработки "Адрес не найден"
                     raise ValueError("Графік для цієї адреси не знайдено.")
                 
                 response.raise_for_status()
                 return await response.json()
 
         except aiohttp.ClientError as e:
-            # Ловит ошибки соединения, таймауты и другие ошибки HTTP-клиента
+            # Ошибки сети, таймауты, DNS и т.д.
+            logger.error(f"API Connection Error: {e}")
             raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
-        # ❌ УДАЛЕН БЛОК except Exception as e:
-        # Теперь ValueError выходит напрямую.
-        # Любые другие непредвиденные ошибки выйдут как есть.
+        # Все остальные ошибки (например, JSONDecodeError) будут отловлены в общем except в command_check_handler
 
 def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
     """
@@ -87,6 +85,7 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
         if first_slot.get('disconection') == 'full':
             outage_start_min = start_hour * 60 
         else:
+            # 'half' начало: +30 минут
             outage_start_min = start_hour * 60 + 30
     except Exception as e:
         logger.error(f"Error parsing start time for {date}: {first_slot}. Error: {e}")
@@ -100,6 +99,7 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
         if last_slot.get('disconection') == 'full':
             outage_end_min = end_hour * 60
         else: 
+            # 'half' конец: -30 минут
             outage_end_min = end_hour * 60 - 30
 
     except Exception as e:
@@ -121,14 +121,12 @@ def format_shutdown_message(data: dict) -> str:
     Форматирует агрегированный JSON-ответ, показывая график для ВСЕХ доступных дней.
     """
     
-    # Извлечение общих данных
     city = data.get("city", "Н/Д")
     street = data.get("street", "Н/Д")
     house = data.get("house_num", "Н/Д")
     group = data.get("group", "Н/Д")
     schedule = data.get("schedule", {})
     
-    # Формирование заголовка
     message = (
         f"💡 **Графік відключень ДТЕК**\n"
         f"🏠 Адреса: `{city}, {street}, {house}`\n"
@@ -139,8 +137,11 @@ def format_shutdown_message(data: dict) -> str:
     if not schedule:
         return message + "\n❌ *Не вдалося отримати графік відключень.*"
 
-    # Сортируем даты для последовательного вывода
-    sorted_dates = sorted(schedule.keys())
+    # Сортируем даты по дате, если возможно, или по ключу
+    try:
+        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+    except ValueError:
+        sorted_dates = sorted(schedule.keys())
     
     schedule_lines = []
     has_outage = False 
@@ -163,7 +164,6 @@ def format_shutdown_message(data: dict) -> str:
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
-    # Удаляем команду /check и лишние пробелы
     text = text.replace('/check', '', 1).strip()
     
     # Разбиваем по запятой и чистим части
@@ -180,9 +180,9 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
     return city, street, house
 
 
-# --- 3. Обработчики команд ---
+# --- 3. Обработчики команд (aiogram v3) ---
 
-# Обработчик /start и /help (без FSM)
+# Обработчик /start и /help 
 async def command_start_handler(message: types.Message) -> None:
     """Обработчик команды /start и /help."""
     text = (
@@ -192,11 +192,12 @@ async def command_start_handler(message: types.Message) -> None:
         "**Наприклад:**\n"
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
         "**Команди:**\n"
-        "/check - перевірити графік за адресою."
+        "/check - перевірити графік за адресою.\n"
+        "/cancel - скасувати поточну дію."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
-# Обработчик /cancel (теперь просто информационный, так как FSM нет)
+# Обработчик /cancel (возвращает информационное сообщение)
 async def command_cancel_handler(message: types.Message) -> None:
     """Обработчик команды /cancel."""
     await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку.")
@@ -212,21 +213,26 @@ async def command_check_handler(message: types.Message) -> None:
         return
 
     try:
+        # 1. Парсинг адреса
         city, street, house = parse_address_from_text(text_args)
         
-        # 📌 ИЗМЕНЕННАЯ ФРАЗА
         await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...", reply_markup=ReplyKeyboardRemove())
 
-        # Логика API
+        # 2. Логика API
         data = await get_shutdowns_data(city, street, house)
+        
+        # 3. Форматирование
         response_text = format_shutdown_message(data)
-        await message.answer(response_text, parse_mode="Markdown")
+        await message.answer(response_text) # parse_mode "Markdown" установлен по умолчанию
 
     except ValueError as e:
+        # Ошибка 404 / Неправильный формат адреса
         await message.answer(f"❌ **Помилка вводу/помилка API:** {e}")
     except ConnectionError as e:
+        # Ошибка соединения
         await message.answer(f"❌ **Помилка:** {e}")
     except Exception as e:
+        # Критические и непредвиденные ошибки
         logger.error(f"Critical error during parsing for user {message.from_user.id}: {e}")
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
@@ -236,20 +242,20 @@ async def command_check_handler(message: types.Message) -> None:
 async def main() -> None:
     """Главная функция для запуска бота."""
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не встановлено. Перевірте файл .env")
+        logger.error("BOT_TOKEN не встановлено. Перевірте змінні оточення.")
         return
     
-    # Исправленная инициализация для aiogram v3
+    # Инициализация с настройкой Markdown по умолчанию для aiogram v3
     default_props = DefaultBotProperties(parse_mode="Markdown")
     bot = Bot(BOT_TOKEN, default=default_props) 
     
     dp = Dispatcher()
 
-    # Установка команд
+    # Установка команд (для меню в Telegram)
     commands = [
-        BotCommand(command="/check", description="Перевірити графік за адресою"),
-        BotCommand(command="/cancel", description="Скасувати поточну дію"),
-        BotCommand(command="/help", description="Довідка")
+        BotCommand(command="check", description="Перевірити графік за адресою"),
+        BotCommand(command="cancel", description="Скасувати поточну дію"),
+        BotCommand(command="help", description="Довідка")
     ]
     await bot.set_my_commands(commands)
     
