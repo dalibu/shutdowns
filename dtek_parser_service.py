@@ -50,7 +50,7 @@ async def run(args):
     
     async with async_playwright() as p:
         # slow_mo=300ms для замедления действий
-        browser = await p.chromium.launch(headless=True, slow_mo=300)
+        browser = await p.chromium.launch(headless=False, slow_mo=300)
         page = await browser.new_page()
 
         try:
