@@ -15,7 +15,7 @@ logger.setLevel(LOGGING_LEVEL)
 # Настройка формата
 handler = logging.StreamHandler()
 formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    '%(asctime)s %(name)s %(levelname)s %(message)s', 
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 handler.setFormatter(formatter)
@@ -116,14 +116,19 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 logger.info(f"Выбранное значение: {final_value}")
 
                 # 3.6. Ожидание активации следующего поля / загрузки результатов
-                if not is_last_field:
-                    # Ожидаем, что следующее поле станет НЕ disabled
-                    await page.wait_for_selector(success_selector, timeout=10000)
-                    logger.info(f"Следующее поле {next_selector} стало активным.")
-                else:
-                    # Для последнего поля ожидаем загрузки блока результатов
-                    await page.wait_for_selector(success_selector, state="visible", timeout=20000)
-                    logger.info("Результаты загружены.")
+                try:
+                    if not is_last_field:
+                        # Ожидаем, что следующее поле станет НЕ disabled
+                        await page.wait_for_selector(success_selector, timeout=10000)
+                        logger.info(f"Следующее поле {next_selector} стало активным.")
+                    else:
+                        # Для последнего поля ожидаем загрузки блока результатов
+                        await page.wait_for_selector(success_selector, state="visible", timeout=20000)
+                        logger.info("Результаты загружены.")
+                except TimeoutError as e:
+                    # Если не удалось активировать следующий шаг, это ошибка адреса/парсинга
+                    raise TimeoutError(f"Ошибка активации следующего шага или загрузки результатов. Проверьте правильность введенного адреса.") from e
+
 
             # --- 4. Извлечение данных ---
             
@@ -259,6 +264,7 @@ async def cli_entry_point():
             f.write(json_output)
             
         logger.info(f"Результат парсинга ({len(final_data[0]['slots'])} слотов):")
+        # 📌 Вывод полного JSON-объекта в лог
         logger.info(json_output)
         logger.info(f"Данные сохранены в файл: {json_path}")
         logger.info(f"Скриншот сохранен в файл: {png_path}")
