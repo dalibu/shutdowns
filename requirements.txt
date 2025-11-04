@@ -1,5 +1,6 @@
 playwright==1.55.0
 fastapi
 uvicorn
-aiogram
 requests
+python-dotenv
+aiogram>=3.7.0
