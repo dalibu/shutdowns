@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 
 # Distribution / packaging
 build/
@@ -58,6 +59,7 @@ node_modules/
 *.iml
 
 # user secrets / env files
+.env
 .env.local
 .env.*.local
 
