@@ -41,31 +41,31 @@ def format_minutes_to_hh_m(minutes: int) -> str:
 async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     """
     Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
+    (Скопировано из dtek_telegram_bot.py)
     """
-    logger.info(f"API Request: {API_BASE_URL}/shutdowns?city={city}&street={street}&house={house}")
-    
     params = {
         "city": city,
         "street": street,
         "house": house
     }
     
+    # aioresponses будет перехватывать этот вызов
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
                 if response.status == 404:
+                    # 📌 Генерируем ValueError (как ожидалось в тесте)
                     raise ValueError("Графік для цієї адреси не знайдено.")
                 
                 response.raise_for_status()
                 return await response.json()
 
         except aiohttp.ClientError as e:
-            logger.error(f"HTTP/Client error to API: {e}")
+            # Ловит ошибки соединения, таймауты и другие ошибки HTTP-клиента
             raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
-        except Exception as e:
-            logger.error(f"Unknown error in API call: {e}")
-            raise Exception(f"Невідома помилка: {e}")
-
+        # ❌ УДАЛЕН БЛОК except Exception as e:
+        # Теперь ValueError выходит напрямую.
+        # Любые другие непредвиденные ошибки выйдут как есть.
 
 def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
     """

@@ -4,3 +4,6 @@ uvicorn
 requests
 python-dotenv
 aiogram>=3.7.0
+pytest
+pytest-asyncio
+aioresponses
