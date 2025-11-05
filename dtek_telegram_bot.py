@@ -2,16 +2,19 @@ import os
 import re
 import asyncio
 import logging
+import random 
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple 
 
 import aiohttp
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F 
 from aiogram.filters import Command 
 from aiogram.types import BotCommand, ReplyKeyboardRemove
 from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.context import FSMContext 
+from aiogram.fsm.state import State, StatesGroup 
 
-# --- 1. Конфигурація ---
+# --- 1. Конфігурація ---
 # Токен бота берется из переменных окружения
 BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
 # URL вашего FastAPI парсера
@@ -31,8 +34,17 @@ if not logger.handlers:
 # ------------------------
 
 
+# --- 1.5. FSM-состояния и Глобальный Кеш ---
+class CaptchaState(StatesGroup):
+    """Состояния для прохождения CAPTCHA-проверки"""
+    waiting_for_answer = State()
+
+# Кеш для хранения user_id пользователей, успешно прошедших проверку.
+HUMAN_USERS: Dict[int, bool] = {} 
+# ---------------------------------------------------------
+
+
 # --- 2. Вспомогательные функции (Бизнес-логика) ---
-# Эти функции являются чистой логикой и будут импортированы в тесты.
 
 def format_minutes_to_hh_m(minutes: int) -> str:
     """Форматирует общее количество минут в HH:MM."""
@@ -156,12 +168,14 @@ def _pluralize_hours(value: float) -> str:
     last_two_digits = h % 100
     last_digit = h % 10
 
-    # 11-14: годин
+    # 11-14, 211-214, ...: годин (обработка исключения для 11-14)
     if 11 <= last_two_digits <= 14:
         return "годин"
+    
     # 1, 21, 31, ...: годину
     if last_digit == 1:
         return "годину"
+        
     # 2-4, 22-24, 32-34, ...: години
     if 2 <= last_digit <= 4:
         return "години"
@@ -185,8 +199,13 @@ def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
         end_minutes = time_to_minutes(end_time_str)
         
         duration_minutes = end_minutes - start_minutes
+        
         if duration_minutes < 0:
+             # Ночь, переход через полночь
              duration_minutes += 24 * 60
+        elif duration_minutes == 0:
+             # Если время начала и конца совпадает, это полные сутки (24 часа)
+             duration_minutes = 24 * 60 
 
         duration_hours = duration_minutes / 60.0
         
@@ -203,6 +222,49 @@ def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
         
     except Exception:
         return "?" # Упрощенный резервный вариант
+
+
+# --- НОВЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
+
+def _get_captcha_data() -> Tuple[str, int]:
+    """Генерирует простое математическое задание и ответ."""
+    a = random.randint(5, 15)
+    b = random.randint(1, 5)
+    operation = random.choice(['+', '-'])
+    
+    if operation == '+':
+        question = f"Скільки буде {a} + {b}?"
+        answer = a + b
+    else:
+        # Убедимся, что a > b для простоты
+        question = f"Скільки буде {a} - {b}?"
+        answer = a - b
+        
+    return question, answer
+
+async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bool:
+    """Проверяет, прошел ли пользователь CAPTCHA. Возвращает True, если прошел."""
+    user_id = message.from_user.id
+    
+    if user_id in HUMAN_USERS:
+        return True
+
+    # 1. Запуск проверки
+    await state.set_state(CaptchaState.waiting_for_answer)
+    question, correct_answer = _get_captcha_data()
+    
+    # Сохраняем правильный ответ в FSM контексте
+    await state.update_data(captcha_answer=correct_answer)
+    
+    await message.answer(
+        "🚨 **Увага! Для захисту від ботів, пройдіть просту перевірку.**\n\n"
+        f"**{question}**\n\n"
+        "Введіть лише число-відповідь."
+    )
+    return False
+
+# -----------------------------------------------------
+
 
 # --- 3. Интеграция с API (Асинхронные функции) ---
 
@@ -254,7 +316,18 @@ async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
 
 dp = Dispatcher()
 
-async def command_start_handler(message: types.Message) -> None:
+# --- ОБНОВЛЕННЫЙ command_start_handler ---
+async def command_start_handler(message: types.Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+    
+    if user_id not in HUMAN_USERS:
+        # Запускаем проверку, если пользователь новый
+        is_human = await _handle_captcha_check(message, state)
+        if not is_human:
+            # Если запущена проверка, то тут мы выходим, ответ уже отправлен в _handle_captcha_check
+            return
+
+    # Если пользователь уже прошел проверку (или только что прошел)
     text = (
         "👋 **Вітаю! Я бот для перевірки графіків відключень ДТЕК.**\n\n"
         "Для перевірки графіку, введіть команду **/check**, додавши адресу у форматі:\n"
@@ -267,11 +340,65 @@ async def command_start_handler(message: types.Message) -> None:
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
-async def command_cancel_handler(message: types.Message) -> None:
+# --- НОВЫЙ ОБРАБОТЧИК ДЛЯ ОТВЕТА CAPTCHA ---
+@dp.message(CaptchaState.waiting_for_answer, F.text.regexp(r"^\d+$"))
+async def captcha_answer_handler(message: types.Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+    
+    # Получаем данные из контекста
+    data = await state.get_data()
+    correct_answer = data.get("captcha_answer")
+    
+    try:
+        user_answer = int(message.text.strip())
+    except ValueError:
+        # Уже отфильтровано F.text.regexp(r"^\d+$"), но на всякий случай
+        user_answer = -1
+
+    if user_answer == correct_answer:
+        HUMAN_USERS[user_id] = True
+        await state.clear()
+        
+        logger.info(f"User {user_id} passed CAPTCHA.")
+        
+        await message.answer(
+            "✅ **Перевірку успішно пройдено!** Тепер ви можете користуватися всіма командами.\n"
+            "Введіть `/check` і вашу адресу, щоб отримати графік."
+        )
+    else:
+        # Даем еще один шанс, но очищаем старый ответ, чтобы избежать легкого брутфорса
+        await state.clear() 
+        logger.warning(f"User {user_id} failed CAPTCHA. Starting over.")
+
+        # Запускаем проверку снова с новым вопросом
+        await _handle_captcha_check(message, state)
+
+
+# --- ОБРАБОТЧИК НЕПРАВИЛЬНОГО ОТВЕТА CAPTCHA (не число) ---
+@dp.message(CaptchaState.waiting_for_answer)
+async def captcha_wrong_format_handler(message: types.Message, state: FSMContext) -> None:
+    await message.answer("❌ Неправильний формат відповіді. Будь ласка, введіть **тільки число**.")
+
+# ---------------------------------------------------------
+
+
+async def command_cancel_handler(message: types.Message, state: FSMContext) -> None:
+    # Добавляем очистку FSM состояния при отмене
+    await state.clear()
     await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку.")
 
 
-async def command_check_handler(message: types.Message) -> None:
+# --- ОБНОВЛЕННЫЙ command_check_handler ---
+async def command_check_handler(message: types.Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+
+    if user_id not in HUMAN_USERS:
+        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
+                             "за допомогою команди **/start**.")
+        # Также можем попробовать сразу запустить проверку
+        await _handle_captcha_check(message, state)
+        return
+    
     text_args = message.text.replace('/check', '', 1).strip()
     
     if not text_args:
@@ -317,7 +444,9 @@ async def main() -> None:
     ]
     await bot.set_my_commands(commands)
     
+    # РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ
     dp.message.register(command_start_handler, Command("start", "help"))
+    # Регистрация captcha_answer_handler происходит декоратором
     dp.message.register(command_cancel_handler, Command("cancel"))
     dp.message.register(command_check_handler, Command("check")) 
 

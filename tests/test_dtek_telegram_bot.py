@@ -4,6 +4,8 @@ import pytest
 import aiohttp
 import asyncio
 import re
+import unittest 
+from unittest.mock import patch, MagicMock 
 from aioresponses import aioresponses
 from urllib.parse import urlencode
 from typing import List, Dict, Any
@@ -17,8 +19,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # =========================================================================
 
 # --- ИМПОРТ ФУНКЦИЙ БИЗНЕС-ЛОГИКИ И API ИЗ ОСНОВНОГО ФАЙЛА ---
-# Теперь get_shutdowns_data импортируется и не дублируется.
-from dtek_telegram_bot import format_shutdown_message, _process_single_day_schedule, get_shutdowns_data
+# Обновленный импорт для новых функций
+from dtek_telegram_bot import (
+    format_shutdown_message, 
+    _process_single_day_schedule, 
+    get_shutdowns_data,
+    # Новые и перенесенные в импорт для тестирования
+    _get_captcha_data, 
+    _pluralize_hours, 
+    _get_shutdown_duration_str,
+)
+
 
 # --- Конфигурация ---
 API_BASE_URL = "http://dtek_api:8000" 
@@ -293,3 +304,86 @@ def test_format_message_multi_day_all_half_slots():
         "❌ **05.11.25**: 15:30 - 18:30 (3 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
+
+
+# --- НОВЫЙ БЛОК: Тесты для чистой бизнес-логики (CAPTCHA/склонения) ---
+
+class TestBotBusinessLogic(unittest.TestCase):
+    
+    def test_get_captcha_data_generation(self):
+        """Проверяет, что _get_captcha_data генерирует вопрос и корректный ответ."""
+        
+        # Тест на сложение (mocking random.choice и random.randint)
+        with patch('random.choice', return_value='+'), \
+             patch('random.randint', side_effect=[10, 3, 0]): # a=10, b=3.
+            question, answer = _get_captcha_data()
+            self.assertIn("10 + 3", question)
+            self.assertEqual(answer, 13)
+            self.assertIsInstance(question, str)
+            self.assertIsInstance(answer, int)
+
+        # Тест на вычитание (mocking random.choice и random.randint)
+        with patch('random.choice', return_value='-'), \
+             patch('random.randint', side_effect=[15, 5, 0]): # a=15, b=5.
+            question, answer = _get_captcha_data()
+            self.assertIn("15 - 5", question)
+            self.assertEqual(answer, 10)
+            self.assertIsInstance(question, str)
+            self.assertIsInstance(answer, int)
+            
+    def test_pluralize_hours(self):
+        """Проверяет правильное склонение слова 'година'."""
+        
+        # Целые числа
+        self.assertEqual(_pluralize_hours(1), "годину")
+        self.assertEqual(_pluralize_hours(2), "години")
+        self.assertEqual(_pluralize_hours(4), "години")
+        self.assertEqual(_pluralize_hours(5), "годин")
+        self.assertEqual(_pluralize_hours(10), "годин")
+        self.assertEqual(_pluralize_hours(11), "годин")
+        self.assertEqual(_pluralize_hours(21), "годину")
+        self.assertEqual(_pluralize_hours(23), "години")
+        self.assertEqual(_pluralize_hours(24), "години") # <--- ТЕПЕРЬ ПРОХОДИТ
+        self.assertEqual(_pluralize_hours(100), "годин")
+        self.assertEqual(_pluralize_hours(101), "годину")
+
+        # Дробные числа (всегда 'години')
+        self.assertEqual(_pluralize_hours(0.5), "години")
+        self.assertEqual(_pluralize_hours(1.5), "години")
+        self.assertEqual(_pluralize_hours(2.5), "години")
+        self.assertEqual(_pluralize_hours(10.5), "години")
+        
+    def test_get_shutdown_duration_str_basic(self):
+        """Проверяет корректное форматирование длительности для стандартных случаев."""
+        
+        # 3 часа
+        self.assertEqual(_get_shutdown_duration_str('10:00', '13:00'), "3 години")
+        # 2.5 часа (2,5)
+        self.assertEqual(_get_shutdown_duration_str('18:30', '21:00'), "2,5 години")
+        # 1 час
+        self.assertEqual(_get_shutdown_duration_str('01:00', '02:00'), "1 годину")
+        # 10 часов
+        self.assertEqual(_get_shutdown_duration_str('08:00', '18:00'), "10 годин")
+        # 30 минут (0.5 часа)
+        self.assertEqual(_get_shutdown_duration_str('12:00', '12:30'), "0,5 години")
+        # 1.5 часа
+        self.assertEqual(_get_shutdown_duration_str('14:00', '15:30'), "1,5 години")
+        
+    def test_get_shutdown_duration_str_midnight_rollover(self):
+        """Проверяет расчет длительности через полночь."""
+        
+        # 4 часа (22:00 -> 02:00)
+        self.assertEqual(_get_shutdown_duration_str('22:00', '02:00'), "4 години")
+        # 6.5 часов (23:30 -> 06:00)
+        self.assertEqual(_get_shutdown_duration_str('23:30', '06:00'), "6,5 години")
+        # 1 час (23:30 -> 00:30)
+        self.assertEqual(_get_shutdown_duration_str('23:30', '00:30'), "1 годину")
+
+    def test_get_shutdown_duration_str_edge_cases(self):
+        """Проверяет крайние и ошибочные случаи."""
+        
+        # Старт = Конец (24 часа)
+        self.assertEqual(_get_shutdown_duration_str('12:00', '12:00'), "24 години") # <--- ИСПРАВЛЕНО
+        # Неправильный формат времени
+        self.assertEqual(_get_shutdown_duration_str('10-00', '12:00'), "?")
+        self.assertEqual(_get_shutdown_duration_str('abc', 'def'), "?")
