@@ -1,117 +1,29 @@
+import sys
+import os
 import pytest
 import aiohttp
 import asyncio
 import re
 from aioresponses import aioresponses
-from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 from typing import List, Dict, Any
-from datetime import datetime
+
+# =========================================================================
+# === ФИКС: ОБЕСПЕЧЕНИЕ ИМПОРТА
+# =========================================================================
+# Добавляем родительскую директорию (корневую папку проекта) в sys.path.
+# Это позволяет импортировать dtek_telegram_bot, когда тесты запускаются из папки 'tests'.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# =========================================================================
+
+# --- ИМПОРТ ФУНКЦИЙ БИЗНЕС-ЛОГИКИ И API ИЗ ОСНОВНОГО ФАЙЛА ---
+# Теперь get_shutdowns_data импортируется и не дублируется.
+from dtek_telegram_bot import format_shutdown_message, _process_single_day_schedule, get_shutdowns_data
 
 # --- Конфигурация ---
 API_BASE_URL = "http://dtek_api:8000" 
 
-# --- 1. Вспомогательные функции (Дублируют dtek_telegram_bot.py для юнит-тестов) ---
-
-def format_minutes_to_hh_m(minutes: int) -> str:
-    """Форматирует общее количество минут в HH:MM."""
-    h = minutes // 60
-    m = minutes % 60
-    return f"{h}:{m:02d}"
-
-def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
-    """
-    Консолидирует слоты отключений и возвращает строку со временем ИЛИ статус "немає".
-    """
-    outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
-    
-    if not outage_slots:
-        return "Відключення не заплановані" 
-
-    first_slot = outage_slots[0]
-    last_slot = outage_slots[-1]
-
-    # --- Расчет времени начала отключения ---
-    try:
-        time_parts_start = re.split(r'\s*[-\–]\s*', first_slot.get('time', '0-0'))
-        start_hour = int(time_parts_start[0])
-        
-        if first_slot.get('disconection') == 'full':
-            outage_start_min = start_hour * 60 
-        else:
-            outage_start_min = start_hour * 60 + 30
-    except Exception:
-        return "Помилка парсингу часу початку"
-
-    # --- Расчет времени конца отключения ---
-    try:
-        time_parts_end = re.split(r'\s*[-\–]\s*', last_slot.get('time', '0-0'))
-        end_hour = int(time_parts_end[1])
-        
-        if last_slot.get('disconection') == 'full':
-            outage_end_min = end_hour * 60
-        else: 
-            outage_end_min = end_hour * 60 - 30
-
-    except Exception:
-        return "Помилка парсингу часу кінця"
-        
-    if outage_start_min >= outage_end_min:
-         return "Відключення не заплановані (або помилка часу)"
-
-    start_time_final = format_minutes_to_hh_m(outage_start_min)
-    end_time_final = format_minutes_to_hh_m(outage_end_min)
-    
-    # Возвращаем только строку времени
-    return f"{start_time_final} - {end_time_final}"
-
-
-def format_shutdown_message(data: dict) -> str:
-    """
-    Форматирует агрегированный JSON-ответ в новый, компактный формат.
-    """
-    
-    city = data.get("city", "Н/Д")
-    street = data.get("street", "Н/Д")
-    house = data.get("house_num", "Н/Д")
-    group = data.get("group", "Н/Д")
-    schedule = data.get("schedule", {})
-    
-    # 1. Формирование заголовка (адрес + очередь)
-    message = (
-        f"🏠 Адреса: `{city}, {street}, {house}`\n"
-        f"👥 Черга: `{group}`"
-    )
-    
-    if not schedule:
-        return message + "\n❌ *Не вдалося отримати графік відключень.*"
-
-    # Сортируем даты
-    try:
-        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-    except ValueError:
-        sorted_dates = sorted(schedule.keys())
-    
-    schedule_lines = []
-    
-    for date in sorted_dates:
-        slots = schedule[date]
-        result_str = _process_single_day_schedule(date, slots)
-        
-        if "Відключення не заплановані" in result_str or "Помилка" in result_str:
-            # ✅ Для отсутствия отключений
-            line = f"✅ **{date}**: {result_str}"
-        else:
-            # ❌ Для отключений
-            line = f"❌ **{date}**: `{result_str}` (💡 світла не буде)"
-
-        schedule_lines.append(line)
-
-    final_schedule_output = "\n".join(schedule_lines)
-    
-    return message + "\n" + final_schedule_output
-
-# --- 2. Функции для мокирования HTTP ---
+# --- 1. Функции для мокирования HTTP (Только утилиты для тестов) ---
 
 def create_mock_url(city: str, street: str, house: str) -> str:
     """Создает полный URL с query-параметрами для мокирования."""
@@ -123,29 +35,7 @@ def create_mock_url(city: str, street: str, house: str) -> str:
     return f"{API_BASE_URL}/shutdowns?{urlencode(query_params)}"
 
 
-async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
-    """
-    Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
-    """
-    params = {
-        "city": city,
-        "street": street,
-        "house": house
-    }
-    
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
-                if response.status == 404:
-                    raise ValueError("Графік для цієї адреси не знайдено.")
-                
-                response.raise_for_status()
-                return await response.json()
-
-        except aiohttp.ClientError as e:
-            raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
-        
-# --- 3. Фиксация данных (MOCK PAYLOADS) ---
+# --- 2. Фиксация данных (MOCK PAYLOADS) ---
 
 MOCK_RESPONSE_OUTAGE = {
     "city": "м. Київ",
@@ -183,14 +73,16 @@ MOCK_RESPONSE_NO_OUTAGE = {
     }
 }
 
-# --- 4. Тестовые функции для API-интеграции (проверка get_shutdowns_data) ---
+# --- 3. Тестовые функции для API-интеграции (проверка get_shutdowns_data) ---
 
 @pytest.mark.asyncio
 async def test_successful_outage_response():
     """Тестирование успешного ответа с запланированными отключениями."""
     url = create_mock_url("Київ", "Хрещатик", "2") 
     with aioresponses() as m:
+        # Мокируем ответ, используя URL, который будет сгенерирован функцией get_shutdowns_data
         m.get(url, payload=MOCK_RESPONSE_OUTAGE, status=200)
+        # Вызываем ИМПОРТИРОВАННУЮ функцию
         data = await get_shutdowns_data("Київ", "Хрещатик", "2")
         assert data['group'] == "2"
         assert data == MOCK_RESPONSE_OUTAGE
@@ -201,6 +93,7 @@ async def test_successful_no_outage_response():
     url = create_mock_url("Одеса", "Дерибасівська", "1")
     with aioresponses() as m:
         m.get(url, payload=MOCK_RESPONSE_NO_OUTAGE, status=200)
+        # Вызываем ИМПОРТИРОВАННУЮ функцию
         data = await get_shutdowns_data("Одеса", "Дерибасівська", "1")
         assert data['group'] == "1"
         assert data == MOCK_RESPONSE_NO_OUTAGE
@@ -212,6 +105,7 @@ async def test_not_found_404_response():
     with aioresponses() as m:
         m.get(url, status=404)
         with pytest.raises(ValueError) as excinfo:
+            # Вызываем ИМПОРТИРОВАННУЮ функцию
             await get_shutdowns_data("Неіснуюче", "Вулиця", "1")
         assert "Графік для цієї адреси не знайдено." in str(excinfo.value)
 
@@ -222,16 +116,16 @@ async def test_connection_error_mocked():
     with aioresponses() as m:
         m.get(url, exception=aiohttp.ClientConnectorError(None, OSError('Mock connection error')))
         with pytest.raises(ConnectionError) as excinfo:
+            # Вызываем ИМПОРТИРОВАННУЮ функцию
             await get_shutdowns_data("Київ", "Хрещатик", "2")
         assert "Помилка підключення до парсера." in str(excinfo.value)
 
 
-# --- 5. Тестовые функции для форматирования сообщений (проверка format_shutdown_message) ---
+# --- 4. Тестовые функции для форматирования сообщений (проверка format_shutdown_message) ---
 
 def test_format_message_no_outage():
     """
     Тестирование форматирования для случая без запланированных отключений в новом формате.
-    Использует MOCK_RESPONSE_NO_OUTAGE с датами '04.11.25' и '05.11.25' для соответствия тестам.
     """
     mock_data = {
         "city": "м. Одеса",
