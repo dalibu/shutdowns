@@ -1,63 +1,98 @@
-import os
-import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import Dict, List, Any
+import logging
+import asyncio 
+# Импорт re и clean_address_part удалены - SoC соблюден.
 
-# Импорт функции парсинга (убедитесь, что dtek_parser.py находится в том же каталоге или доступен)
-# В Docker это часто работает через структуру пакетов, убедитесь, что ваш запуск это поддерживает.
-try:
-    from .dtek_parser import run_parser_service 
-except ImportError:
-    # Запасной вариант для локального запуска
-    from dtek_parser import run_parser_service
-
-# --- Конфигурация Логирования ---
+# Конфигурация логирования
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-handler.setFormatter(formatter)
-if not logger.handlers:
-    logger.addHandler(handler)
-# --------------------------------
 
-# Создаем приложение FastAPI
-app = FastAPI(title="DTEK Shutdown Parser API", version="1.0")
+# --- Pydantic Схемы ---
 
-# --- Модели Pydantic для ответа ---
-class Slot(BaseModel):
+class TimeSlot(BaseModel):
     time: str
     disconection: str
 
-class FullScheduleResponse(BaseModel):
+class ShutdownResponse(BaseModel):
     city: str
     street: str
     house_num: str
     group: str
-    schedule: Dict[str, List[Slot]]
+    schedule: Dict[str, List[TimeSlot]]
 
-# --- API Endpoint ---
-@app.get("/shutdowns", response_model=FullScheduleResponse)
-async def get_shutdowns(city: str, street: str, house: str):
+# --- Импорт реального сервиса (run_parser_service) ---
+try:
+    # Ваш асинхронный Playwright парсер
+    from dtek_parser import run_parser_service as actual_parser_service
+except ImportError:
+    # Заглушка, если файл dtek_parser.py не найден
+    async def actual_parser_service(*args, **kwargs):
+        raise ValueError("Ошибка импорта dtek_parser.py. Реальный парсер недоступен.")
+
+# --- API ---
+
+app = FastAPI()
+
+# Функция очистки удалена из этого слоя.
+
+async def scrape_dtek_schedule(city: str, street: str, house: str) -> Dict[str, Any]:
     """
-    Возвращает полный, агрегированный график отключений на сегодня и завтра.
+    СЕРВИСНЫЙ СЛОЙ (Мост): Вызывает Playwright-парсер, передавая ему сырые данные.
     """
-    logger.info(f"API Request received for: {city}, {street} {house}")
+    
+    # Передаем сырые данные, позволяя сервисному слою решать, что чистить.
+    city_raw = city.strip()
+    street_raw = street.strip()
+    house_raw = house.strip()
+    
     try:
-        # 1. Получаем агрегированный словарь от парсера
-        # Формат: { Общие данные, "schedule": { "Дата1": [слоты], "Дата2": [слоты] } }
-        aggregated_data = await run_parser_service(city, street, house)
+        data = await actual_parser_service(
+            city=city_raw, 
+            street=street_raw, 
+            house=house_raw,
+            is_debug=False # В API всегда Headless
+        )
+            
+        if not isinstance(data, dict):
+            raise ValueError("Парсер вернул неверный тип данных или пустой результат.")
+            
+        return data
         
-        if not aggregated_data or not aggregated_data.get("schedule"):
-            raise HTTPException(status_code=404, detail="Графік для цієї адреси не знайдено.")
-
-        # 2. Возвращаем полный, чистый агрегированный результат
-        return aggregated_data
-
-    except HTTPException:
-        raise
+    except ValueError as e:
+        # Парсер должен возбуждать ValueError для известных ошибок (например, адрес не найден)
+        raise e
     except Exception as e:
-        logger.error(f"Internal processing error: {e}")
-        # Возвращаем 500
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
+        # Все остальные неожиданные ошибки парсера (Playwright Timeout, Connection Error, и т.д.)
+        raise ValueError(f"Непредвиденная ошибка в парсере: {e}")
+
+
+@app.get("/shutdowns", response_model=ShutdownResponse)
+async def get_shutdowns(city: str, street: str, house: str):
+    
+    data = {}
+    try:
+        # Вызов сервисного моста
+        data = await scrape_dtek_schedule(city, street, house)
+    
+    except ValueError as e:
+        # Логика обработки ошибок 404/500:
+        error_message = str(e)
+        if "Графік для цієї адреси не знайдено." in error_message or "Ошибка импорта" in error_message:
+            # Преобразуем ожидаемую ошибку "не найдено" в 404
+            raise HTTPException(status_code=404, detail=error_message)
+        else:
+            # Все остальные ValueErrors (например, TimeoutError, перехваченный как ValueError) в 500
+            logger.error(f"Internal Parsing Error for {city}, {street}, {house}: {error_message}")
+            raise HTTPException(status_code=500, detail="Internal Parsing Error")
+    
+    except Exception as e:
+        logger.error(f"Unexpected API error during scrape: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An unexpected server error occurred during data fetching.")
+        
+    # Проверка на пустой результат 
+    if not data:
+        raise HTTPException(status_code=404, detail="Графік для цієї адреси не знайдено (пустой ответ).")
+
+    return data

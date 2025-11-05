@@ -64,11 +64,9 @@ MOCK_RESPONSE_NO_OUTAGE = {
     "schedule": {
         "04.11": [
             {"time": "00-03", "disconection": "none"},
-            {"time": "03-06", "disconection": "none"},
         ],
         "05.11": [
             {"time": "09-12", "disconection": "none"},
-            {"time": "12-15", "disconection": "none"},
         ]
     }
 }
@@ -101,9 +99,12 @@ async def test_successful_no_outage_response():
 @pytest.mark.asyncio
 async def test_not_found_404_response():
     """Тестирование, когда API возвращает 404 (адрес не найден)."""
+    # Мокируем 404 с сообщением об ошибке, которое API должен вернуть
     url = create_mock_url("Неіснуюче", "Вулиця", "1")
+    mock_404_response = {"detail": "Графік для цієї адреси не знайдено."}
+
     with aioresponses() as m:
-        m.get(url, status=404)
+        m.get(url, status=404, payload=mock_404_response)
         with pytest.raises(ValueError) as excinfo:
             # Вызываем ИМПОРТИРОВАННУЮ функцию
             await get_shutdowns_data("Неіснуюче", "Вулиця", "1")

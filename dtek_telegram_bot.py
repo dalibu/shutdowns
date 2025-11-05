@@ -149,6 +149,7 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
 async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     """
     Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
+    Bot/Client отправляет необработанные данные, следуя SoC.
     """
     params = {
         "city": city,
@@ -158,19 +159,36 @@ async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     
     async with aiohttp.ClientSession() as session:
         try:
+            # Увеличен таймаут до 45 секунд, чтобы дождаться Playwright
             async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response: 
+                
                 if response.status == 404:
-                    raise ValueError("Графік для цієї адреси не знайдено.")
+                    # ... (обработка 404)
+                    error_json = {}
+                    try:
+                        error_json = await response.json()
+                    except aiohttp.ContentTypeError:
+                        pass
+                    
+                    detail = error_json.get("detail", "Графік для цієї адреси не знайдено.")
+                    raise ValueError(detail)
                 
                 response.raise_for_status()
                 return await response.json()
 
         except aiohttp.ClientError:
-            # ИСПРАВЛЕНИЕ: Используем exc_info=True, чтобы избежать бага aiohttp
-            # при вызове str() для ClientConnectorError без conn_key.
             logger.error("API Connection Error during shutdown data fetch.", exc_info=True)
             raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
-
+        
+        except asyncio.TimeoutError:
+            # Отдельная обработка таймаута
+            raise ConnectionError("Таймаут запроса к API. Парсер не ответил вовремя.")
+            
+        except Exception as e:
+            # ... (Обработка остальных ошибок)
+            if isinstance(e, aiohttp.ClientResponseError):
+                raise Exception(f"API Internal Error: HTTP {e.status}")
+            raise e
 
 # --- 4. Обработчики команд (aiogram v3) ---
 

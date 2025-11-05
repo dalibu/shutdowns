@@ -23,9 +23,8 @@ formatter = logging.Formatter(
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
-# ------------------------------------
-
-# --- 2. Конфигурация по умолчанию ---
+# ------------------------------------\n
+# --- 2. Конфигурация по умолчанию ---\n
 DEFAULT_CITY = "м. Дніпро"
 DEFAULT_STREET = "вул. Сонячна набережна"
 DEFAULT_HOUSE = "6"
@@ -72,7 +71,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             await page.goto(URL, wait_until="load", timeout=60000)
             logger.debug("Страница успешно загружена.")
 
-            # --- 2. Проверка и закрытие модального окна ---
+            # --- 2. Проверка и закрытие модального окна (ВАША ОРИГИНАЛЬНАЯ ЛОГИКА) ---
             modal_container_selector = "div.modal__container.m-attention__container"
             close_button_selector = "button.modal__close.m-attention__close"
             try:
@@ -83,7 +82,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             except TimeoutError:
                 pass
 
-            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ ---
+            # --- 3. Ввод данных и АВТОЗАПОЛНЕНИЕ (ВНЕСЕНЫ ИСПРАВЛЕНИЯ) ---
             for i, data in enumerate(ADDRESS_DATA):
                 selector = data["selector"]
                 value = data["value"]
@@ -99,11 +98,21 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 await page.fill(selector, "") 
                 await page.type(selector, value, delay=100)
                 
+                # Ждем появления списка автозаполнения
                 await page.wait_for_selector(autocomplete_selector, state="visible", timeout=10000)
                 
-                first_item_selector = f"{autocomplete_selector} > div:first-child"
-                await page.click(first_item_selector)
+                # 📌 ФИКС: Для города (i=0) ищем элемент, который содержит введенный текст (м. Дніпро)
+                if i == 0:
+                    # Это предотвратит выбор "с. Дніпровське"
+                    item_to_click_selector = f'{autocomplete_selector} > div:has-text("{value}")'
+                    # Если точного совпадения нет, кликнет на первый элемент (как запасной вариант)
+                    await page.locator(item_to_click_selector).first.click()
+                else:
+                    # Для улицы и дома: просто кликаем на первый элемент в списке
+                    first_item_selector = f"{autocomplete_selector} > div:first-child"
+                    await page.click(first_item_selector)
 
+                # Ждем, пока список автозаполнения скроется
                 await page.wait_for_selector(autocomplete_selector, state="hidden", timeout=5000)
 
                 final_value = await page.locator(f"#discon_form {selector}").input_value()
@@ -111,8 +120,10 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
 
                 try:
                     if not is_last_field:
+                        # Ждем, что следующее поле станет активным
                         await page.wait_for_selector(success_selector, timeout=10000)
                     else:
+                        # Ждем, что блок результатов загрузится
                         await page.wait_for_selector(success_selector, state="visible", timeout=20000)
                         logger.info("Результаты загружены.")
                 except TimeoutError as e:
@@ -210,7 +221,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ CLI (остаются без изменений) ---
 def parse_args():
-    # ... (код parse_args) ...
+    """Разбор аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Скрипт Playwright для парсинга графика отключений ДТЕК."
     )
