@@ -33,11 +33,15 @@ from dtek_telegram_bot import (
     command_check_handler,
     CaptchaState, # FSM State
     HUMAN_USERS, # Глобальный кеш
+    SUBSCRIPTIONS, # ДОДАНО: Глобальный кеш подписок
 )
 
 
 # --- Конфигурация ---
 API_BASE_URL = "http://dtek_api:8000" 
+
+# КОНСТАНТА ДЛЯ ОЖИДАЕМОГО РЕЗУЛЬТАТА: ДОБАВЛЕНО ДЛЯ ИСПРАВЛЕНИЯ ТЕСТА
+SUBSCRIBE_PROMPT = "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
 
 # --- 1. Функции для мокирования HTTP (Только утилиты для тестов) ---
 
@@ -373,10 +377,12 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Очищаем глобальный кеш перед каждым тестом
         HUMAN_USERS.clear() 
+        SUBSCRIPTIONS.clear() # ДОДАНО: Очистка кеша подписок
 
     def tearDown(self):
         # Очищаем глобальный кеш после каждого теста
         HUMAN_USERS.clear() 
+        SUBSCRIPTIONS.clear() # ДОДАНО: Очистка кеша подписок
         
     async def test_full_check_workflow_with_captcha(self):
         """
@@ -401,6 +407,9 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
         expected_api_result = format_shutdown_message(mock_api_data)
         
+        # ДОБАВЛЕНО: Ожидаемый результат должен включать подсказку о подписке, т.к. пользователь новый
+        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT 
+
         # 2. CAPTCHA MOCK CONTROL и API MOCK
         with patch('dtek_telegram_bot._get_captcha_data', return_value=("Скільки буде 10 + 3?", 13)), \
              patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
@@ -421,4 +430,5 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             # Проверка сообщений (Ожидание + Результат)
             self.assertEqual(message_check.answer.call_count, 2)
             final_message = message_check.answer.call_args_list[1][0][0]
-            self.assertEqual(final_message.strip(), expected_api_result.strip())
+            # ИСПРАВЛЕНИЕ: Сравниваем с полным ожидаемым результатом
+            self.assertEqual(final_message.strip(), expected_final_result.strip())

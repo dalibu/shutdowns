@@ -3,7 +3,7 @@ import re
 import asyncio
 import logging
 import random 
-from datetime import datetime
+from datetime import datetime, timedelta # ДОДАНО: timedelta
 from typing import List, Dict, Any, Tuple 
 
 import aiohttp
@@ -41,6 +41,15 @@ class CaptchaState(StatesGroup):
 
 # Кеш для хранения user_id пользователей, успешно прошедших проверку.
 HUMAN_USERS: Dict[int, bool] = {} 
+
+# Кеш для хранения подписок. 
+# Key: user_id. 
+# Value: {'city': str, 'street': str, 'house': str, 'interval_hours': float, 'next_check': datetime}
+SUBSCRIPTIONS: Dict[int, Dict[str, Any]] = {} 
+
+DEFAULT_INTERVAL_HOURS = 1.0 # ІНТЕРВАЛ ЗА ЗАМОВЧУВАННЯМ: 1 година
+CHECKER_LOOP_INTERVAL_SECONDS = 5 * 60 # Фонова задача прокидається кожні 5 хвилин
+
 # ---------------------------------------------------------
 
 
@@ -144,7 +153,8 @@ def format_shutdown_message(data: dict) -> str:
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
-    text = text.replace('/check', '', 1).strip()
+    # Игнорируем команды при парсинге адреса
+    text = text.replace('/check', '', 1).replace('/subscribe', '', 1).replace('/unsubscribe', '', 1).strip() 
     
     parts = [p.strip() for p in text.split(',') if p.strip()]
     
@@ -187,7 +197,6 @@ def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
     """
     Рассчитывает продолжительность отключения (в часах) и возвращает форматированную строку
     с правильным склонением: '(X [година/години/годин])'.
-    Пример: '18:30', '21:00' -> '(2,5 години)'
     """
     def time_to_minutes(time_str: str) -> int:
         # Парсинг времени в формате 'HH:MM'
@@ -224,7 +233,7 @@ def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
         return "?" # Упрощенный резервный вариант
 
 
-# --- НОВЫЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
 
 def _get_captcha_data() -> Tuple[str, int]:
     """Генерирует простое математическое задание и ответ."""
@@ -271,7 +280,6 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
 async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
     """
     Вызывает API-парсер и возвращает полный агрегированный JSON-ответ.
-    Bot/Client отправляет необработанные данные, следуя SoC.
     """
     params = {
         "city": city,
@@ -311,6 +319,85 @@ async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
             if isinstance(e, aiohttp.ClientResponseError):
                 raise Exception(f"API Internal Error: HTTP {e.status}")
             raise e
+            
+# --- ДОДАНО: Фонова задача для перевірки підписок ---
+
+async def subscription_checker_task(bot: Bot):
+    """
+    Фонова задача: періодично перевіряє графік для всіх підписаних користувачів, 
+    враховуючи індивідуальні інтервали.
+    """
+    logger.info("Subscription checker started.")
+    
+    while True:
+        # Прокидаємося кожні 5 хвилин, щоб перевірити, чи не настав час оновлення для когось із користувачів.
+        await asyncio.sleep(CHECKER_LOOP_INTERVAL_SECONDS)
+        
+        if not SUBSCRIPTIONS:
+            logger.info("Subscription check skipped: no active subscriptions.")
+            continue
+            
+        now = datetime.now() # Час в момент пробудження циклу
+        
+        logger.info(f"Starting subscription check for {len(SUBSCRIPTIONS)} users.")
+        
+        users_to_check = []
+        for user_id, sub_data in SUBSCRIPTIONS.copy().items():
+            
+            # Якщо next_check не встановлено (наприклад, нова підписка), перевіряємо негайно.
+            # Якщо час перевірки настав (next_check <= now), додаємо в чергу.
+            if sub_data.get('next_check') is None or sub_data['next_check'] <= now:
+                users_to_check.append((user_id, sub_data))
+                
+        if not users_to_check:
+            logger.info("No users require check in this cycle.")
+            continue
+
+        logger.info(f"Checking {len(users_to_check)} users now.")
+
+        for user_id, sub_data in users_to_check:
+            city = sub_data['city']
+            street = sub_data['street']
+            house = sub_data['house']
+            address_str = f"`{city}, {street}, {house}`"
+            
+            interval_hours = sub_data.get('interval_hours', DEFAULT_INTERVAL_HOURS)
+            interval_delta = timedelta(hours=interval_hours)
+
+            try:
+                # 1. Запит даних до API
+                data = await get_shutdowns_data(city, street, house)
+                response_text = format_shutdown_message(data)
+                
+                # 2. Відправка повідомлення користувачу
+                interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
+                final_message = f"🔔 **Автоматичне оновлення графіку** для {address_str} (кожні {interval_str}):\n\n{response_text}"
+                
+                await bot.send_message(
+                    chat_id=user_id, 
+                    text=final_message, 
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Sent update to user {user_id}. Interval: {interval_hours}h.")
+                
+                # 3. Оновлення next_check (якщо запит успішний)
+                sub_data['next_check'] = now + interval_delta
+
+            except ConnectionError:
+                # API не відповідає. Не оновлюємо next_check, щоб спробувати пізніше.
+                logger.warning(f"Failed to fetch data for user {user_id} ({address_str}) due to API connection error. Retrying soon.")
+            
+            except Exception as e:
+                # Інші критичні помилки. Не оновлюємо next_check, щоб спробувати пізніше.
+                logger.error(f"Critical error during automated update for user {user_id} ({address_str}): {e}. Retrying soon.")
+
+            finally:
+                # Оновлюємо глобальний кеш (навіть якщо була помилка і next_check не оновився, 
+                # ми зберігаємо дані підписки)
+                SUBSCRIPTIONS[user_id] = sub_data
+                logger.debug(f"Updated next check time for user {user_id}: {sub_data.get('next_check', 'N/A').strftime('%H:%M')}")
+# --- КІНЕЦЬ: Фонова задача ---
+
 
 # --- 4. Обработчики команд (aiogram v3) ---
 
@@ -336,6 +423,9 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
         "**Команди:**\n"
         "/check - перевірити графік за адресою.\n"
+        "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
+        "  *Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
+        "/unsubscribe - скасувати підписку.\n"
         "/cancel - скасувати поточну дію."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
@@ -381,6 +471,112 @@ async def captcha_wrong_format_handler(message: types.Message, state: FSMContext
 
 # ---------------------------------------------------------
 
+async def command_subscribe_handler(message: types.Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+
+    if user_id not in HUMAN_USERS:
+        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
+                             "за допомогою команди **/start**.")
+        return
+
+    data = await state.get_data()
+    address_data = data.get("last_checked_address")
+    
+    if not address_data:
+        await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.")
+        return
+
+    city = address_data['city']
+    street = address_data['street']
+    house = address_data['house']
+    
+    # --- 1. ВИЗНАЧЕННЯ ІНТЕРВАЛУ ---
+    text_args = message.text.replace('/subscribe', '', 1).strip()
+    interval_hours = DEFAULT_INTERVAL_HOURS # 1.0 година за замовчуванням
+    
+    if text_args:
+        try:
+            val = float(text_args.replace(',', '.')) # Дозволяємо кому та крапку
+            if val <= 0.0:
+                await message.answer("❌ **Помилка.** Інтервал має бути позитивним числом годин.")
+                return
+            if val < 0.5:
+                await message.answer("❌ **Помилка.** Мінімальний інтервал перевірки — 0.5 години (30 хвилин).")
+                return
+            interval_hours = val
+        except ValueError:
+            await message.answer("❌ **Помилка.** Інтервал повинен бути числом (наприклад, `/subscribe 3` або `/subscribe 0.5`).")
+            return
+    # --- КІНЕЦЬ: ВИЗНАЧЕННЯ ІНТЕРВАЛУ ---
+        
+    # Форматуємо інтервал для виведення
+    # Використовуємо спрощене схиляння для відображення
+    hours_str = f'{interval_hours:g}'.replace('.', ',')
+    if interval_hours == 1:
+        interval_plural = 'годину'
+    elif interval_hours % 1 == 0 and 2 <= interval_hours % 10 <= 4 and interval_hours % 100 not in [11, 12, 13, 14]:
+         interval_plural = 'години'
+    else:
+        interval_plural = 'годин'
+        
+    interval_display = f"{hours_str} {interval_plural}"
+
+    # Перевірка на вже існуючу підписку з тим же інтервалом
+    is_same_subscription = (
+        user_id in SUBSCRIPTIONS and 
+        SUBSCRIPTIONS[user_id]['city'] == city and
+        SUBSCRIPTIONS[user_id]['street'] == street and
+        SUBSCRIPTIONS[user_id]['house'] == house and
+        SUBSCRIPTIONS[user_id]['interval_hours'] == interval_hours
+    )
+    
+    if is_same_subscription:
+        await message.answer(f"✅ Ви вже підписані на оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**.")
+        return
+
+    # Підписуємо/Оновлюємо користувача
+    SUBSCRIPTIONS[user_id] = {
+        'city': city,
+        'street': street,
+        'house': house,
+        'interval_hours': interval_hours,
+        # Встановлюємо next_check на поточний час, щоб перевірка запустилася при першому ж пробудженні checker_task
+        'next_check': datetime.now()
+    }
+    
+    logger.info(f"User {user_id} subscribed to {city}, {street}, {house} with interval {interval_hours}h.")
+    
+    await message.answer(
+        f"🔔 **Успіх!** Ви підписалися на автоматичні оновлення графіку для адреси: `{city}, {street}, {house}`.\n"
+        f"Інтервал перевірки: **{interval_display}**.\n"
+        "Щоб скасувати підписку, скористайтеся командою `/unsubscribe`."
+    )
+
+
+async def command_unsubscribe_handler(message: types.Message, state: FSMContext) -> None:
+    user_id = message.from_user.id
+
+    if user_id not in HUMAN_USERS:
+        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
+                             "за допомогою команди **/start**.")
+        return
+        
+    if user_id not in SUBSCRIPTIONS:
+        await message.answer("❌ **Помилка.** Ви не підписані на оновлення.")
+        return
+
+    address_data = SUBSCRIPTIONS.pop(user_id)
+    city = address_data['city']
+    street = address_data['street']
+    house = address_data['house']
+    
+    logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
+    
+    await message.answer(
+        f"🚫 **Підписку скасовано.** Ви більше не будете отримувати автоматичні оновлення для адреси: `{city}, {street}, {house}`.\n"
+        "Ви можете підписатися знову, скориставшись командою `/subscribe` після перевірки графіку."
+    )
+
 
 async def command_cancel_handler(message: types.Message, state: FSMContext) -> None:
     # Добавляем очистку FSM состояния при отмене
@@ -408,6 +604,11 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     try:
         city, street, house = parse_address_from_text(text_args)
         
+        # --- ДОДАНО: Сохраняем последнюю адрес для подписки в FSMContext ---
+        address_data = {'city': city, 'street': street, 'house': house}
+        await state.update_data(last_checked_address=address_data)
+        # --- КОНЕЦ ДОБАВЛЕННОЙ ЛОГИКИ ---
+        
         await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
 
         # Вызов API
@@ -415,6 +616,12 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         
         # Форматирование
         response_text = format_shutdown_message(data)
+        
+        # --- ДОДАНО: Пропозиція про підписку ---
+        if user_id not in SUBSCRIPTIONS:
+             response_text += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
+        # --- КОНЕЦ ДОБАВЛЕННОЙ ЛОГИКИ ---
+
         await message.answer(response_text) 
 
     except ValueError as e:
@@ -439,6 +646,8 @@ async def main() -> None:
     
     commands = [
         BotCommand(command="check", description="Перевірити графік за адресою"),
+        BotCommand(command="subscribe", description="Підписатися на оновлення (опціонально: /subscribe 3)"), 
+        BotCommand(command="unsubscribe", description="Скасувати підписку"), 
         BotCommand(command="cancel", description="Скасувати поточну дію"),
         BotCommand(command="help", description="Довідка")
     ]
@@ -449,9 +658,20 @@ async def main() -> None:
     # Регистрация captcha_answer_handler происходит декоратором
     dp.message.register(command_cancel_handler, Command("cancel"))
     dp.message.register(command_check_handler, Command("check")) 
+    dp.message.register(command_subscribe_handler, Command("subscribe")) 
+    dp.message.register(command_unsubscribe_handler, Command("unsubscribe")) 
+    
+    # --- ДОДАНО: Запуск фонової задачі ---
+    checker_task = asyncio.create_task(subscription_checker_task(bot))
+    # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---
 
     logger.info("Бот запущено. Початок опитування...")
-    await dp.start_polling(bot)
+    
+    # Запускаємо опитування бота та фонову задачу паралельно
+    await asyncio.gather(
+        dp.start_polling(bot),
+        checker_task,
+    )
 
 
 if __name__ == "__main__":
