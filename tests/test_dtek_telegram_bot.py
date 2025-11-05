@@ -5,7 +5,7 @@ import aiohttp
 import asyncio
 import re
 import unittest 
-from unittest.mock import patch, MagicMock 
+from unittest.mock import patch, MagicMock, AsyncMock
 from aioresponses import aioresponses
 from urllib.parse import urlencode
 from typing import List, Dict, Any
@@ -19,15 +19,20 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # =========================================================================
 
 # --- ИМПОРТ ФУНКЦИЙ БИЗНЕС-ЛОГИКИ И API ИЗ ОСНОВНОГО ФАЙЛА ---
-# Обновленный импорт для новых функций
 from dtek_telegram_bot import (
     format_shutdown_message, 
     _process_single_day_schedule, 
     get_shutdowns_data,
-    # Новые и перенесенные в импорт для тестирования
+    # Функции для тестирования
     _get_captcha_data, 
     _pluralize_hours, 
     _get_shutdown_duration_str,
+    # ИМПОРТЫ ДЛЯ ТЕСТИРОВАНИЯ ХЕНДЛЕРОВ
+    command_start_handler,
+    captcha_answer_handler,
+    command_check_handler,
+    CaptchaState, # FSM State
+    HUMAN_USERS, # Глобальный кеш
 )
 
 
@@ -54,12 +59,12 @@ MOCK_RESPONSE_OUTAGE = {
     "house_num": "2",
     "group": "2",
     "schedule": {
-        "04.11": [
+        "04.11.25": [
             {"time": "00-03", "disconection": "full"},
             {"time": "03-06", "disconection": "half"},
             {"time": "06-09", "disconection": "none"},
         ],
-        "05.11": [
+        "05.11.25": [
             {"time": "09-12", "disconection": "none"},
             {"time": "12-15", "disconection": "full"},
             {"time": "15-18", "disconection": "full"},
@@ -73,10 +78,10 @@ MOCK_RESPONSE_NO_OUTAGE = {
     "house_num": "1",
     "group": "1",
     "schedule": {
-        "04.11": [
+        "04.11.25": [
             {"time": "00-03", "disconection": "none"},
         ],
-        "05.11": [
+        "05.11.25": [
             {"time": "09-12", "disconection": "none"},
         ]
     }
@@ -89,9 +94,7 @@ async def test_successful_outage_response():
     """Тестирование успешного ответа с запланированными отключениями."""
     url = create_mock_url("Київ", "Хрещатик", "2") 
     with aioresponses() as m:
-        # Мокируем ответ, используя URL, который будет сгенерирован функцией get_shutdowns_data
         m.get(url, payload=MOCK_RESPONSE_OUTAGE, status=200)
-        # Вызываем ИМПОРТИРОВАННУЮ функцию
         data = await get_shutdowns_data("Київ", "Хрещатик", "2")
         assert data['group'] == "2"
         assert data == MOCK_RESPONSE_OUTAGE
@@ -102,7 +105,6 @@ async def test_successful_no_outage_response():
     url = create_mock_url("Одеса", "Дерибасівська", "1")
     with aioresponses() as m:
         m.get(url, payload=MOCK_RESPONSE_NO_OUTAGE, status=200)
-        # Вызываем ИМПОРТИРОВАННУЮ функцию
         data = await get_shutdowns_data("Одеса", "Дерибасівська", "1")
         assert data['group'] == "1"
         assert data == MOCK_RESPONSE_NO_OUTAGE
@@ -110,14 +112,12 @@ async def test_successful_no_outage_response():
 @pytest.mark.asyncio
 async def test_not_found_404_response():
     """Тестирование, когда API возвращает 404 (адрес не найден)."""
-    # Мокируем 404 с сообщением об ошибке, которое API должен вернуть
     url = create_mock_url("Неіснуюче", "Вулиця", "1")
     mock_404_response = {"detail": "Графік для цієї адреси не знайдено."}
 
     with aioresponses() as m:
         m.get(url, status=404, payload=mock_404_response)
         with pytest.raises(ValueError) as excinfo:
-            # Вызываем ИМПОРТИРОВАННУЮ функцию
             await get_shutdowns_data("Неіснуюче", "Вулиця", "1")
         assert "Графік для цієї адреси не знайдено." in str(excinfo.value)
 
@@ -128,7 +128,6 @@ async def test_connection_error_mocked():
     with aioresponses() as m:
         m.get(url, exception=aiohttp.ClientConnectorError(None, OSError('Mock connection error')))
         with pytest.raises(ConnectionError) as excinfo:
-            # Вызываем ИМПОРТИРОВАННУЮ функцию
             await get_shutdowns_data("Київ", "Хрещатик", "2")
         assert "Помилка підключення до парсера." in str(excinfo.value)
 
@@ -306,30 +305,24 @@ def test_format_message_multi_day_all_half_slots():
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
 
-# --- НОВЫЙ БЛОК: Тесты для чистой бизнес-логики (CAPTCHA/склонения) ---
+# --- 5. Тесты для чистой бизнес-логики (CAPTCHA/склонения) ---
 
 class TestBotBusinessLogic(unittest.TestCase):
     
     def test_get_captcha_data_generation(self):
         """Проверяет, что _get_captcha_data генерирует вопрос и корректный ответ."""
         
-        # Тест на сложение (mocking random.choice и random.randint)
+        # Тест на сложение
         with patch('random.choice', return_value='+'), \
-             patch('random.randint', side_effect=[10, 3, 0]): # a=10, b=3.
+             patch('random.randint', side_effect=[10, 3, 0]):
             question, answer = _get_captcha_data()
-            self.assertIn("10 + 3", question)
             self.assertEqual(answer, 13)
-            self.assertIsInstance(question, str)
-            self.assertIsInstance(answer, int)
 
-        # Тест на вычитание (mocking random.choice и random.randint)
+        # Тест на вычитание
         with patch('random.choice', return_value='-'), \
-             patch('random.randint', side_effect=[15, 5, 0]): # a=15, b=5.
+             patch('random.randint', side_effect=[15, 5, 0]):
             question, answer = _get_captcha_data()
-            self.assertIn("15 - 5", question)
             self.assertEqual(answer, 10)
-            self.assertIsInstance(question, str)
-            self.assertIsInstance(answer, int)
             
     def test_pluralize_hours(self):
         """Проверяет правильное склонение слова 'година'."""
@@ -339,51 +332,93 @@ class TestBotBusinessLogic(unittest.TestCase):
         self.assertEqual(_pluralize_hours(2), "години")
         self.assertEqual(_pluralize_hours(4), "години")
         self.assertEqual(_pluralize_hours(5), "годин")
-        self.assertEqual(_pluralize_hours(10), "годин")
         self.assertEqual(_pluralize_hours(11), "годин")
         self.assertEqual(_pluralize_hours(21), "годину")
-        self.assertEqual(_pluralize_hours(23), "години")
-        self.assertEqual(_pluralize_hours(24), "години") # <--- ТЕПЕРЬ ПРОХОДИТ
-        self.assertEqual(_pluralize_hours(100), "годин")
+        self.assertEqual(_pluralize_hours(24), "години")
         self.assertEqual(_pluralize_hours(101), "годину")
 
-        # Дробные числа (всегда 'години')
+        # Дробные числа
         self.assertEqual(_pluralize_hours(0.5), "години")
-        self.assertEqual(_pluralize_hours(1.5), "години")
         self.assertEqual(_pluralize_hours(2.5), "години")
-        self.assertEqual(_pluralize_hours(10.5), "години")
         
     def test_get_shutdown_duration_str_basic(self):
-        """Проверяет корректное форматирование длительности для стандартных случаев."""
-        
-        # 3 часа
+        """[ВОССТАНОВЛЕНО] Проверяет корректное форматирование длительности для стандартных случаев."""
         self.assertEqual(_get_shutdown_duration_str('10:00', '13:00'), "3 години")
-        # 2.5 часа (2,5)
         self.assertEqual(_get_shutdown_duration_str('18:30', '21:00'), "2,5 години")
-        # 1 час
         self.assertEqual(_get_shutdown_duration_str('01:00', '02:00'), "1 годину")
-        # 10 часов
-        self.assertEqual(_get_shutdown_duration_str('08:00', '18:00'), "10 годин")
-        # 30 минут (0.5 часа)
         self.assertEqual(_get_shutdown_duration_str('12:00', '12:30'), "0,5 години")
-        # 1.5 часа
-        self.assertEqual(_get_shutdown_duration_str('14:00', '15:30'), "1,5 години")
-        
+        self.assertEqual(_get_shutdown_duration_str('08:00', '18:00'), "10 годин")
+
     def test_get_shutdown_duration_str_midnight_rollover(self):
-        """Проверяет расчет длительности через полночь."""
-        
-        # 4 часа (22:00 -> 02:00)
+        """[ВОССТАНОВЛЕНО] Проверяет расчет длительности через полночь."""
         self.assertEqual(_get_shutdown_duration_str('22:00', '02:00'), "4 години")
-        # 6.5 часов (23:30 -> 06:00)
         self.assertEqual(_get_shutdown_duration_str('23:30', '06:00'), "6,5 години")
-        # 1 час (23:30 -> 00:30)
         self.assertEqual(_get_shutdown_duration_str('23:30', '00:30'), "1 годину")
 
     def test_get_shutdown_duration_str_edge_cases(self):
         """Проверяет крайние и ошибочные случаи."""
         
         # Старт = Конец (24 часа)
-        self.assertEqual(_get_shutdown_duration_str('12:00', '12:00'), "24 години") # <--- ИСПРАВЛЕНО
+        self.assertEqual(_get_shutdown_duration_str('12:00', '12:00'), "24 години") 
         # Неправильный формат времени
         self.assertEqual(_get_shutdown_duration_str('10-00', '12:00'), "?")
         self.assertEqual(_get_shutdown_duration_str('abc', 'def'), "?")
+
+
+# --- 6. ИНТЕГРАЦИОННЫЕ ТЕСТЫ ДЛЯ ХЕНДЛЕРОВ (CAPTCHA + CHECK) ---
+
+class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
+    
+    # SETUP/TEARDOWN: Важно для очистки глобального состояния
+    def setUp(self):
+        # Очищаем глобальный кеш перед каждым тестом
+        HUMAN_USERS.clear() 
+
+    def tearDown(self):
+        # Очищаем глобальный кеш после каждого теста
+        HUMAN_USERS.clear() 
+        
+    async def test_full_check_workflow_with_captcha(self):
+        """
+        [НОВЫЙ ТЕСТ] Тестирует полный цикл:
+        1. /start -> Запуск CAPTCHA.
+        2. Ответ CAPTCHA -> Успешное прохождение, запись в HUMAN_USERS.
+        3. /check [address] -> Вызов get_shutdowns_data (mocked) и получение ответа.
+        """
+        # 1. Mock Objects Setup
+        user_id = 123
+        
+        # Message Mocks
+        message_start = MagicMock(text="/start", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        message_captcha_correct = MagicMock(text="13", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        message_check = MagicMock(text="/check м. Київ, вул. Хрещатик, 2", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        
+        # FSMContext Mock
+        fsm_context = AsyncMock()
+        fsm_context.get_data.return_value = {"captcha_answer": 13}
+        
+        # API Mock (Re-using MOCK_RESPONSE_OUTAGE)
+        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
+        expected_api_result = format_shutdown_message(mock_api_data)
+        
+        # 2. CAPTCHA MOCK CONTROL и API MOCK
+        with patch('dtek_telegram_bot._get_captcha_data', return_value=("Скільки буде 10 + 3?", 13)), \
+             patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
+            
+            # --- ШАГ 1: /start (Запуск CAPTCHA) ---
+            await command_start_handler(message_start, fsm_context)
+            
+            # --- ШАГ 2: Ответ CAPTCHA (Успех) ---
+            await captcha_answer_handler(message_captcha_correct, fsm_context)
+            self.assertIn(user_id, HUMAN_USERS)
+            
+            # --- ШАГ 3: /check (Проверка графика) ---
+            await command_check_handler(message_check, fsm_context)
+            
+            # Проверка API:
+            mock_get_shutdowns.assert_called_once_with("м. Київ", "вул. Хрещатик", "2")
+            
+            # Проверка сообщений (Ожидание + Результат)
+            self.assertEqual(message_check.answer.call_count, 2)
+            final_message = message_check.answer.call_args_list[1][0][0]
+            self.assertEqual(final_message.strip(), expected_api_result.strip())

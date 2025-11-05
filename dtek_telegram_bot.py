@@ -172,11 +172,11 @@ def _pluralize_hours(value: float) -> str:
     if 11 <= last_two_digits <= 14:
         return "годин"
     
-    # 1, 21, 31, ...: годину
+    # 1, 21, 31, 101...: годину
     if last_digit == 1:
         return "годину"
         
-    # 2-4, 22-24, 32-34, ...: години
+    # 2-4, 22-24, 32-34, 102...: години
     if 2 <= last_digit <= 4:
         return "години"
     
