@@ -58,45 +58,46 @@ def mock_playwright_components():
         DEFAULT_HOUSE   
     ])
     
-    # --- МОК-ОБЪЕКТЫ ДЛЯ ЯЧЕЕК ТАБЛИЦЫ (ИСПРАВЛЕНИЕ) ---
+    # --- МОК-ОБЪЕКТЫ ДЛЯ ЯЧЕЕК ТАБЛИЦЫ ---
 
-    # 1. Список ожидаемых атрибутов класса для 6 ячеек данных (3 дня 1, 3 дня 2)
+    # Список ожидаемых атрибутов класса
     cell_class_attributes = [
         "cell-scheduled", "", "cell-first-half",  
         "cell-scheduled", "cell-second-half", "" 
     ]
     
-    # 2. Создаем итератор, чтобы последовательно выдавать классы
+    # Создаем итератор для последовательной выдачи классов
     class_attr_iterator = iter(cell_class_attributes)
     
-    # 3. Функция-конструктор мока для ячейки данных
+    # Функция-конструктор мока для ячейки данных
     def create_data_cell_mock(iterator):
         mock = MagicMock()
-        # 🌟 Асинхронный метод get_attribute должен возвращать следующий класс из итератора
         try:
             class_attr = next(iterator)
         except StopIteration:
-            class_attr = "" # На всякий случай
+            class_attr = "" 
             
+        # 🌟 ИСПРАВЛЕНИЕ: td_element.get_attribute должен быть AsyncMock
         mock.get_attribute = AsyncMock(return_value=class_attr) 
         return mock
     
-    # 4. Создаем 6 моков, которые будут возвращены методом .all()
+    # Создаем моки для ячеек
     data_cells_mocks = [create_data_cell_mock(class_attr_iterator) for _ in range(6)]
     data_cells_day1 = data_cells_mocks[0:3]
     data_cells_day2 = data_cells_mocks[3:6]
     
-    # Настройка all() для заголовков времени
+    # Настройка заголовков времени
     mock_time_headers = [MagicMock() for _ in range(3)]
     for i, header in enumerate(mock_time_headers):
+        # 🌟 th_element.inner_text должен быть AsyncMock
         header.inner_text = AsyncMock(return_value=f"08:00–12:00\n{i}")
 
     # final_locator_mock.all возвращает списки заголовков и ячеек данных
     final_locator_mock.all = AsyncMock(side_effect=[
         mock_time_headers, 
-        data_cells_day1, # День 1
+        data_cells_day1, 
         mock_time_headers, 
-        data_cells_day2, # День 2
+        data_cells_day2, 
     ])
     
     # --- ДРУГИЕ МЕТОДЫ/СВОЙСТВА (синхронные) ---
@@ -161,7 +162,6 @@ async def test_parser_success(mock_async_playwright, mock_playwright_components)
     assert len(result["schedule"]) == 2
     assert date_1 in result["schedule"]
     
-    # Проверка, что скриншот был вызван
     mock_playwright_components[1].locator().screenshot.assert_called_once()
 
 
