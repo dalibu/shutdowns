@@ -83,8 +83,9 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
 
     start_time_final = format_minutes_to_hh_m(outage_start_min)
     end_time_final = format_minutes_to_hh_m(outage_end_min)
+    duration_str = _get_shutdown_duration_str(start_time_final, end_time_final)
     
-    return f"{start_time_final} - {end_time_final}"
+    return f"{start_time_final} - {end_time_final} ({duration_str})"
 
 
 def format_shutdown_message(data: dict) -> str:
@@ -120,7 +121,7 @@ def format_shutdown_message(data: dict) -> str:
         if "Відключення не заплановані" in result_str or "Помилка" in result_str:
             line = f"✅ **{date}**: {result_str}"
         else:
-            line = f"❌ **{date}**: `{result_str}` (💡 світла не буде)"
+            line = f"❌ **{date}**: {result_str}"
 
         schedule_lines.append(line)
 
@@ -143,6 +144,65 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
     house = parts[2]
         
     return city, street, house
+
+def _pluralize_hours(value: float) -> str:
+    """Определяет правильную форму слова 'година' для украинского языка."""
+    # Для дробных чисел (0,5; 1,5; 2,5) всегда используем 'години'
+    if value % 1 != 0:
+        return "години"
+    
+    # Правила для целых чисел
+    h = int(value)
+    last_two_digits = h % 100
+    last_digit = h % 10
+
+    # 11-14: годин
+    if 11 <= last_two_digits <= 14:
+        return "годин"
+    # 1, 21, 31, ...: годину
+    if last_digit == 1:
+        return "годину"
+    # 2-4, 22-24, 32-34, ...: години
+    if 2 <= last_digit <= 4:
+        return "години"
+    
+    # 0, 5-10, 15-20, ...: годин
+    return "годин"
+
+def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
+    """
+    Рассчитывает продолжительность отключения (в часах) и возвращает форматированную строку
+    с правильным склонением: '(X [година/години/годин])'.
+    Пример: '18:30', '21:00' -> '(2,5 години)'
+    """
+    def time_to_minutes(time_str: str) -> int:
+        # Парсинг времени в формате 'HH:MM'
+        h, m = map(int, time_str.split(':'))
+        return h * 60 + m
+
+    try:
+        start_minutes = time_to_minutes(start_time_str)
+        end_minutes = time_to_minutes(end_time_str)
+        
+        duration_minutes = end_minutes - start_minutes
+        if duration_minutes < 0:
+             duration_minutes += 24 * 60
+
+        duration_hours = duration_minutes / 60.0
+        
+        # Форматирование: 1.0 -> '1', 2.5 -> '2,5'. Используем запятую.
+        if duration_hours % 1 == 0:
+            hours_str = str(int(duration_hours))
+        else:
+            hours_str = f"{duration_hours:g}".replace('.', ',')
+        
+        plural_form = _pluralize_hours(duration_hours)
+        
+        # Обновленный лаконичный формат:
+        return f"{hours_str} {plural_form}"
+        
+    except Exception:
+        return "?" # Упрощенный резервный вариант
 
 # --- 3. Интеграция с API (Асинхронные функции) ---
 
