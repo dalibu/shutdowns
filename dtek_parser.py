@@ -24,10 +24,17 @@ handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)
 # ------------------------------------
+
 # --- 2. Конфигурация по умолчанию ---
+
 DEFAULT_CITY = "м. Дніпро"
 DEFAULT_STREET = "вул. Сонячна набережна"
 DEFAULT_HOUSE = "6"
+
+# === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (1/3): Добавляем директорию OUT_DIR ===
+OUT_DIR = "out"
+# =================================================================
+
 OUTPUT_FILENAME = "discon-fact.json"
 SCREENSHOT_FILENAME = "discon-fact.png"
 # ------------------------------------
@@ -56,16 +63,20 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
         {"selector": "input#house_num", "value": house, "autocomplete": "div#house_numautocomplete-list"},
     ]
     
-    json_path = Path(OUTPUT_FILENAME)
-    png_path = Path(SCREENSHOT_FILENAME)
+    # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (2/3): Изменяем пути к файлам ===
+    # 2a. Создаем директорию 'out', если она не существует
+    Path(OUT_DIR).mkdir(exist_ok=True)
+    
+    # 2b. Определяем пути внутри OUT_DIR
+    json_path = Path(OUT_DIR) / OUTPUT_FILENAME
+    png_path = Path(OUT_DIR) / SCREENSHOT_FILENAME
+    # ==========================================================
 
     logger.info(f"--- 1. Запуск Playwright для адреса: {city}, {street}, {house} ---")
     
-    # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (1/3) ===
     # Флаг для управления закрытием в finally
     keep_open = False 
-    # ==================================
-
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=run_headless)
         page = await browser.new_page()
@@ -209,21 +220,22 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 logger.info("График отключений не найден ни для одного дня.")
 
             if is_debug:
-                 # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (2/3) ===
                  keep_open = True
                  print("✅ Успешное выполнение в режиме отладки (--debug).")
                  input("Нажмите Enter, чтобы закрыть браузер...")
-                 # ==================================
 
             # 📌 Возвращаем ЕДИНЫЙ агрегированный словарь
             return aggregated_result
 
         except Exception as e:
             logger.error(f"Произошла ошибка в Playwright: {type(e).__name__}: {e}")
+            
+            # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (3/3): Удаляем из папки out ===
+            # Удаляем файлы, используя обновленные пути
             if os.path.exists(json_path): os.remove(json_path)
             if os.path.exists(png_path): os.remove(png_path)
-            
-            # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (3/3) ===
+            # ==========================================================
+
             if is_debug:
                 keep_open = True
                 print("❌ Ошибка в режиме отладки (--debug).")
@@ -231,7 +243,6 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             else:
                 # В режиме без debug ошибку нужно пробросить
                 raise e
-            # ==================================
         
         finally:
             # Закрываем браузер только если keep_open == False
@@ -274,13 +285,10 @@ def parse_args():
 # --- Точка входа для CLI ---
 async def cli_entry_point():
     args = parse_args()
-    logger.info("--- Запуск в режиме CLI ---")
+    logger.info("--- Запуск в режиме CLI ---\n")
     
-    # 📌 Нужно обернуть вызов в try/except, чтобы корректно завершать скрипт
-    # после ошибки, когда браузер остается открытым.
     final_data = None
     try:
-        # 📌 run_parser_service теперь возвращает Dict
         final_data = await run_parser_service(
             city=args.city, 
             street=args.street, 
@@ -289,8 +297,6 @@ async def cli_entry_point():
         )
         
     except Exception as e:
-        # Если run_parser_service пробросил ошибку (т.е. был без --debug), 
-        # то попадаем сюда.
         logger.error("Завершение работы с ошибкой.")
         exit(1)
 
@@ -298,15 +304,21 @@ async def cli_entry_point():
     # Сохранение JSON в режиме CLI (только если данные получены)
     if final_data:
         json_output = json.dumps(final_data, indent=4, ensure_ascii=False)
-        json_path = Path(OUTPUT_FILENAME)
+        
+        # 📌 Используем новый путь
+        json_path = Path(OUT_DIR) / OUTPUT_FILENAME 
+        
+        # Создаем директорию перед сохранением на всякий случай, если run_parser_service не был вызван
+        Path(OUT_DIR).mkdir(exist_ok=True) 
+        
         with open(json_path, "w", encoding="utf-8") as f:
             f.write(json_output)
             
         logger.info(f"Результат парсинга ({len(final_data.get('schedule', {}))} дней графика):")
         logger.debug(json_output)
-        logger.info(f"Данные сохранены в файл: {json_path}")
+        logger.info(f"Данные сохранены в файл: {json_path.absolute()}")
     
-    logger.info("--- Скрипт завершен ---")
+    logger.info("\n--- Скрипт завершен ---")
 
 
 if __name__ == "__main__":
