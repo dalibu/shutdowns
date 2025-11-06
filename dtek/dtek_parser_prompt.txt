@@ -1,0 +1,1410 @@
+Мне нужен Python + Playwright скрипт, который вызывает https://www.dtek-dnem.com.ua/ua/shutdowns
+
+Вначале делает проверку, если есть div с class="modal__container m-attention__container #modal-attention > div > div, то нажми на <button class="modal__close m-attention__close" aria-label="Close modal" data-micromodal-close=""></button>, а уже только потом приступает к основному сценарию.
+
+Вносит в следующие поля следующие данные:
+input #city=м. Дніпро
+input #street=вул. Сонячна Набережна
+input #house_num=6
+
+Это значения по умолчанию.
+
+Необходимо предусмотреть возможность, чтобы эти значения #city, #street и #house_num могли бы 
+передаваться извне в качестве параметров при запуске этого скрипта в качестве сервиса.
+
+Они могут передаваться в качестве HTTP-параметров или, например, телеграм-ботом.
+
+Сделай это с помощью argparse, чтобы вызов функции выглядел бы, например, вот так:
+python dtek_disconnection_gemini.py --city "м. Новомосковськ" --street "вул. Бойова" --house "11"
+
+Сохраняет данные #discon-fact > div.discon-fact-tables в JSON.
+
+Заполнение значений должно быть небыстрым, потому что скрипт может работать нестабильно.
+
+Параллельно сохраняет screenshot div class="discon-fact active" в файл discon-fact.png
+
+Сайт https://www.dtek-dnem.com.ua/ua/shutdowns — это динамический веб-сайт на JavaScript (скорее всего, на React или аналоге).
+
+JSON файл имеет следующую структуру:
+
+[
+    {
+        "city": "м. Дніпро",
+        "street": "вул. Сонячна набережна",
+        "house_num": "6",
+        "group": "3.2",
+        "schedule": {
+            "04.11.25": [
+                {
+                    "time": "18-19",
+                    "disconection": "full"
+                },
+                {
+                    "time": "19-20",
+                    "disconection": "full"
+                },
+                {
+                    "time": "20-21",
+                    "disconection": "full"
+                },
+                {
+                    "time": "21-22",
+                    "disconection": "full"
+                }
+            ],
+            "05.11.25": [
+                {
+                    "time": "16-17",
+                    "disconection": "full"
+                },
+                {
+                    "time": "17-18",
+                    "disconection": "full"
+                },
+                {
+                    "time": "18-19",
+                    "disconection": "full"
+                }
+            ]
+        }
+    }
+]
+
+Значение "city" берется из value of #discon_form #city
+Значение "street" берется из value of #discon_form #street
+Значение "house_num" берется из value of #discon_form #house_num
+
+Значение "group" берется из "#discon_form #group-name > span"
+
+Значение "date" берется из #discon-fact > div.dates > div.date.active > div:nth-child(2) > span
+
+Значения "time" берутся из #discon-fact > div.discon-fact-tables > div.discon-fact-table.active > table > thead > tr > th:nth-child(2) > div по #discon-fact > div.discon-fact-tables > div.discon-fact-table.active > table > thead > tr > th:nth-child(25) > div, причем только из тех, где #discon-fact > div.discon-fact-tables > div.discon-fact-table.active > table > tbody > tr > td имеет class="cell-scheduled" или class="cell-first-half" или class="cell-second-half".
+
+Значения "disconection" берутся из #discon-fact > div.discon-fact-tables > div.discon-fact-table.active > table > tbody > tr > td
+причем только тех, где #discon-fact > div.discon-fact-tables > div.discon-fact-table.active > table > tbody > tr > td имеет class="cell-scheduled" или class="cell-first-half" или class="cell-second-half":
+
+если td имеет class="cell-scheduled", тогда "disconection": full,
+еесли td имеет class="cell-first-half" или class="cell-second-half", тогда "disconection": half.
+
+После ввода значений в поля, внизу появляется список найденых значений. Нужен первый элемент. После ввода нужно выбрать первое значение из списка и нажать Enter.
+
+Для названия города список имеет div #cityautocomplete-list,
+для названия улицы #streetautocomplete-list,
+для номера дома #house_numautocomplete-list.
+
+Финальный полный скрипт с:
+
+логами
+видимым браузером
+slow_mo
+закрытием модалки
+автодополнением с точным совпадением
+парсингом и JSON
+скриншотом
+input() в конце вместо вечного ожидания
+
+
+Вот вырезка из полного HTML для большей информации:
+
+<div class="wrapper">
+
+    <div class="content">
+        
+<header class="header">
+    <div class="header__container">
+        <a href="/ua" class="header-logo">
+            <picture>
+                <source srcset="/img/logo2025mobile.svg" media="(max-width: 600px)">
+                <img src="/img/logo2025.svg" alt="ДТЕК Дніпровські Електромережі">
+            </picture>
+        </a>
+        <div class="icon-menu">
+            <div class="icon-menu__burger">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+            <span class="icon-menu__title">меню</span>
+        </div>
+        <nav class="header__nav">
+            <div class="header__nav-inner">
+                <div class="buttons-nav">
+                                                        </div>
+                
+<ul class="menu">
+            <li class="menu__item  menu__item--submenu">
+            <span>Послуги</span>
+            <div class="second-menu">
+                <button class="second-menu__close">
+                    <svg width="25" height="25" viewBox="0 0 25 25" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="18.0322" y="5.73755" width="1.15919" height="17.3879" rx="0.579595" transform="rotate(45 18.0322 5.73755)" fill="black"></rect>
+                        <rect x="18.8525" y="18.0327" width="1.15919" height="17.3879" rx="0.579595" transform="rotate(135 18.8525 18.0327)" fill="black"></rect>
+                    </svg>
+                </button>
+
+                <div class="second-menu__list">
+                    <div class="second-menu__col">
+                                                                                                                        <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/shutdowns">Відсутня електроенергія?</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/applications">Перевірити статус заявки на відсутність світла</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/meter">Передати покази лічильника</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/enter-contract">Укласти договір</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                                                                    <span class="second-menu__title">Прості приєднання<i></i></span>
+                                            <ul class="third-menu">
+                                                                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/connections">Приєднання до електромереж</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/gas-stations">Встановлення електрозаправок</a>
+                                                                                                                    </li>
+                                                                                                                                                </ul>
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/electric-heating">Тариф на електроопалення</a>
+                                            
+                                                                            </div>
+                                                                                                        </div>
+
+                    <div class="second-menu__col">
+                                                                                                                        <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/services">Замовлення послуг по лічильникам</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/comprehensive-service">Комплексна послуга</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/light_of_gratitude">Світло вдячності</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/service-centers">Записатися в центр обслуговування клієнтів</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/services-tariffs">Наші послуги та тарифи</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/electrical_safety">Електробезпека</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/metrological_services">Лінія Точності</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/commercial-metering">Комерційний облік</a>
+                                            
+                                                                            </div>
+                                                                                                        </div>
+                </div>
+
+                
+<ul class="footer-contacts-us">
+    <li class="footer-contacts-us__item">
+        <ul class="social">
+                            <li class="social__item">
+                    <a href="https://www.facebook.com/dtekdnem" class="social__link social__link--fb" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_120_171)">
+                                <path d="M18 0C8.0586 0 0 8.0586 0 18C0 27.9414 8.0586 36 18 36C27.9414 36 36 27.9414 36 18C36 8.0586 27.9414 0 18 0Z" fill="url(#paint0_linear_120_171)"></path>
+                                <path d="M20.4363 22.7709H25.0947L25.8264 18.0387H20.4363V15.4521C20.4363 13.4865 21.0789 11.7432 22.9176 11.7432H25.8723V7.61401C25.353 7.54381 24.255 7.39081 22.1805 7.39081C17.8479 7.39081 15.3081 9.67861 15.3081 14.8914V18.0396H10.854V22.7718H15.3072V35.7786C16.1892 35.91 17.0829 36 18 36C18.8289 36 19.638 35.9244 20.4363 35.8164V22.7709Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_120_171" x="0" y="0" width="36" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_120_171"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+                                        <li class="social__item">
+                    <a href="https://www.youtube.com/channel/UChFvH5CClhiESc9WZjmblQw?view_as=subscriber" class="social__link social__link--yt" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_39_2)">
+                                <rect width="40" height="40" rx="20" fill="#F40000"></rect>
+                                <path fill-rule="evenodd" clip-rule="evenodd" d="M11.2625 27.0568C10.8702 26.9408 10.5123 26.7343 10.219 26.4549C9.9256 26.1754 9.7054 25.8312 9.57695 25.4512C8.84292 23.4874 8.62543 15.2869 10.0391 13.6681C10.5096 13.1414 11.1739 12.8172 11.8878 12.7658C15.6802 12.3677 27.3975 12.4208 28.7432 12.8985C29.1217 13.0183 29.4675 13.2203 29.7547 13.4891C30.0419 13.758 30.263 14.0868 30.4015 14.451C31.2035 16.4812 31.2307 23.8589 30.2928 25.8095C30.044 26.3173 29.6275 26.7285 29.1102 26.9772C27.6965 27.6672 13.1383 27.6539 11.2625 27.0568ZM17.2842 23.2087L24.0808 19.7587L17.2842 16.2821V23.2087Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_39_2" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_2"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+            
+                            <li class="social__item">
+                    <a href="https://www.instagram.com/dtekdnem?igsh=MTE4d2w3bWtxd3Fqbg==" class="social__link social__link--insta" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_39_3)">
+                                <rect width="40" height="40" rx="20" fill="url(#paint0_radial_3708_1317)"></rect>
+                                <path d="M20 11.8072C22.6506 11.8072 23.0121 11.8072 24.0964 11.8072C25.0602 11.8072 25.5422 12.0482 25.9036 12.1687C26.3855 12.4096 26.747 12.5301 27.1084 12.8916C27.4699 13.253 27.7108 13.6145 27.8313 14.0964C27.9518 14.4578 28.0723 14.9398 28.1928 15.9036C28.1928 16.988 28.1928 17.2289 28.1928 20C28.1928 22.7711 28.1928 23.0121 28.1928 24.0964C28.1928 25.0602 27.9518 25.5422 27.8313 25.9036C27.5904 26.3855 27.4699 26.747 27.1084 27.1084C26.747 27.4699 26.3855 27.7108 25.9036 27.8313C25.5422 27.9518 25.0602 28.0723 24.0964 28.1928C23.0121 28.1928 22.7711 28.1928 20 28.1928C17.2289 28.1928 16.988 28.1928 15.9036 28.1928C14.9398 28.1928 14.4578 27.9518 14.0964 27.8313C13.6145 27.5904 13.253 27.4699 12.8916 27.1084C12.5301 26.747 12.2892 26.3855 12.1687 25.9036C12.0482 25.5422 11.9277 25.0602 11.8072 24.0964C11.8072 23.0121 11.8072 22.7711 11.8072 20C11.8072 17.2289 11.8072 16.988 11.8072 15.9036C11.8072 14.9398 12.0482 14.4578 12.1687 14.0964C12.4096 13.6145 12.5301 13.253 12.8916 12.8916C13.253 12.5301 13.6145 12.2892 14.0964 12.1687C14.4578 12.0482 14.9398 11.9277 15.9036 11.8072C16.988 11.8072 17.3494 11.8072 20 11.8072ZM20 10C17.2289 10 16.988 10 15.9036 10C14.8193 10 14.0964 10.241 13.494 10.4819C12.8916 10.7229 12.2892 11.0843 11.6867 11.6867C11.0843 12.2892 10.8434 12.7711 10.4819 13.494C10.241 14.0964 10.1205 14.8193 10 15.9036C10 16.988 10 17.3494 10 20C10 22.7711 10 23.0121 10 24.0964C10 25.1807 10.241 25.9036 10.4819 26.506C10.7229 27.1084 11.0843 27.7108 11.6867 28.3133C12.2892 28.9157 12.7711 29.1566 13.494 29.5181C14.0964 29.759 14.8193 29.8795 15.9036 30C16.988 30 17.3494 30 20 30C22.6506 30 23.0121 30 24.0964 30C25.1807 30 25.9036 29.759 26.506 29.5181C27.1084 29.2771 27.7108 28.9157 28.3133 28.3133C28.9157 27.7108 29.1566 27.2289 29.5181 26.506C29.759 25.9036 29.8795 25.1807 30 24.0964C30 23.0121 30 22.6506 30 20C30 17.3494 30 16.988 30 15.9036C30 14.8193 29.759 14.0964 29.5181 13.494C29.2771 12.8916 28.9157 12.2892 28.3133 11.6867C27.7108 11.0843 27.2289 10.8434 26.506 10.4819C25.9036 10.241 25.1807 10.1205 24.0964 10C23.0121 10 22.7711 10 20 10Z" fill="white"></path>
+                                <path d="M20 14.8193C17.1084 14.8193 14.8193 17.1084 14.8193 20C14.8193 22.8916 17.1084 25.1807 20 25.1807C22.8916 25.1807 25.1807 22.8916 25.1807 20C25.1807 17.1084 22.8916 14.8193 20 14.8193ZM20 23.3735C18.1928 23.3735 16.6265 21.9277 16.6265 20C16.6265 18.1928 18.0723 16.6265 20 16.6265C21.8072 16.6265 23.3735 18.0723 23.3735 20C23.3735 21.8072 21.8072 23.3735 20 23.3735Z" fill="white"></path>
+                                <path d="M25.3012 15.9036C25.9666 15.9036 26.506 15.3642 26.506 14.6988C26.506 14.0334 25.9666 13.494 25.3012 13.494C24.6358 13.494 24.0964 14.0334 24.0964 14.6988C24.0964 15.3642 24.6358 15.9036 25.3012 15.9036Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_39_3" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_3"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+                                </ul>
+        <span class="footer-contacts-us__text">Ми в соцмережах</span>
+    </li>
+            <li class="footer-contacts-us__item">
+            <a href="javascript:void(0);" data-micromodal-trigger="modal-help" class="footer-contacts-us__link">
+                <span class="footer-contacts-us__icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="10" cy="10" r="9.5" stroke="black"></circle>
+                        <path d="M9.75345 3.44824H9.1431C7.41034 3.44824 6 4.82333 6 6.51277V7.37066H7.14943V6.51277C7.14943 5.44083 8.04368 4.56893 9.1431 4.56893H9.75345C10.8529 4.56893 11.7471 5.44083 11.7471 6.51277C11.7471 7.19191 11.3759 7.8307 10.7787 8.17979L8.87356 9.29488V12.4138H10.023V9.92919L11.3707 9.14079C12.3121 8.59053 12.8966 7.58303 12.8966 6.51277C12.8966 4.82333 11.4862 3.44824 9.75345 3.44824Z" fill="black"></path>
+                        <rect x="8.7583" y="14.4829" width="1.37931" height="1.37931" fill="black"></rect>
+                    </svg>
+                </span>
+                <span class="footer-contacts-us__text">Не знайшли відповідь на своє питання?</span>
+            </a>
+        </li>
+        <li class="footer-contacts-us__item">
+        <a href="javascript:void(0);" data-micromodal-trigger="modal-evaluate-work" class="footer-contacts-us__link">
+                <span class="footer-contacts-us__icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M19.4003 13.5968C19.8219 13.074 20.0241 12.5136 19.9983 11.9364C19.9725 11.3007 19.6799 10.803 19.439 10.4977C19.7186 9.82016 19.8262 8.75366 18.8926 7.92555C18.2085 7.31911 17.0468 7.04726 15.4377 7.12254C14.3061 7.17273 13.3596 7.37767 13.3209 7.38603H13.3166C13.1015 7.42367 12.8734 7.46968 12.6411 7.51987C12.6239 7.2522 12.6712 6.5872 13.1789 5.08992C13.7812 3.30824 13.7468 1.94479 13.067 1.03304C12.3528 0.0752824 11.2127 0 10.8771 0C10.5544 0 10.2575 0.129653 10.0467 0.368047C9.56915 0.90757 9.62508 1.90297 9.68531 2.36303C9.11739 3.84358 7.52548 7.47386 6.17881 8.48181C6.153 8.49854 6.13148 8.51945 6.10997 8.54036C5.71415 8.94605 5.44739 9.38519 5.26669 9.76997C5.01285 9.63614 4.72458 9.56085 4.41481 9.56085H1.79031C0.800745 9.56085 0.000488281 10.343 0.000488281 11.3007V18.097C0.000488281 19.059 0.805047 19.8369 1.79031 19.8369H4.41481C4.79772 19.8369 5.15483 19.7198 5.44739 19.519L6.45847 19.6361C6.61336 19.657 9.36693 19.9958 12.1936 19.9414C12.7056 19.9791 13.1875 20 13.635 20C14.4051 20 15.0763 19.9414 15.6356 19.8243C16.9522 19.5525 17.8514 19.0088 18.3074 18.21C18.6559 17.5993 18.6559 16.9929 18.6 16.6081C19.4562 15.8553 19.6068 15.023 19.5767 14.4375C19.5594 14.0987 19.482 13.8101 19.4003 13.5968ZM1.79031 18.7077C1.44181 18.7077 1.16215 18.4316 1.16215 18.097V11.2965C1.16215 10.9578 1.44611 10.6859 1.79031 10.6859H4.41481C4.7633 10.6859 5.04296 10.9619 5.04296 11.2965V18.0928C5.04296 18.4316 4.759 18.7035 4.41481 18.7035H1.79031V18.7077ZM18.2988 13.1075C18.1181 13.2915 18.0837 13.5717 18.2214 13.7892C18.2214 13.7934 18.3978 14.0862 18.4193 14.4877C18.4494 15.0355 18.1784 15.5207 17.6104 15.9348C17.4082 16.0853 17.3265 16.3446 17.4125 16.5788C17.4125 16.583 17.5975 17.1351 17.2964 17.6579C17.0081 18.1598 16.367 18.5194 15.3947 18.7202C14.6159 18.8833 13.5575 18.9126 12.2582 18.8122C12.241 18.8122 12.2195 18.8122 12.1979 18.8122C9.43147 18.8708 6.63487 18.5194 6.60476 18.5153H6.60045L6.1659 18.4651C6.19172 18.348 6.20463 18.2225 6.20463 18.097V11.2965C6.20463 11.1167 6.17451 10.941 6.12288 10.7779C6.20032 10.4977 6.41545 9.87453 6.92314 9.34337C8.85494 7.85445 10.7437 2.83145 10.8255 2.61397C10.8599 2.52614 10.8685 2.42995 10.8513 2.33375C10.7781 1.86533 10.8039 1.29235 10.9072 1.12087C11.1352 1.12505 11.7505 1.18779 12.1205 1.68549C12.5594 2.2752 12.5421 3.32915 12.0689 4.72606C11.3461 6.85487 11.2858 7.97574 11.8581 8.46926C12.142 8.71602 12.5206 8.72857 12.796 8.63237C13.0584 8.57382 13.308 8.52363 13.5446 8.48599C13.5618 8.48181 13.5833 8.47762 13.6005 8.47344C14.9214 8.19322 17.2878 8.02175 18.1095 8.74948C18.8065 9.36846 18.3117 10.1882 18.2558 10.276C18.0966 10.5102 18.1439 10.8156 18.3591 11.0038C18.3634 11.0079 18.8151 11.422 18.8366 11.9783C18.8538 12.3505 18.6731 12.7311 18.2988 13.1075Z" fill="black"></path>
+                    </svg>
+                </span>
+            <span class="footer-contacts-us__text">Оцініть нашу роботу</span>
+        </a>
+    </li>
+    </ul>
+            </div>
+        </li>
+            <li class="menu__item  menu__item--submenu">
+            <span>Офіційна інформація</span>
+            <div class="second-menu">
+                <button class="second-menu__close">
+                    <svg width="25" height="25" viewBox="0 0 25 25" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="18.0322" y="5.73755" width="1.15919" height="17.3879" rx="0.579595" transform="rotate(45 18.0322 5.73755)" fill="black"></rect>
+                        <rect x="18.8525" y="18.0327" width="1.15919" height="17.3879" rx="0.579595" transform="rotate(135 18.8525 18.0327)" fill="black"></rect>
+                    </svg>
+                </button>
+
+                <div class="second-menu__list">
+                    <div class="second-menu__col">
+                                                                                                                        <div class="second-menu__item">
+                                                                                    <span class="second-menu__title">Нормативна база<i></i></span>
+                                            <ul class="third-menu">
+                                                                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/normative-base">Нормативно-правові акти галузі</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/applications-submission">Подання та розгляд звернень</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/accreditation">Акредитація обладнання та матеріалів</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/consumer-rights">Права та обов'язки споживачів</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/shutdown-procedure">Порядок відключення/відновлення електроживлення споживача</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/nadannya-kompensaciy">Надання компенсацій</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/consumption-mode">Режим споживання</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/settlements">Розрахунки та оплати</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/prompt-service">Оперативне обслуговування</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/personal-data">Обробка персональних даних</a>
+                                                                                                                    </li>
+                                                                                                                                                </ul>
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/diyalnist-tovaristva">Діяльність товариства</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/faq">Поширені запитання</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/icc">Центр розгляду скарг</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                                                                    <span class="second-menu__title">Медіа-центр<i></i></span>
+                                            <ul class="third-menu">
+                                                                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/news">Новини</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/articles">ЗМІ про нас</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/photo-gallery">Фотогалерея</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/video-gallery">Відеогалерея</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/ads">Оголошення</a>
+                                                                                                                    </li>
+                                                                                                                                                </ul>
+                                                                            </div>
+                                                                                                        </div>
+
+                    <div class="second-menu__col">
+                                                                                                                        <div class="second-menu__item">
+                                                                                    <span class="second-menu__title">Про компанію<i></i></span>
+                                            <ul class="third-menu">
+                                                                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/about">Наша компанія</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/field-of-activity">Наша сфера діяльності</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/esg">ESG</a>
+                                                                                                                    </li>
+                                                                                                                                                </ul>
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/supplier-registry">Реєстр постачальників</a>
+                                            
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                                                                    <span class="second-menu__title">Корисні посилання<i></i></span>
+                                            <ul class="third-menu">
+                                                                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/safe-electricity-home">Безпечна електроенергія в побуті</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/safe-electricity-children">Безпечна електроенергія для дітей</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/safe-electricity-work">Безпечна електроенергія на виробництві</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/metering-devices">Усе про лічильники електроенергії</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/energy-efficiency">Енергоефективність</a>
+                                                                                                                    </li>
+                                                                                                            <li class="third-menu__item">
+                                                                                                                            <a href="/ua/useful-links">Посилання на сайти регулятора та інших державних органів</a>
+                                                                                                                    </li>
+                                                                                                                                                </ul>
+                                                                            </div>
+                                                                    <div class="second-menu__item">
+                                        
+                                                                                            <a href="/ua/vacancies">Вакансії</a>
+                                            
+                                                                            </div>
+                                                                                                        </div>
+                </div>
+
+                
+<ul class="footer-contacts-us">
+    <li class="footer-contacts-us__item">
+        <ul class="social">
+                            <li class="social__item">
+                    <a href="https://www.facebook.com/dtekdnem" class="social__link social__link--fb" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_120_171)">
+                                <path d="M18 0C8.0586 0 0 8.0586 0 18C0 27.9414 8.0586 36 18 36C27.9414 36 36 27.9414 36 18C36 8.0586 27.9414 0 18 0Z" fill="url(#paint0_linear_120_171)"></path>
+                                <path d="M20.4363 22.7709H25.0947L25.8264 18.0387H20.4363V15.4521C20.4363 13.4865 21.0789 11.7432 22.9176 11.7432H25.8723V7.61401C25.353 7.54381 24.255 7.39081 22.1805 7.39081C17.8479 7.39081 15.3081 9.67861 15.3081 14.8914V18.0396H10.854V22.7718H15.3072V35.7786C16.1892 35.91 17.0829 36 18 36C18.8289 36 19.638 35.9244 20.4363 35.8164V22.7709Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_120_171" x="0" y="0" width="36" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_120_171"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+                                        <li class="social__item">
+                    <a href="https://www.youtube.com/channel/UChFvH5CClhiESc9WZjmblQw?view_as=subscriber" class="social__link social__link--yt" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_39_2)">
+                                <rect width="40" height="40" rx="20" fill="#F40000"></rect>
+                                <path fill-rule="evenodd" clip-rule="evenodd" d="M11.2625 27.0568C10.8702 26.9408 10.5123 26.7343 10.219 26.4549C9.9256 26.1754 9.7054 25.8312 9.57695 25.4512C8.84292 23.4874 8.62543 15.2869 10.0391 13.6681C10.5096 13.1414 11.1739 12.8172 11.8878 12.7658C15.6802 12.3677 27.3975 12.4208 28.7432 12.8985C29.1217 13.0183 29.4675 13.2203 29.7547 13.4891C30.0419 13.758 30.263 14.0868 30.4015 14.451C31.2035 16.4812 31.2307 23.8589 30.2928 25.8095C30.044 26.3173 29.6275 26.7285 29.1102 26.9772C27.6965 27.6672 13.1383 27.6539 11.2625 27.0568ZM17.2842 23.2087L24.0808 19.7587L17.2842 16.2821V23.2087Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_39_2" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_2"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+            
+                            <li class="social__item">
+                    <a href="https://www.instagram.com/dtekdnem?igsh=MTE4d2w3bWtxd3Fqbg==" class="social__link social__link--insta" target="_blank">
+                        <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <g alt-filter="url(#filter0_i_39_3)">
+                                <rect width="40" height="40" rx="20" fill="url(#paint0_radial_3708_1317)"></rect>
+                                <path d="M20 11.8072C22.6506 11.8072 23.0121 11.8072 24.0964 11.8072C25.0602 11.8072 25.5422 12.0482 25.9036 12.1687C26.3855 12.4096 26.747 12.5301 27.1084 12.8916C27.4699 13.253 27.7108 13.6145 27.8313 14.0964C27.9518 14.4578 28.0723 14.9398 28.1928 15.9036C28.1928 16.988 28.1928 17.2289 28.1928 20C28.1928 22.7711 28.1928 23.0121 28.1928 24.0964C28.1928 25.0602 27.9518 25.5422 27.8313 25.9036C27.5904 26.3855 27.4699 26.747 27.1084 27.1084C26.747 27.4699 26.3855 27.7108 25.9036 27.8313C25.5422 27.9518 25.0602 28.0723 24.0964 28.1928C23.0121 28.1928 22.7711 28.1928 20 28.1928C17.2289 28.1928 16.988 28.1928 15.9036 28.1928C14.9398 28.1928 14.4578 27.9518 14.0964 27.8313C13.6145 27.5904 13.253 27.4699 12.8916 27.1084C12.5301 26.747 12.2892 26.3855 12.1687 25.9036C12.0482 25.5422 11.9277 25.0602 11.8072 24.0964C11.8072 23.0121 11.8072 22.7711 11.8072 20C11.8072 17.2289 11.8072 16.988 11.8072 15.9036C11.8072 14.9398 12.0482 14.4578 12.1687 14.0964C12.4096 13.6145 12.5301 13.253 12.8916 12.8916C13.253 12.5301 13.6145 12.2892 14.0964 12.1687C14.4578 12.0482 14.9398 11.9277 15.9036 11.8072C16.988 11.8072 17.3494 11.8072 20 11.8072ZM20 10C17.2289 10 16.988 10 15.9036 10C14.8193 10 14.0964 10.241 13.494 10.4819C12.8916 10.7229 12.2892 11.0843 11.6867 11.6867C11.0843 12.2892 10.8434 12.7711 10.4819 13.494C10.241 14.0964 10.1205 14.8193 10 15.9036C10 16.988 10 17.3494 10 20C10 22.7711 10 23.0121 10 24.0964C10 25.1807 10.241 25.9036 10.4819 26.506C10.7229 27.1084 11.0843 27.7108 11.6867 28.3133C12.2892 28.9157 12.7711 29.1566 13.494 29.5181C14.0964 29.759 14.8193 29.8795 15.9036 30C16.988 30 17.3494 30 20 30C22.6506 30 23.0121 30 24.0964 30C25.1807 30 25.9036 29.759 26.506 29.5181C27.1084 29.2771 27.7108 28.9157 28.3133 28.3133C28.9157 27.7108 29.1566 27.2289 29.5181 26.506C29.759 25.9036 29.8795 25.1807 30 24.0964C30 23.0121 30 22.6506 30 20C30 17.3494 30 16.988 30 15.9036C30 14.8193 29.759 14.0964 29.5181 13.494C29.2771 12.8916 28.9157 12.2892 28.3133 11.6867C27.7108 11.0843 27.2289 10.8434 26.506 10.4819C25.9036 10.241 25.1807 10.1205 24.0964 10C23.0121 10 22.7711 10 20 10Z" fill="white"></path>
+                                <path d="M20 14.8193C17.1084 14.8193 14.8193 17.1084 14.8193 20C14.8193 22.8916 17.1084 25.1807 20 25.1807C22.8916 25.1807 25.1807 22.8916 25.1807 20C25.1807 17.1084 22.8916 14.8193 20 14.8193ZM20 23.3735C18.1928 23.3735 16.6265 21.9277 16.6265 20C16.6265 18.1928 18.0723 16.6265 20 16.6265C21.8072 16.6265 23.3735 18.0723 23.3735 20C23.3735 21.8072 21.8072 23.3735 20 23.3735Z" fill="white"></path>
+                                <path d="M25.3012 15.9036C25.9666 15.9036 26.506 15.3642 26.506 14.6988C26.506 14.0334 25.9666 13.494 25.3012 13.494C24.6358 13.494 24.0964 14.0334 24.0964 14.6988C24.0964 15.3642 24.6358 15.9036 25.3012 15.9036Z" fill="white"></path>
+                            </g>
+                            <defs>
+                                <filter id="filter0_i_39_3" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                    <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                    <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                    <feOffset dy="4"></feOffset>
+                                    <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                    <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                    <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                    <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_3"></feBlend>
+                                </filter>
+                            </defs>
+                        </svg>
+                    </a>
+                </li>
+                                </ul>
+        <span class="footer-contacts-us__text">Ми в соцмережах</span>
+    </li>
+            <li class="footer-contacts-us__item">
+            <a href="javascript:void(0);" data-micromodal-trigger="modal-help" class="footer-contacts-us__link">
+                <span class="footer-contacts-us__icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="10" cy="10" r="9.5" stroke="black"></circle>
+                        <path d="M9.75345 3.44824H9.1431C7.41034 3.44824 6 4.82333 6 6.51277V7.37066H7.14943V6.51277C7.14943 5.44083 8.04368 4.56893 9.1431 4.56893H9.75345C10.8529 4.56893 11.7471 5.44083 11.7471 6.51277C11.7471 7.19191 11.3759 7.8307 10.7787 8.17979L8.87356 9.29488V12.4138H10.023V9.92919L11.3707 9.14079C12.3121 8.59053 12.8966 7.58303 12.8966 6.51277C12.8966 4.82333 11.4862 3.44824 9.75345 3.44824Z" fill="black"></path>
+                        <rect x="8.7583" y="14.4829" width="1.37931" height="1.37931" fill="black"></rect>
+                    </svg>
+                </span>
+                <span class="footer-contacts-us__text">Не знайшли відповідь на своє питання?</span>
+            </a>
+        </li>
+        <li class="footer-contacts-us__item">
+        <a href="javascript:void(0);" data-micromodal-trigger="modal-evaluate-work" class="footer-contacts-us__link">
+                <span class="footer-contacts-us__icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M19.4003 13.5968C19.8219 13.074 20.0241 12.5136 19.9983 11.9364C19.9725 11.3007 19.6799 10.803 19.439 10.4977C19.7186 9.82016 19.8262 8.75366 18.8926 7.92555C18.2085 7.31911 17.0468 7.04726 15.4377 7.12254C14.3061 7.17273 13.3596 7.37767 13.3209 7.38603H13.3166C13.1015 7.42367 12.8734 7.46968 12.6411 7.51987C12.6239 7.2522 12.6712 6.5872 13.1789 5.08992C13.7812 3.30824 13.7468 1.94479 13.067 1.03304C12.3528 0.0752824 11.2127 0 10.8771 0C10.5544 0 10.2575 0.129653 10.0467 0.368047C9.56915 0.90757 9.62508 1.90297 9.68531 2.36303C9.11739 3.84358 7.52548 7.47386 6.17881 8.48181C6.153 8.49854 6.13148 8.51945 6.10997 8.54036C5.71415 8.94605 5.44739 9.38519 5.26669 9.76997C5.01285 9.63614 4.72458 9.56085 4.41481 9.56085H1.79031C0.800745 9.56085 0.000488281 10.343 0.000488281 11.3007V18.097C0.000488281 19.059 0.805047 19.8369 1.79031 19.8369H4.41481C4.79772 19.8369 5.15483 19.7198 5.44739 19.519L6.45847 19.6361C6.61336 19.657 9.36693 19.9958 12.1936 19.9414C12.7056 19.9791 13.1875 20 13.635 20C14.4051 20 15.0763 19.9414 15.6356 19.8243C16.9522 19.5525 17.8514 19.0088 18.3074 18.21C18.6559 17.5993 18.6559 16.9929 18.6 16.6081C19.4562 15.8553 19.6068 15.023 19.5767 14.4375C19.5594 14.0987 19.482 13.8101 19.4003 13.5968ZM1.79031 18.7077C1.44181 18.7077 1.16215 18.4316 1.16215 18.097V11.2965C1.16215 10.9578 1.44611 10.6859 1.79031 10.6859H4.41481C4.7633 10.6859 5.04296 10.9619 5.04296 11.2965V18.0928C5.04296 18.4316 4.759 18.7035 4.41481 18.7035H1.79031V18.7077ZM18.2988 13.1075C18.1181 13.2915 18.0837 13.5717 18.2214 13.7892C18.2214 13.7934 18.3978 14.0862 18.4193 14.4877C18.4494 15.0355 18.1784 15.5207 17.6104 15.9348C17.4082 16.0853 17.3265 16.3446 17.4125 16.5788C17.4125 16.583 17.5975 17.1351 17.2964 17.6579C17.0081 18.1598 16.367 18.5194 15.3947 18.7202C14.6159 18.8833 13.5575 18.9126 12.2582 18.8122C12.241 18.8122 12.2195 18.8122 12.1979 18.8122C9.43147 18.8708 6.63487 18.5194 6.60476 18.5153H6.60045L6.1659 18.4651C6.19172 18.348 6.20463 18.2225 6.20463 18.097V11.2965C6.20463 11.1167 6.17451 10.941 6.12288 10.7779C6.20032 10.4977 6.41545 9.87453 6.92314 9.34337C8.85494 7.85445 10.7437 2.83145 10.8255 2.61397C10.8599 2.52614 10.8685 2.42995 10.8513 2.33375C10.7781 1.86533 10.8039 1.29235 10.9072 1.12087C11.1352 1.12505 11.7505 1.18779 12.1205 1.68549C12.5594 2.2752 12.5421 3.32915 12.0689 4.72606C11.3461 6.85487 11.2858 7.97574 11.8581 8.46926C12.142 8.71602 12.5206 8.72857 12.796 8.63237C13.0584 8.57382 13.308 8.52363 13.5446 8.48599C13.5618 8.48181 13.5833 8.47762 13.6005 8.47344C14.9214 8.19322 17.2878 8.02175 18.1095 8.74948C18.8065 9.36846 18.3117 10.1882 18.2558 10.276C18.0966 10.5102 18.1439 10.8156 18.3591 11.0038C18.3634 11.0079 18.8151 11.422 18.8366 11.9783C18.8538 12.3505 18.6731 12.7311 18.2988 13.1075Z" fill="black"></path>
+                    </svg>
+                </span>
+            <span class="footer-contacts-us__text">Оцініть нашу роботу</span>
+        </a>
+    </li>
+    </ul>
+            </div>
+        </li>
+    
+    <li class="menu__item"><a href="/ua/contacts">Контакти</a></li>
+</ul>
+                <div class="search search-menu">
+                    <form class="search__form" action="/ua/search" method="get">
+                        <button type="submit" class="search__submit">
+                            <svg width="22" height="22" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 451 451" style="enable-background:new 0 0 451 451;" xml:space="preserve">
+                            <g>
+                                <path d="M447.05,428l-109.6-109.6c29.4-33.8,47.2-77.9,47.2-126.1C384.65,86.2,298.35,0,192.35,0C86.25,0,0.05,86.3,0.05,192.3   s86.3,192.3,192.3,192.3c48.2,0,92.3-17.8,126.1-47.2L428.05,447c2.6,2.6,6.1,4,9.5,4s6.9-1.3,9.5-4   C452.25,441.8,452.25,433.2,447.05,428z M26.95,192.3c0-91.2,74.2-165.3,165.3-165.3c91.2,0,165.3,74.2,165.3,165.3   s-74.1,165.4-165.3,165.4C101.15,357.7,26.95,283.5,26.95,192.3z"></path>
+                            </g>
+                        </svg>
+                        </button>
+                        <input type="search" class="search__input" name="query" value="" placeholder="Пошук...">
+                        <div class="search__close">
+                            <svg width="25" height="27" viewBox="0 0 25 27" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect width="1.18841" height="17.8261" rx="0.594204" transform="matrix(0.689723 0.724073 -0.689723 0.724073 18.0327 7.01556)" fill="black"></rect>
+                                <rect width="1.18841" height="17.8261" rx="0.594204" transform="matrix(-0.689723 0.724073 -0.689723 -0.724073 18.8523 19.9231)" fill="black"></rect>
+                            </svg>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+
+        </nav>
+        <div class="header__btns">
+                                <a href="/ua/cabinet" class="user-login header-icon" target="_blank">
+                    <span class="user-login__icon">
+                        <svg width="26" height="26" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle class="hover" cx="10.5" cy="10.5" r="10" fill="#ffe300" stroke="black"></circle>
+                            <circle cx="10.5" cy="10.5" r="10" stroke="black"></circle>
+                            <circle cx="10.5" cy="6.5" r="3" stroke="black"></circle>
+                            <mask id="path-4-inside-1" fill="white">
+                                <path fill-rule="evenodd" clip-rule="evenodd" d="M5.35642 19.656C5.28667 19.3233 5.25 18.9784 5.25 18.625V16.375C5.25 13.6136 7.48858 11.375 10.25 11.375H10.75C13.5114 11.375 15.75 13.6136 15.75 16.375V18.625C15.75 18.9784 15.7133 19.3233 15.6436 19.656C14.1235 20.5118 12.3687 21 10.5 21C8.63126 21 6.87654 20.5118 5.35642 19.656Z"></path>
+                            </mask>
+                            <path d="M5.35642 19.656L4.37769 19.8612L4.47072 20.305L4.86584 20.5274L5.35642 19.656ZM15.6436 19.656L16.1342 20.5274L16.5293 20.305L16.6223 19.8612L15.6436 19.656ZM6.33514 19.4508C6.27946 19.1852 6.25 18.9091 6.25 18.625H4.25C4.25 19.0478 4.29389 19.4614 4.37769 19.8612L6.33514 19.4508ZM6.25 18.625V16.375H4.25V18.625H6.25ZM6.25 16.375C6.25 14.1659 8.04086 12.375 10.25 12.375V10.375C6.93629 10.375 4.25 13.0613 4.25 16.375H6.25ZM10.25 12.375H10.75V10.375H10.25V12.375ZM10.75 12.375C12.9591 12.375 14.75 14.1659 14.75 16.375H16.75C16.75 13.0613 14.0637 10.375 10.75 10.375V12.375ZM14.75 16.375V18.625H16.75V16.375H14.75ZM14.75 18.625C14.75 18.9091 14.7205 19.1852 14.6649 19.4508L16.6223 19.8612C16.7061 19.4614 16.75 19.0478 16.75 18.625H14.75ZM15.153 18.7846C13.7787 19.5583 12.1925 20 10.5 20V22C12.545 22 14.4682 21.4653 16.1342 20.5274L15.153 18.7846ZM10.5 20C8.80754 20 7.22126 19.5583 5.847 18.7846L4.86584 20.5274C6.53182 21.4653 8.45498 22 10.5 22V20Z" fill="black" mask="url(#path-4-inside-1)"></path>
+                        </svg>
+                    </span>
+                    <span class="header-icon__text">особистий кабінет</span>
+                </a>
+                <div class="search search-header search--none header-icon ">
+                    <form class="search__form" action="/ua/search" method="get">
+                        <input type="search" name="query" class="search__input" value="" placeholder="Введіть слова для пошуку по сайту">
+
+                        <button class="search__submit" type="submit">
+                            <svg width="22" height="22" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 451 451" style="enable-background:new 0 0 451 451;" xml:space="preserve">
+                            <g>
+                                <path d="M447.05,428l-109.6-109.6c29.4-33.8,47.2-77.9,47.2-126.1C384.65,86.2,298.35,0,192.35,0C86.25,0,0.05,86.3,0.05,192.3   s86.3,192.3,192.3,192.3c48.2,0,92.3-17.8,126.1-47.2L428.05,447c2.6,2.6,6.1,4,9.5,4s6.9-1.3,9.5-4   C452.25,441.8,452.25,433.2,447.05,428z M26.95,192.3c0-91.2,74.2-165.3,165.3-165.3c91.2,0,165.3,74.2,165.3,165.3   s-74.1,165.4-165.3,165.4C101.15,357.7,26.95,283.5,26.95,192.3z"></path>
+                            </g>
+                        </svg>
+                        </button>
+                        <div class="search__close">
+                            <svg width="25" height="27" viewBox="0 0 25 27" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect width="1.18841" height="17.8261" rx="0.594204" transform="matrix(0.689723 0.724073 -0.689723 0.724073 18.0327 7.01556)" fill="black"></rect>
+                                <rect width="1.18841" height="17.8261" rx="0.594204" transform="matrix(-0.689723 0.724073 -0.689723 -0.724073 18.8523 19.9231)" fill="black"></rect>
+                            </svg>
+                        </div>
+                    </form>
+                    <span class="header-icon__text">пошук</span>
+                </div>
+                            </div>
+    </div>
+</header>
+        
+        <main class="main">
+            
+<section>
+    <div class="container-fluid">
+        
+    <ul class="breadcrumb"><li class="breadcrumb__item"><a class="breadcrumb__link" href="/ua">Головна</a></li><li class="breadcrumb__item">Відсутня електроенергія?</li></ul>    </div>
+</section>
+
+
+
+                    <div class="m-attention micromodal-slide" id="modal-attention" aria-hidden="true">
+            <div class="modal__overlay modal__overlay--opacity" tabindex="-1" data-micromodal-close="">
+                <div class="modal__container m-attention__container modal__container--firstPopup ps" role="dialog" aria-modal="true" aria-labelledby="modal-1-title">
+                    <div class="modal__head" style="padding: 0; width: 100%">
+                        <div class="modal__icon">
+                            <svg width="74" height="74" viewBox="0 0 74 74" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="37" cy="37" r="37" fill="#FFE300"></circle>
+                                <g clip-path="url(#clip1)">
+                                    <path d="M48.9852 19.6963C46.025 16.6993 42.0766 15.019 37.8675 14.9642C33.598 14.9086 29.5615 16.5381 26.4993 19.5517C23.4387 22.5636 21.7462 26.5716 21.7335 30.8376C21.7199 35.4549 23.7081 39.8458 27.1883 42.8844C29.7078 45.0842 31.1529 48.2126 31.1529 51.4663V59.4994C31.1529 62.5704 33.6515 65.069 36.7225 65.069H38.5916C41.6622 65.069 44.1607 62.5704 44.1607 59.4994V51.5693C44.1607 48.2227 45.5782 45.0811 48.05 42.9497C51.5644 39.9198 53.5802 35.5224 53.5802 30.8862C53.5802 26.6697 51.9485 22.6955 48.9852 19.6963ZM37.6428 38.9583H36.899C36.4925 38.9583 36.1618 38.6276 36.1618 38.2207C36.1618 37.8142 36.4925 37.4835 36.899 37.4835C37.309 37.4835 37.6428 37.8172 37.6428 38.2272V38.9583ZM37.6568 45.623C38.2753 45.623 38.7782 46.1258 38.7782 46.7443V50.557H36.5355V46.7443C36.5355 46.1258 37.0383 45.623 37.6568 45.623ZM41.918 52.7997V54.4489H33.3956V52.7997H41.918ZM33.3956 56.6916H41.918V58.3408H33.3956V56.6916ZM38.5911 62.8263H36.7225C35.2674 62.8263 34.0286 61.8871 33.5779 60.5835H41.7358C41.285 61.8871 40.0463 62.8263 38.5911 62.8263ZM46.5857 41.2514C43.8712 43.5918 42.2159 46.9397 41.9544 50.557H41.0209V46.7443C41.0209 45.743 40.5807 44.8433 39.8847 44.2265C39.8847 44.2217 39.8855 44.2169 39.8855 44.2116V40.526C40.7988 39.8707 41.3946 38.8002 41.3946 37.593V35.8562C41.3946 33.4671 39.451 31.5231 37.0615 31.5231H35.0405C34.4211 31.5231 33.9191 32.0251 33.9191 32.6445C33.9191 33.2639 34.4211 33.7659 35.0405 33.7659H37.0615C38.2144 33.7659 39.1518 34.7037 39.1518 35.8562V36.2688C38.6039 35.6393 37.7974 35.2407 36.899 35.2407C35.256 35.2407 33.9191 36.5776 33.9191 38.2211C33.9191 39.8642 35.256 41.201 36.899 41.201H37.6428V43.3807C35.7943 43.3881 34.2927 44.8941 34.2927 46.7443V50.557H33.3645C33.1188 46.9874 31.4363 43.6159 28.6636 41.1949C25.6727 38.5842 23.9644 34.8115 23.9762 30.8446C23.9871 27.1818 25.4419 23.7389 28.0727 21.1501C30.7048 18.5596 34.1701 17.1588 37.8382 17.2069C45.2817 17.3033 51.3375 23.4401 51.3375 30.8862C51.3375 34.8697 49.6055 38.6473 46.5857 41.2514Z" fill="black"></path>
+                                    <path d="M37.883 20.4186H37.8655C37.2474 20.4125 36.7441 20.9079 36.7366 21.5268C36.7296 22.1462 37.2312 22.6543 37.8506 22.6613H37.8676H37.8812C38.494 22.6613 38.9894 22.1681 38.9965 21.5531C39.0039 20.9337 38.5024 20.426 37.883 20.4186Z" fill="black"></path>
+                                    <path d="M42.8155 21.7344C42.2741 21.433 41.5912 21.6275 41.2899 22.1689C40.9889 22.7099 41.183 23.3928 41.7244 23.6942C44.3338 25.1471 45.9545 27.9028 45.9545 30.8862C45.9545 31.5056 46.4565 32.0076 47.0758 32.0076C47.6952 32.0076 48.1972 31.5056 48.1972 30.8862C48.1972 27.0898 46.1349 23.5833 42.8155 21.7344Z" fill="black"></path>
+                                    <path d="M37.657 12.9256C38.2764 12.9256 38.7784 12.4236 38.7784 11.8042V8.77654C38.7784 8.15716 38.2764 7.65517 37.657 7.65517C37.0376 7.65517 36.5356 8.15716 36.5356 8.77654V11.8042C36.5356 12.4236 37.0376 12.9256 37.657 12.9256Z" fill="black"></path>
+                                    <path d="M59.7665 29.7648H56.7388C56.1194 29.7648 55.6174 30.2668 55.6174 30.8862C55.6174 31.5056 56.1194 32.0076 56.7388 32.0076H59.7665C60.3859 32.0076 60.8878 31.5056 60.8878 30.8862C60.8878 30.2668 60.3859 29.7648 59.7665 29.7648Z" fill="black"></path>
+                                    <path d="M18.5748 29.7648H15.5471C14.9278 29.7648 14.4258 30.2668 14.4258 30.8862C14.4258 31.5056 14.9278 32.0076 15.5471 32.0076H18.5748C19.1942 32.0076 19.6962 31.5056 19.6962 30.8862C19.6962 30.2668 19.1942 29.7648 18.5748 29.7648Z" fill="black"></path>
+                                    <path d="M51.9426 43.5866C51.5046 43.1486 50.7945 43.1486 50.3565 43.5866C49.9189 44.0242 49.9189 44.7343 50.3565 45.1723L52.4976 47.3134C52.7166 47.532 53.0035 47.6419 53.2905 47.6419C53.5774 47.6419 53.8643 47.532 54.0833 47.3134C54.5213 46.8754 54.5213 46.1653 54.0833 45.7273L51.9426 43.5866Z" fill="black"></path>
+                                    <path d="M23.3708 18.1858C23.5898 18.4048 23.8768 18.5143 24.1637 18.5143C24.4506 18.5143 24.7379 18.4048 24.9565 18.1858C25.3945 17.7482 25.3945 17.0382 24.9565 16.6001L22.8158 14.459C22.3778 14.0214 21.6678 14.0214 21.2297 14.459C20.7917 14.8971 20.7921 15.6071 21.2297 16.0451L23.3708 18.1858Z" fill="black"></path>
+                                    <path d="M52.4978 14.4595L50.3571 16.6002C49.9191 17.0382 49.9191 17.7482 50.3571 18.1863C50.5761 18.4053 50.863 18.5148 51.1499 18.5148C51.4368 18.5148 51.7238 18.4053 51.9428 18.1863L54.0834 16.0452C54.5215 15.6071 54.5215 14.8971 54.0834 14.4591C53.6458 14.021 52.9358 14.0215 52.4978 14.4595Z" fill="black"></path>
+                                    <path d="M23.371 43.5866L21.2304 45.7273C20.7923 46.1653 20.7923 46.8754 21.2304 47.3134C21.4494 47.532 21.7363 47.6419 22.0232 47.6419C22.3101 47.6419 22.597 47.532 22.8161 47.3134L24.9567 45.1723C25.3948 44.7343 25.3948 44.0242 24.9567 43.5866C24.5191 43.1486 23.8091 43.1486 23.371 43.5866Z" fill="black"></path>
+                                </g>
+                                <defs>
+                                    <clipPath id="clip1">
+                                        <rect width="57.4138" height="57.4138" fill="white" transform="translate(8.93115 7.65517)"></rect>
+                                    </clipPath>
+                                </defs>
+                            </svg>
+                        </div>
+                        <h6 class="modal__title">Шановні клієнти!</h6>
+                        <button class="modal__close m-attention__close" aria-label="Close modal" data-micromodal-close=""></button>
+                        
+                    </div>
+                    <div class="m-attention__body" style="padding-top: 37px">
+                        <div class="m-attention__text"><p class="MsoNormal" style="box-sizing: border-box; color: #5a636b; font-family: Roboto-Regular, Arial, sans-serif; font-size: 22px; background-color: #ffffff;"><span style="box-sizing: border-box; font-size: 16pt; line-height: 22.8267px; font-family: Arial, sans-serif; color: #1f4e79;">За наказом НЕК Укренерго&nbsp;<span style="box-sizing: border-box; font-weight: bold;">02 листопада</span>&nbsp;<span style="box-sizing: border-box; font-weight: bold;">з 8:00 до 11:00 та з 15:00 до 22:00</span>&nbsp;</span><span style="box-sizing: border-box; color: #1f4e79; font-family: Arial, sans-serif; font-size: 16pt;">діятимуть&nbsp;стабілізаційні відключення електроенергії.&nbsp;&nbsp;</span></p>
+<p class="MsoNormal" style="box-sizing: border-box; color: #5a636b; font-family: Roboto-Regular, Arial, sans-serif; font-size: 22px; background-color: #ffffff;"><span style="box-sizing: border-box; font-size: 16pt; line-height: 22.8267px; font-family: Arial, sans-serif; color: #1f4e79;">Будь ласка, розумно споживайте електроенергію — це допоможе зменшити навантаження на мережу та уникнути екстрених відключень.&nbsp;&nbsp;</span></p>
+<p class="MsoNormal" style="box-sizing: border-box; color: #5a636b; font-family: Roboto-Regular, Arial, sans-serif; font-size: 22px; background-color: #ffffff;">&nbsp;</p>
+<p class="MsoNormal" style="box-sizing: border-box; color: #5a636b; font-family: Roboto-Regular, Arial, sans-serif; font-size: 22px; background-color: #ffffff;"><span style="box-sizing: border-box; color: #1f4e79; font-family: Arial, sans-serif; font-size: 16pt;">Дякуємо за ваше розуміння та підтримку!&nbsp;&nbsp;</span></p></div>
+                                            </div>
+                    <div class="modal__footerDecor">
+                        <img src="/img/g10.svg" alt="">
+                    </div>
+                <div class="ps__rail-x" style="left: 0px; bottom: 0px;"><div class="ps__thumb-x" tabindex="0" style="left: 0px; width: 0px;"></div></div><div class="ps__rail-y" style="top: 0px; right: 0px;"><div class="ps__thumb-y" tabindex="0" style="top: 0px; height: 0px;"></div></div></div>
+            </div>
+        </div>
+    
+            <section style="margin-top: 0" data-id="10083" class="section section--link section--grey section--no-padding section-class3">
+<div class="container  " id="10083">
+
+        
+                                <p class="MsoNormal">Нагадуємо підхід до формування графіків відключень.</p>
+<p class="MsoNormal">Графік відключень розбитий на 30-хвилинні інтервали.</p>
+<p class="MsoNormal">Кожна черга розділена на дві підчерги:&nbsp;<strong>1.1</strong>&nbsp;та&nbsp;<strong>1.2</strong>,&nbsp;<strong>2.1</strong>&nbsp;та&nbsp;<strong>2.2</strong>&nbsp;і т.д.</p>        
+        </div>
+    </section>
+                        <section style="margin-top: 0" data-id="6685" class="section   section--padding section-class-117">
+<div class="container  " id="6685">
+
+    <section class="discon_schedule schedule-desktop">
+    <div class="discon-schedule-info desctop-version">
+        <h1>Перевірка поточних відключень за адресою</h1>
+        <div class="info-describe">
+            <p>Бажаєте перевірити наявність аварійних або планових відключень, або ознайомитися з тижневим графіком стабілізаційних відключень (ГПВ) за адресою? Введіть відповідну адресу українською мовою, використовуючи кирилицю. Пошук адреси можна здійснювати як за новою, так і за старою назвою. </p>
+            <p>Реєструйтесь у чат-боті <a href="https://chats.viber.com/dtekdniprovskielektromerezhi">Viber</a> або <a href="https://t.me/DTEKDniprovskiElektromerezhiBot">Telegram</a>, і графік стабілізаційних відключень завжди буде під рукою. </p>
+            <p>Якщо ви не знайшли свою адресу, можливо, відключення здійснюється ПрАТ «ПЕЕМ «Центральна енергетична компанія» (ЦЕК) через технічні особливості електричних мереж вашого будинку. У такому випадку, при настанні ГПВ, час відключень за чергою визначає ЦЕК. Перелік адрес обслуговування ЦЕК доступний <a href="/ua/file/Xmpjon3Lco0B2?inline=1" target="_blank" rel="noopener noreferrer">у файлі</a>, графіки відключень - на сайті <a href="https://cek.dp.ua/index.php/cpojivaham/vidkliuchennia.html">за посиланням</a>. </p>
+        </div>
+    </div>
+    <div class="discon-schedule-interact notranslate" translate="no">
+        <div class="discon-schedule-form">
+            <form id="discon_form" autocomplete="off">
+                <div class="discon-inputs">
+                    <div class="discon-input-wrapper">
+                        <label for="city">Введіть нас. пункт</label>
+                        <div class="autocomplete" style="width:100%;">
+                            <input type="text" class="form__input form__input--er delete-space changed_elem_gr active" name="city" id="city" placeholder="Почніть вводити дані українською">
+                            <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 100 100" enable-background="new 0 0 0 0" xml:space="preserve">
+                                <defs>
+                                    <linearGradient id="MyGradient2">
+                                        <stop offset="0%" stop-color="transparent"></stop>
+                                        <stop offset="100%" stop-color="#D9D9D9"></stop>
+                                    </linearGradient>
+                                </defs>
+                                <path fill="url(#MyGradient2)" d="M73,50c0-12.7-10.3-23-23-23S27,37.3,27,50 M30.9,50c0-10.5,8.5-19.1,19.1-19.1S69.1,39.5,69.1,50">
+                                    <animateTransform attributeName="transform" attributeType="XML" type="rotate" dur="3s" from="0 50 50" to="360 50 50" repeatCount="indefinite"></animateTransform>
+                                </path>
+                            </svg>
+                            <img src="/media/page/coolicon.png" alt="">
+                        </div>
+                        <span class="span-error">Почніть вводити нас. пункт та оберіть із списку</span>
+
+                    </div>
+                    <div class="discon-input-wrapper">
+                        <label for="street">Введіть вулицю</label>
+                        <div class="autocomplete" style="width:100%;">
+                            <input type="text" class="form__input form__input--er delete-space changed_elem_gr active" name="street" id="street" placeholder="Почніть вводити дані українською">
+                            <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 100 100" enable-background="new 0 0 0 0" xml:space="preserve">
+                                <defs>
+                                    <linearGradient id="MyGradient">
+                                        <stop offset="0%" stop-color="transparent"></stop>
+                                        <stop offset="100%" stop-color="#D9D9D9"></stop>
+                                    </linearGradient>
+                                </defs>
+                                <path fill="url(#MyGradient)" d="M73,50c0-12.7-10.3-23-23-23S27,37.3,27,50 M30.9,50c0-10.5,8.5-19.1,19.1-19.1S69.1,39.5,69.1,50">
+                                    <animateTransform attributeName="transform" attributeType="XML" type="rotate" dur="3s" from="0 50 50" to="360 50 50" repeatCount="indefinite"></animateTransform>
+                                </path>
+                            </svg>
+                            <img src="/media/page/coolicon.png" alt="">
+                        </div>
+                        <span class="span-error">Почніть вводити вулицю та оберіть із списку</span>
+                    </div>
+                    <div class="discon-input-wrapper">
+                        <label for="house_num">Номер будинку</label>
+                        <div class="autocomplete" style="width:100%;">
+                            <input type="text" class="form__input form__input--er delete-space changed_elem_gr active" name="house_num" id="house_num" data-key-next="house_num" placeholder="Номер будинку" data-key-group="GPV3.2">
+                            <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 100 100" enable-background="new 0 0 0 0" xml:space="preserve">
+                                <defs>
+                                    <linearGradient id="MyGradient1">
+                                        <stop offset="0%" stop-color="transparent"></stop>
+                                        <stop offset="100%" stop-color="#D9D9D9"></stop>
+                                    </linearGradient>
+                                </defs>
+                                <path fill="url(#MyGradient1)" d="M73,50c0-12.7-10.3-23-23-23S27,37.3,27,50 M30.9,50c0-10.5,8.5-19.1,19.1-19.1S69.1,39.5,69.1,50">
+                                    <animateTransform attributeName="transform" attributeType="XML" type="rotate" dur="3s" from="0 50 50" to="360 50 50" repeatCount="indefinite"></animateTransform>
+                                </path>
+                            </svg>
+                            <img src="/media/page/coolicon.png" alt="">
+                        </div>
+                        <span class="span-error">Почніть вводити номер</span>
+                    </div>
+                    <div class="discon-input-wrapper">
+                        <div id="group-name" style="display: block;">
+                            <span>Черга 3.2</span>
+                        </div>
+                    </div>
+                </div>
+            <input name="updateFact" type="hidden" value="02.11.2025 10:06"></form>
+            <div id="showCurOutage" class="active"><p>Якщо в даний момент у вас відсутнє світло, імовірно виникла аварійна ситуація, або діють стабілізаційні або екстрені відключення. Просимо перевірити інформацію через 15 хвилин, саме стільки часу потрібно для оновлення даних на сайті.<br>У разі відсутності світла у зоні, що гарантує його наявність (на графіку – білий колір), оформіть заявку нижче.<br><br><span class="_update_info">Дата оновлення інформації</span> – 11:47 02.11.2025</p></div>
+        </div>
+        <div class="discon-fact active" id="discon-fact"><div class="discon-title">Графік відключень:</div>
+        <div class="dates">
+            <div class="date active" rel="1762034400">
+                <div class="schedulled"></div><div>на сьогодні <span rel="date">02.11.25</span></div>
+            </div>
+            <div class="date" rel="1762120800">
+                <div class="schedulled"></div><div>на завтра <span rel="date">03.11.25</span></div>
+            </div>
+        </div>
+        <div class="discon-fact-info">
+            <span class="discon-fact-info-icon">
+                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9.00782 16.9961C10.0586 16.9974 11.0992 16.7911 12.07 16.3889C13.0408 15.9868 13.9225 15.3968 14.6646 14.6529C15.4086 13.9108 15.9985 13.0291 16.4007 12.0583C16.8028 11.0875 17.0091 10.0469 17.0078 8.9961C17.0091 7.94534 16.8028 6.90467 16.4007 5.9339C15.9985 4.96312 15.4086 4.08137 14.6646 3.3393C13.9225 2.59536 13.0408 2.00539 12.07 1.60327C11.0992 1.20114 10.0586 0.994804 9.00782 0.9961C7.95705 0.994804 6.91639 1.20114 5.94561 1.60327C4.97484 2.00539 4.09309 2.59536 3.35102 3.3393C2.60708 4.08137 2.01711 4.96312 1.61498 5.9339C1.21286 6.90467 1.00652 7.94534 1.00782 8.9961C1.00652 10.0469 1.21286 11.0875 1.61498 12.0583C2.01711 13.0291 2.60708 13.9108 3.35102 14.6529C4.09309 15.3968 4.97484 15.9868 5.94561 16.3889C6.91639 16.7911 7.95705 16.9974 9.00782 16.9961Z" stroke="#5A636B" stroke-width="0.803698" stroke-linejoin="round"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M9.00781 14.1946C9.27303 14.1946 9.52738 14.0892 9.71492 13.9017C9.90246 13.7142 10.0078 13.4598 10.0078 13.1946C10.0078 12.9294 9.90246 12.675 9.71492 12.4875C9.52738 12.2999 9.27303 12.1946 9.00781 12.1946C8.7426 12.1946 8.48824 12.2999 8.30071 12.4875C8.11317 12.675 8.00781 12.9294 8.00781 13.1946C8.00781 13.4598 8.11317 13.7142 8.30071 13.9017C8.48824 14.0892 8.7426 14.1946 9.00781 14.1946Z" fill="#5A636B"></path>
+                <path d="M9.00781 4.19604V10.596" stroke="#5A636B" stroke-width="1.28904" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+            </span>
+            <span class="discon-fact-info-text">Дата та час останнього оновлення інформації на графіку: <span class="update">02.11.2025 10:06</span></span>
+        </div>
+        <div class="discon-fact-tables"><div rel="1762034400" class="discon-fact-table active"><table><thead><tr><th colspan="2">Часові<br>проміжки</th><th scope="col"><div>00-01</div></th><th scope="col"><div>01-02</div></th><th scope="col"><div>02-03</div></th><th scope="col"><div>03-04</div></th><th scope="col"><div>04-05</div></th><th scope="col"><div>05-06</div></th><th scope="col"><div>06-07</div></th><th scope="col"><div>07-08</div></th><th scope="col"><div>08-09</div></th><th scope="col"><div>09-10</div></th><th scope="col"><div>10-11</div></th><th scope="col"><div>11-12</div></th><th scope="col"><div>12-13</div></th><th scope="col"><div>13-14</div></th><th scope="col"><div>14-15</div></th><th scope="col"><div>15-16</div></th><th scope="col"><div>16-17</div></th><th scope="col"><div>17-18</div></th><th scope="col"><div>18-19</div></th><th scope="col"><div>19-20</div></th><th scope="col"><div>20-21</div></th><th scope="col"><div>21-22</div></th><th scope="col"><div>22-23</div></th><th scope="col"><div>23-24</div></th></tr></thead><tbody><tr><td colspan="2">&nbsp;</td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled"></td><td class="cell-scheduled"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td></tr></tbody></table><div class="discon-fact-legend">
+            <div class="legend-item">
+                <div class="cell-non-scheduled"></div>
+                <span id="non-schedulled-text">Світло є</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-scheduled"></div>
+                <span id="schedulled-text">Світла немає</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-first-half"></div>
+                <span id="first-schedulled-text">Світла не буде перші 30 хв.</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-second-half"></div>
+                <span id="second-schedulled-text">Світла не буде другі 30 хв</span>
+            </div>
+        </div></div><div rel="1762120800" class="discon-fact-table"><table><thead><tr><th colspan="2">Часові<br>проміжки</th><th scope="col"><div>00-01</div></th><th scope="col"><div>01-02</div></th><th scope="col"><div>02-03</div></th><th scope="col"><div>03-04</div></th><th scope="col"><div>04-05</div></th><th scope="col"><div>05-06</div></th><th scope="col"><div>06-07</div></th><th scope="col"><div>07-08</div></th><th scope="col"><div>08-09</div></th><th scope="col"><div>09-10</div></th><th scope="col"><div>10-11</div></th><th scope="col"><div>11-12</div></th><th scope="col"><div>12-13</div></th><th scope="col"><div>13-14</div></th><th scope="col"><div>14-15</div></th><th scope="col"><div>15-16</div></th><th scope="col"><div>16-17</div></th><th scope="col"><div>17-18</div></th><th scope="col"><div>18-19</div></th><th scope="col"><div>19-20</div></th><th scope="col"><div>20-21</div></th><th scope="col"><div>21-22</div></th><th scope="col"><div>22-23</div></th><th scope="col"><div>23-24</div></th></tr></thead><tbody><tr><td colspan="2">&nbsp;</td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td></tr></tbody></table><div class="discon-fact-legend">
+            <div class="legend-item">
+                <div class="cell-non-scheduled"></div>
+                <span id="non-schedulled-text">Світло є</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-scheduled"></div>
+                <span id="schedulled-text">Світла немає</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-first-half"></div>
+                <span id="first-schedulled-text">Світла не буде перші 30 хв.</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-second-half"></div>
+                <span id="second-schedulled-text">Світла не буде другі 30 хв</span>
+            </div>
+        </div></div></div></div>
+        <div class="discon-title discon-schedule-title active">Графік можливих відключень на тиждень:</div>
+        <div class="discon-schedule-table active" tabindex="100">
+            <div class="discon-schedule-alert">
+                <div>
+                    <div class="discon-info-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 21C16.9706 21 21 16.9706 21 12C21 7.02944 16.9706 3 12 3C7.02944 3 3 7.02944 3 12C3 16.9706 7.02944 21 12 21Z" stroke="#5A636B" stroke-linecap="round" stroke-linejoin="round"></path>
+                            <path d="M12 16H12.01V16.01H12V16Z" stroke="#5A636B" stroke-width="1.5" stroke-linejoin="round"></path>
+                            <path d="M12 12V8" stroke="#5A636B" stroke-linecap="round" stroke-linejoin="round"></path>
+                        </svg>
+                    </div>
+                    <div class="discon-info-text">За цією адресою будинок має складну схему підключення (два та більше джерел живлення). В таких будинках різні квартири підпадають у різні групи графіків відключень. Тому, на жаль, по ним зараз немає можливості давати прогнозований графік стабілізаційних відключень. Ми вже працюємо над вирішенням цього питання.</div>
+                </div>
+            </div>
+            <div id="tableRenderElem"><table><thead><tr><th colspan="2"><div class="head-time">Часові<br>проміжки</div></th><th scope="col"><div>00-01</div></th><th scope="col"><div>01-02</div></th><th scope="col"><div>02-03</div></th><th scope="col"><div>03-04</div></th><th scope="col"><div>04-05</div></th><th scope="col"><div>05-06</div></th><th scope="col"><div>06-07</div></th><th scope="col"><div>07-08</div></th><th scope="col"><div>08-09</div></th><th scope="col"><div>09-10</div></th><th scope="col"><div>10-11</div></th><th scope="col"><div>11-12</div></th><th scope="col"><div>12-13</div></th><th scope="col"><div>13-14</div></th><th scope="col"><div>14-15</div></th><th scope="col"><div>15-16</div></th><th scope="col"><div>16-17</div></th><th scope="col"><div>17-18</div></th><th scope="col"><div>18-19</div></th><th scope="col"><div>19-20</div></th><th scope="col"><div>20-21</div></th><th scope="col"><div>21-22</div></th><th scope="col"><div>22-23</div></th><th scope="col"><div>23-24</div></th></tr></thead><tbody><tr><td colspan="2"><div>Понеділок</div></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td></tr><tr><td colspan="2"><div>Вівторок</div></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td></tr><tr><td colspan="2"><div>Середа</div></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td></tr><tr><td colspan="2"><div>Четвер</div></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td></tr><tr><td colspan="2"><div>П'ятниця</div></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td></tr><tr class="yesterday-row"><td colspan="2"><div>Субота</div></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td></tr><tr><td colspan="2" class="current-day"><div>Неділя</div></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-second-half"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-first-half"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-scheduled-maybe"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td><td class="cell-non-scheduled"></td></tr></tbody></table></div>
+        </div>
+        <div id="legendarium-table" class="active">
+            <div class="legend-item">
+                <div class="cell-non-scheduled"></div>
+                <span id="non-schedulled-text">Світло є</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-scheduled-maybe"></div>
+                <span id="maybe-schedulled-text">Можливо відключення</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-first-half"></div>
+                <span id="first-schedulled-text">Світла можливо не буде перші 30 хв.</span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-second-half"></div>
+                <span id="second-schedulled-text">Світла можливо не буде другі 30 хв</span>
+            </div>
+        </div>
+    </div>
+    <template class="template-discon-fact-blocks">
+        <div class="discon-title">Графік відключень:</div>
+        <div class="dates">
+            <div class="date">
+                <div class="schedulled"></div><div>на сьогодні <span rel="date">30.10.24</span></div>
+            </div>
+            <div class="date">
+                <div class="schedulled"></div><div>на завтра <span rel="date">31.10.24</span></div>
+            </div>
+        </div>
+        <div class="discon-fact-info">
+            <span class="discon-fact-info-icon">
+                <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9.00782 16.9961C10.0586 16.9974 11.0992 16.7911 12.07 16.3889C13.0408 15.9868 13.9225 15.3968 14.6646 14.6529C15.4086 13.9108 15.9985 13.0291 16.4007 12.0583C16.8028 11.0875 17.0091 10.0469 17.0078 8.9961C17.0091 7.94534 16.8028 6.90467 16.4007 5.9339C15.9985 4.96312 15.4086 4.08137 14.6646 3.3393C13.9225 2.59536 13.0408 2.00539 12.07 1.60327C11.0992 1.20114 10.0586 0.994804 9.00782 0.9961C7.95705 0.994804 6.91639 1.20114 5.94561 1.60327C4.97484 2.00539 4.09309 2.59536 3.35102 3.3393C2.60708 4.08137 2.01711 4.96312 1.61498 5.9339C1.21286 6.90467 1.00652 7.94534 1.00782 8.9961C1.00652 10.0469 1.21286 11.0875 1.61498 12.0583C2.01711 13.0291 2.60708 13.9108 3.35102 14.6529C4.09309 15.3968 4.97484 15.9868 5.94561 16.3889C6.91639 16.7911 7.95705 16.9974 9.00782 16.9961Z" stroke="#5A636B" stroke-width="0.803698" stroke-linejoin="round"></path>
+                <path fill-rule="evenodd" clip-rule="evenodd" d="M9.00781 14.1946C9.27303 14.1946 9.52738 14.0892 9.71492 13.9017C9.90246 13.7142 10.0078 13.4598 10.0078 13.1946C10.0078 12.9294 9.90246 12.675 9.71492 12.4875C9.52738 12.2999 9.27303 12.1946 9.00781 12.1946C8.7426 12.1946 8.48824 12.2999 8.30071 12.4875C8.11317 12.675 8.00781 12.9294 8.00781 13.1946C8.00781 13.4598 8.11317 13.7142 8.30071 13.9017C8.48824 14.0892 8.7426 14.1946 9.00781 14.1946Z" fill="#5A636B"></path>
+                <path d="M9.00781 4.19604V10.596" stroke="#5A636B" stroke-width="1.28904" stroke-linecap="round" stroke-linejoin="round"></path>
+                </svg>
+            </span>
+            <span class="discon-fact-info-text">Дата та час останнього оновлення інформації на графіку: <span class="update"></span></span>
+        </div>
+        <div class="discon-fact-tables"></div>
+    </template>
+    <template class="template-discon-fact-legend">
+        <div class="discon-fact-legend">
+            <div class="legend-item">
+                <div class="cell-non-scheduled"></div>
+                <span id="non-schedulled-text"></span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-scheduled"></div>
+                <span id="schedulled-text"></span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-first-half"></div>
+                <span id="first-schedulled-text"></span>
+            </div>
+            <div class="legend-item">
+                <div class="cell-second-half"></div>
+                <span id="second-schedulled-text"></span>
+            </div>
+        </div>
+    </template>
+</section>
+        </div>
+    </section>
+                    <section style="margin-top: 0" data-id="8531" class="section   section--padding section-class6">
+<div class="container  " id="8531">
+
+            <div class="m-faq__inner">
+            <div class="m-faq__row">
+                <div class="faq">
+                    <div class="faq__head">
+                        <div class="faq__icon">
+                                                        <img src="/media/page/page-icon-8531.svg">
+                                                    </div>
+                                                <h5 class="faq__title faq__title--main">Якщо в графіку відключень:</h5>
+                                            </div>
+                    <div class="faq__body">
+                                                <div class="faq__container faq__faq-list">
+                                                                                    <div style="height: 0px;">&nbsp;</div>
+<ul>
+<li><span lang="UK">відсутня потрібна вам адреса</span></li>
+<li class="MsoNormal" style="mso-list: l0 level1 lfo1;"><span lang="UK" style="mso-fareast-font-family: 'Times New Roman'; mso-ligatures: none; mso-ansi-language: UK; mso-fareast-language: RU;">відсутнє світло у зоні, що гарантує його наявність (на графіку <strong>білий колір</strong>)</span></li>
+</ul>
+
+                                                        
+                        </div>
+                                                                            <a class="button" href="javascript:void(0);" data-micromodal-trigger="modal-complaints-outage-schedule-new">
+                                Повідомте нас                            </a>
+                                            </div>
+                </div>
+
+                <div class="faq">
+                    <div class="faq__head">
+                        <div class="faq__icon">
+                                                        <img src="/media/page/page-icon-right-8531.png">
+                                                    </div>
+                                                <h5 class="faq__title faq__title--main">Якщо у вас відсутнє світло і:</h5>
+                                            </div>
+                    <div class="faq__body">
+                                                <div class="faq__container faq__faq-list">
+                                                                                    <div style="height: 0px;">&nbsp;</div>
+<ul>
+<li><span lang="UK">відключення за вашою адресою не зафіксовано</span></li>
+<li><span lang="UK" style="mso-fareast-font-family: 'Times New Roman'; mso-ligatures: none; mso-ansi-language: UK; mso-fareast-language: RU;">немає термінів повернення світла у вашу оселю</span></li>
+</ul>
+
+                                                        
+                        </div>
+                                                                            <a class="button" href="javascript:void(0);" data-micromodal-trigger="modal-fail-electricity">
+                                Повідомте нас                            </a>
+                                            </div>
+                </div>
+
+            </div>
+        </div>
+        </div>
+    </section>
+                        <section style="margin-top: 0" data-id="1530" class="section   section--no-padding section-class8">
+<div class="container  " id="1530">
+
+
+    
+    
+            <a href="javascript:void(0);" class="button button---margin-top-20" data-micromodal-trigger="modal-fail-electricity">
+        Повідомити</a>
+    
+        </div>
+    </section>
+                                        <section style="margin-top: 0" data-id="9744" class="section   section--no-padding section-class-120">
+<div class="container  " id="9744">
+
+        <div class="form-inline form-check-application">
+        <div class="modal__head">
+            <div class="modal__icon">
+                <svg width="58" height="58" viewBox="0 0 58 58" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="29" cy="29" r="29" fill="#FFE300"></circle>
+                    <path d="M41.2749 24.9849C41.3585 24.6021 41.4289 24.2149 41.4773 23.8233C41.5749 23.0249 41.5955 22.2189 41.5389 21.4165C41.4014 19.4764 40.8052 17.5966 39.7994 15.9318C38.7935 14.2671 37.4068 12.865 35.7532 11.8408C34.0996 10.8167 32.2265 10.1999 30.288 10.041C28.3495 9.8822 26.4009 10.1859 24.6027 10.9272C22.8045 11.6685 21.208 12.8262 19.9446 14.3051C18.6812 15.7839 17.7869 17.5415 17.3355 19.4334C16.884 21.3254 16.8883 23.2974 17.3478 25.1874C17.8074 27.0773 18.7091 28.8312 19.9789 30.3045C20.6043 31.0514 21.1486 31.8626 21.6025 32.7245L23.8949 36.9617C23.9703 37.1014 24.0821 37.2181 24.2184 37.2995C24.3547 37.3808 24.5105 37.4237 24.6693 37.4237H33.9093C34.068 37.4237 34.2238 37.3808 34.3602 37.2995C34.4965 37.2181 34.6083 37.1014 34.6837 36.9617L36.9101 32.8521C37.3905 31.9317 37.9688 31.0658 38.6349 30.2693C38.7587 30.0913 38.8123 29.8737 38.7856 29.6585C38.7588 29.4433 38.6535 29.2455 38.4899 29.1032C38.3263 28.9608 38.1158 28.8839 37.899 28.8872C37.6821 28.8905 37.4741 28.9737 37.3149 29.1209C36.5694 30.0135 35.9204 30.9825 35.3789 32.0117L33.4033 35.6637H25.1841L23.1249 31.8841C22.613 30.9116 21.9978 29.997 21.2901 29.1561C20.209 27.8924 19.4427 26.3904 19.0542 24.7734C18.6656 23.1564 18.6658 21.4702 19.0547 19.8533C19.4436 18.2363 20.2101 16.7345 21.2915 15.471C22.3728 14.2075 23.7382 13.2182 25.2757 12.5842C26.8132 11.9503 28.4791 11.6897 30.1367 11.8239C31.7944 11.958 33.3966 12.4831 34.8122 13.3561C36.2277 14.229 37.4163 15.425 38.2803 16.846C39.1444 18.267 39.6595 19.8725 39.7833 21.5309C39.8318 22.2204 39.8141 22.9129 39.7305 23.5989C39.6865 23.9333 39.6293 24.2677 39.5545 24.5933C39.5293 24.7063 39.5267 24.8231 39.5467 24.9371C39.5667 25.0511 39.609 25.16 39.6711 25.2576C39.7332 25.3553 39.8139 25.4398 39.9087 25.5062C40.0034 25.5727 40.1103 25.6198 40.2233 25.6449C40.3362 25.6701 40.453 25.6727 40.567 25.6527C40.681 25.6327 40.7899 25.5904 40.8876 25.5283C40.9852 25.4662 41.0697 25.3855 41.1362 25.2908C41.2026 25.196 41.2497 25.0891 41.2749 24.9761V24.9849Z" fill="black"></path>
+                    <path d="M39.7967 26.8109C39.6942 26.7573 39.5821 26.7245 39.4669 26.7144C39.3516 26.7042 39.2355 26.7168 39.1252 26.7516C39.0148 26.7863 38.9124 26.8424 38.8238 26.9168C38.7352 26.9911 38.6621 27.0822 38.6087 27.1849L38.5471 27.3037C38.4695 27.438 38.4289 27.5905 38.4292 27.7456C38.4295 27.9008 38.4709 28.0531 38.5491 28.1871C38.6272 28.3211 38.7395 28.4321 38.8743 28.5087C39.0092 28.5854 39.162 28.6251 39.3171 28.6237C39.4798 28.6215 39.6387 28.5744 39.7762 28.4874C39.9137 28.4004 40.0244 28.277 40.0959 28.1309L40.1707 27.9901C40.2761 27.7838 40.2959 27.5444 40.2259 27.3237C40.1559 27.1029 40.0017 26.9187 39.7967 26.8109Z" fill="black"></path>
+                    <path d="M34.1602 39.1299H24.4098C24.1764 39.1299 23.9526 39.2226 23.7875 39.3876C23.6225 39.5527 23.5298 39.7765 23.5298 40.0099C23.5298 40.2433 23.6225 40.4671 23.7875 40.6321C23.9526 40.7972 24.1764 40.8899 24.4098 40.8899H34.1602C34.3936 40.8899 34.6174 40.7972 34.7824 40.6321C34.9475 40.4671 35.0402 40.2433 35.0402 40.0099C35.0402 39.7765 34.9475 39.5527 34.7824 39.3876C34.6174 39.2226 34.3936 39.1299 34.1602 39.1299Z" fill="black"></path>
+                    <path d="M35.0402 43.257C35.0402 43.0236 34.9475 42.7997 34.7824 42.6347C34.6174 42.4697 34.3936 42.377 34.1602 42.377H24.4098C24.1764 42.377 23.9526 42.4697 23.7875 42.6347C23.6225 42.7997 23.5298 43.0236 23.5298 43.257C23.5298 43.4903 23.6225 43.7142 23.7875 43.8792C23.9526 44.0442 24.1764 44.137 24.4098 44.137H34.1602C34.3936 44.137 34.6174 44.0442 34.7824 43.8792C34.9475 43.7142 35.0402 43.4903 35.0402 43.257Z" fill="black"></path>
+                    <path d="M32.1273 45.3338C31.1373 46.447 30.1649 47.0146 29.2849 47.0146C28.4049 47.0146 27.4325 46.447 26.4425 45.3338C26.2879 45.1587 26.07 45.0523 25.8369 45.0378C25.6038 45.0234 25.3745 45.1021 25.1995 45.2568C25.0244 45.4114 24.918 45.6292 24.9035 45.8623C24.8891 46.0954 24.9679 46.3247 25.1225 46.4998C26.4425 48.009 27.8549 48.7746 29.2805 48.7746C30.7061 48.7746 32.1053 48.009 33.4385 46.4998C33.5931 46.3247 33.6718 46.0954 33.6574 45.8623C33.643 45.6292 33.5365 45.4114 33.3615 45.2568C33.1864 45.1021 32.9571 45.0234 32.724 45.0378C32.4909 45.0523 32.2731 45.1587 32.1185 45.3338H32.1273Z" fill="black"></path>
+                    <rect x="33.9253" y="18.0322" width="1.7" height="13.7885" rx="0.85" transform="rotate(45 33.9253 18.0322)" fill="black"></rect>
+                    <rect x="24.1753" y="19.2334" width="1.7" height="13.7885" rx="0.85" transform="rotate(-45 24.1753 19.2334)" fill="black"></rect>
+                </svg>
+            </div>
+            <h3 class="modal__title">Перевірити статус заявки</h3>
+        </div>
+        <div class="modal__body">
+            <form class="nform" data-nclass="form_check_application" data-rel="9744">
+                <input type="hidden" name="_csrf-dtek-dnem" value="CCznC_wQh-32An_3LF-kJYzB_-6LlUKhfFbnf6oUCsNDbY9uz0CyucBEErJJHuNj3fWyj8LEOuVPHKEm6XNdtA==">                <div class="nform_inner_col">
+                    <div class="nform__row">
+                        <label class="form__label">
+                            <span class="form__input-name">За номером телефону</span>
+                            <input type="text" class="form__input" inputmode="numeric" name="phone">
+                            <span class="error"></span>
+                        </label>
+                    </div>
+                    <div class="nform__row">
+                        <label class="form__label">
+                            <span class="form__input-name">За номером заявки</span>
+                            <input type="text" class="form__input" inputmode="numeric" name="applicationNumber" placeholder="Введіть номер">
+                            <span class="error"></span>
+                        </label>
+                    </div>
+                    <div class="form__btn">
+                        <button class="form__submit" disabled="">Перевірити статус</button>
+                    </div>
+                    <div class="nform__info_blocks"></div>
+                </div>
+            </form>
+        </div>
+    </div>
+        </div>
+    </section>
+                    
+<section class="section section-faq  ">
+    <div class="container">
+                <ul class="accordion">
+                                                    <li class="accordion__item" id="9490">
+        <div class="accordion__title">
+                            <img src="/media/page/page-icon-9490.svg">
+                        <span>Про графіки</span>
+        </div>
+        <div class="accordion__content">
+                                            
+        
+                                <p><strong><span lang="UK">Чому змінилися графіки?<br><br></span></strong><span lang="UK">НЕК Укренерго та Міністерство енергетики впровадили єдиний підхід до створення графіків по всій країні, який зафіксований законодавчо. Це дозволить більш гнучко керувати енергосистемою</span>, а отже зберігати світло в оселях українців<span lang="UK">.</span></p>
+<p><span lang="UK"><br></span><strong><span lang="UK">Де ознайомитися з новими графіками?<br><br></span></strong><span lang="UK">Нові графіки розміщені у нашому чат-боті у&nbsp;<a href="https://chats.viber.com/dtekdniprovskielektromerezhi" target="_blank" rel="noopener">Viber</a>&nbsp;та&nbsp;<a href="https://t.me/DTEKDniprovskiElektromerezhiBot" target="_blank" rel="noopener">Telegram</a>, а також на нашому&nbsp;<a href="https://www.dtek-dnem.com.ua/ua/shutdowns" target="_blank" rel="noopener">сайті</a>. Ми дуже рекомендуємо використовувати саме чат-бот, оскільки на сайті через велику кількість відвідувань можуть виникати збої. Завантажити графіки у чат-боті можна за кілька секунд.</span></p>
+<p><strong><span lang="UK">Чим відрізняються нові графіки від попередніх?</span></strong></p>
+<p><span lang="UK">Графік відключень&nbsp;</span>тепер&nbsp;<span lang="UK">розбитий на 30-хвилинні інтервали.</span>&nbsp;<span lang="UK">Кожна черга&nbsp;</span>споживачів&nbsp;<span lang="UK">розділена на дві підчерги: 1.1 та 1.2, 2.1 та 2.2 і т.д. Період зі світлом збільшується – мінімум 3,5 години між можливими відключеннями при відсутності аварій у мережі.<br><br></span><strong><span lang="UK">Що таке черга і підчерга?</span></strong></p>
+<p><span lang="UK">Черга – група споживачів області/міста, яка споживає певний обсяг електроенергії. Підчерга – половина черги. Тепер кожна черга розділена на підчерги, які відключаються за графіками.</span></p>
+<p><strong><span lang="UK">У мене змінилась черга?</span></strong></p>
+<p>Перевірити, до якої черги ви відноситесь, можна на сайті та в чат-боті ОСР.<br><br><strong><span lang="UK">Чи буде в мене більше часу зі світлом?</span></strong></p>
+<p>Дійсно, завдяки новому підходу у вас буде більше годин зі світлом – мінімум 3,5 години між можливими відключеннями при відсутності аварій у мережі.<br><br><strong><span lang="UK">Як мені дізнатись коли у мене буде світло протягом тижня?</span></strong></p>
+<p>Як і раніше для зручності планування своїх справ у вас будуть завжди доступні два графіки. Графік на добу – чіткий розклад зон «Світло є» (біла) та «Світла немає» (темно-сіра). Прогнозний графік на тиждень – показує часові проміжки, коли світло може бути відключеним, і години зі світлом. Він дозволяє планувати життя на триваліший період, тому завжди є на сайті ОСР.<br><br><strong><span lang="UK">Графіки діятимуть кожного дня?<br><br></span></strong>Графіки будуть діяти в ті дні та години, в які діятимуть стабілізаційні відключення за командою НЕК Укренерго.</p>
+<p><strong><span lang="UK">Тепер у всіх регіонах будуть відключати світло однаково часто?<br><br></span></strong>Уніфікований національний графік дозволить виправити ситуацію, коли при однаковому застосуванню обмежень деякі області були зі світлом більше, а інші – менше. Однак варто розуміти, в країні значно пошкоджені магістральні підстанції, які передають електроенергію від однієї частини країни в іншу, тому до деяких регіонів електроенергію просто неможливо доставити.<br><br><strong><span lang="UK">Чи зміниться інформування про графіки відключень?<br><br></span></strong><span lang="UK">Ні, ви як і раніше можете дізнатися про графік на добу на офіційних каналах ОСР – в чат-боті, на сайті, на офіційній сторінці в&nbsp;</span><a href="https://www.facebook.com/dtekdnem" target="_blank" rel="noopener">Facebook</a><span lang="UK">.</span></p>        
+                                        </div>
+    </li>
+                                        <li class="accordion__item" id="7007">
+        <div class="accordion__title">
+                            <img src="/media/page/page-icon-7007.png">
+                        <span>Повідомити про відсутність світла</span>
+        </div>
+        <div class="accordion__content">
+                                            
+        
+                                <p><strong><span lang="UK">Що мені робити якщо хочу подати заявку по аварійній ситуації?</span></strong></p>
+<p>Насамперед варто звертатися до вашої керуючої компанії/ОСББ/ЖБК, адже світло може буте відсутнє з причин, пов'язаних з роботою мереж всередині будинку або вашої оселі.</p>
+<p>Якщо ж питання стосується аварійної ситуації та не відноситься до компетенцій керуючої компанії/ОСББ/ЖБК -&nbsp; ви можете подати&nbsp;<a data-micromodal-trigger="modal-fail-electricity" href="javascript:void(0);">заявку</a>&nbsp;на сайті. Інший можливий варіант - подзвонити нам в контакт-центр, проте доведеться трохи почекати відповіді оператора, адже дзвінків зараз дуже багато.</p>
+<p>Також ви завжди можете написати нам в приватні повідомлення&nbsp;<a href="https://www.facebook.com/dtekdnem" target="_blank" rel="noopener">Facebook</a>.<br><br><strong><span lang="UK">Що мені робити, якщо адреси немає у графіку?</span></strong></p>
+<p><span lang="UK">Це може означати, що ваш будинок не будуть відключати, так як це технічно неможливо. Але якщо при цьому у вас тривалий час немає світла - заповніть, будь ласка, форму. Ми перевіримо інформацію та додамо будинок у графік.</span></p>
+<p><strong><span lang="UK">Що мені робити, якщо дуже тривала відсутність е/е - понад 8 годин?</span></strong></p>
+<p><span lang="UK">- Світла немає тільки у вашій квартирі? Перевірте запобіжники та викличте електрика. В жодному разі не намагайтесь провести ремонт самостійно! Це небезпечно!</span></p>
+<p><span lang="UK">- Світла немає тільки у вашому будинку? Зверніться до свого ОСББ, ЖБК чи УК, можливо, у вас аварія на внутрішньобудинкових мережах.</span></p>
+<p><span lang="UK">- Світла немає і в сусідніх будинках? Насамперед перевірте, чи діє екстрене або стабілізаційне відключення на нашому сайті. Якщо відключення стабілізаційне - дізнайтесь час повернення світла у графіку вище. Якщо відключення екстрене - доведеться трошки почекати, електропостачання може бути відсутнє довше. Якщо світла немає понад 8 годин поспіль – можливо, у вас виникла локальна аварія. Напишіть нам в приватні повідомлення&nbsp;</span><a href="https://www.facebook.com/dtekdnem" target="_blank" rel="noopener">Facebook</a>&nbsp;або ж подайте&nbsp;<a data-micromodal-trigger="modal-fail-electricity" href="javascript:void(0);">заявку</a> на сайті.</p>
+<p><span lang="UK"><span lang="UK"><strong>Я представник ОСББ/ЖЕК і хочу повідомити про реальну аварію</strong></span></span></p>
+<p><span lang="UK"><span lang="UK">Для того, щоб передати інформацію про аварію, можна зателефонувати на лінію контактного центру для юридичних осіб&nbsp;<a href="tel:+380675222112">+38 (067) 522 21 12</a>, передати заявку через&nbsp;<a data-micromodal-trigger="modal-fail-electricity" href="javascript:void(0);">форму</a>&nbsp;на сайті або через приватні повідомлення&nbsp;<a href="https://www.facebook.com/dtekdnem" target="_blank" rel="noopener">Facebook.</a>. Вам обов'язково потрібно вказати, що ви є представником керуючої компанії та повідомити додаткову інформації щодо ситуації (стан запобіжників, тривалість відключення, наявність напруги на вводах).<strong><span lang="UK"><br></span></strong></span></span></p>        
+                                        </div>
+    </li>
+                                        <li class="accordion__item" id="7016">
+        <div class="accordion__title">
+                            <img src="/media/page/page-icon-7016.png">
+                        <span>Поширені запитання</span>
+        </div>
+        <div class="accordion__content">
+                                            
+        
+                                <p><span lang="UK"><strong>Чим відрізняються стабілізаційні відключення за графіками та екстрені відключення?</strong></span></p>
+<p><span lang="UK">Стабілізаційні відключення відбуваються згідно із визначеним графіком на добу. Максимальна тривалість одноразового відключення – 7 годин. Екстрені відключення відбуваються раптово, коли дуже швидко треба збалансувати енергосистему.</span></p>
+<p><span lang="UK">Саме НЕК Укренерго визначає, який тип відключень і коли потрібно застосовувати та передає відповідну команду всім ОСР.</span></p>
+<p><span lang="UK"><strong>Як зрозуміти, чи я маю аварійне відключення чи діють обмеження споживання?</strong></span></p>
+<p><span lang="UK">Інформація про будь-які відключення публікується на сайті компанії. Введіть вашу адресу та дізнайтеся про поточні відключення. Також на головній сторінці нашого сайту ми оперативно розміщуємо інформацію про те, чи діють зараз графіки стабілізаційних відключень, або застосовуються екстрені відключення.</span></p>
+<p><span lang="UK"><strong>Чому важко додзвонитися до КЦ? Куди я можу повідомити проблему чи поставити своє запитання?</strong></span></p>
+<p><span lang="UK">Під час екстрених відключень ми справді фіксуємо величезну кількість дзвінків до контакт-центру, яка більше за звичайну у 6-10 разів. Дуже часто, під час екстрених відключень, відбуваються повітряні тривоги і наші співробітники йдуть у бомбосховище, щоб продовжити працювати вже звідти, але їм потрібен час на переміщення. Через це зростає тривалість очікування на лінії. Однак ви завжди можете повідомити про проблему чи дізнатися актуальну інформацію на сайті чи на сторінці&nbsp;<a href="https://www.facebook.com/dtekdnem">Facebook</a>.</span></p>
+<p><span lang="UK"><strong>Чому за моєю адресою екстрені відключення, якщо вже давно не було обстрілів?</strong></span></p>
+<p><span lang="UK">Ворог завдав величезної шкоди енергосистемі і зараз не полишає спроб лишити нас без світла. Енергетики працюють не покладаючи рук, щоб ремонтувати, посилювати та забезпечувати країну світлом. Однак коли споживання надто зростає, щоб вберегти енергосистему від масштабних аварій доводиться проводити відключення. Ми розуміємо, наскільки важко вам знаходитись без світла. Але просимо вас набратись розуміння та вірити в енергетиків, ми робимо все, аби відключення були якомога коротшими.</span></p>
+<p><span lang="UK"><strong>Навіщо превентивні відключення світла під час обстрілів?</strong></span></p>
+<p><span lang="UK">Це потрібно для того, щоб у випадку руйнувань енергооб'єктів через обстріли, запобігти більш масштабним аваріям. Адже якщо такий об'єкт на повній потужності в один момент буде виведено з ладу, це спричинить різке розбалансування енергосистеми. Відключення відбуваються за командою НЕК Укренерго, коли він отримує попередження від військових про потенційну атаку на енергоінфраструктуру. Якщо загроза зникає, після відбою тривоги світло повертається.</span></p>
+<p><span lang="UK"><strong>Чому світло вимикають вночі?</strong></span></p>
+<p><span lang="UK">Обмеження споживання діють як вдень, так і вночі. Тому що попри зменшення навантаження вночі - споживання електроенергії все рівно продовжується, особливо в холодний період. Нічні обмеження менші, ніж денні, однак вони також потрібні, щоб не сталося аварій на електромережах та підстанціях.</span></p>
+<p><span lang="UK"><strong>Чому пошкоджені мережі так довго ремонтують?</strong></span></p>
+<p><span lang="UK">За рік енергетики відремонтували всі ключові енергооб'єкти генерації та електромереж. Зробили все можливе для того, аби пройти цю зиму без відключень. Однак ворог не полишає своїх спроб лишити українців без світла і продовжує атакувати станції генерації та магістральні мережі, і це може призвести до необхідності відключень. Проте вірте в енергетиків і воїнів ППО, ми робимо все, аби уникнути відключень!</span></p>
+<p><span lang="UK"><strong>Чому електроенергію продають за кордон, коли ми сидимо без світла</strong>?</span></p>
+<p><span lang="UK">Відключення відбуваються для запобігання аварійних ситуацій в енергосистемі. Україна не продає електроенергію, яка потрібна українським споживачам.</span></p>
+<p><span lang="UK"><strong>Чому світло вимикають і коли холодно, і коли жарко?</strong></span></p>
+<p><span lang="UK">Бо саме в ці періоди ми, споживачі, починаємо користуватись більшою кількістю електроприладів, щоб почуватися комфортніше. Взимку це електроопалення, влітку – кондиціонери. Ця техніка є енергозатратною – 1 кВт і вище. І коли ми вмикаємо її одночасно з іншими приладами, то перевантажуємо мережу. Якщо в такому випадку не обмежити споживання електрики, ослаблена енергосистема не витримає – і виникнуть масштабні аварії. Тоді нам доведеться сидіти без світла значно довше.</span></p>        
+                                        </div>
+    </li>
+                                                                        </ul>
+    </div>
+</section>
+                        
+        
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        if ($('#modal-attention').length){
+            MicroModal.show('modal-attention');
+        }
+    });
+</script>
+        </main>
+    </div>
+
+    
+<footer class="footer">
+    <div id="translate-widget-container"></div>
+        <div class="footer__top">
+        <div class="footer__container">
+            <nav class="footer__nav">
+                                                                    <div class="b-footer">
+                                <h2 class="b-footer__title">Послуги</h2>
+                                <ul class="b-footer__list">
+                                                                                                                        <li class="b-footer__item ">
+                                                                                                    <a href="/ua/shutdowns">Відсутня електроенергія?</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/meter">Передати покази лічильника</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/enter-contract">Укласти договір</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/connections">Приєднання до електромереж</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/gas-stations">Встановлення електрозаправок</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/services">Замовлення послуг по лічильникам</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/comprehensive-service">Комплексна послуга</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/services-tariffs">Наші послуги та тарифи</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/electrical_safety">Електробезпека</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/electric-heating">Тариф на електроопалення</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/metrological_services">Лінія Точності</a>
+                                                                                            </li>
+                                                                                                            </ul>
+                            </div>
+                                                    <div class="b-footer">
+                                <h2 class="b-footer__title">Офіційна інформація</h2>
+                                <ul class="b-footer__list">
+                                                                                                                        <li class="b-footer__item ">
+                                                                                                    <a href="/ua/shareholders">Інформація для акціонерів та стейкхолдерів</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/supplier-registry">Реєстр постачальників</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/normativna-baza">Нормативна база</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/diyalnist-tovaristva">Діяльність товариства</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/icc">Центр розгляду скарг</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/media-centr">Медіа-центр</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/pro-kompaniyu">Про компанію</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/faq">Поширені запитання</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/korisni-posilannya">Корисні посилання</a>
+                                                                                            </li>
+                                                                                    <li class="b-footer__item ">
+                                                                                                    <a href="/ua/vacancies">Вакансії</a>
+                                                                                            </li>
+                                                                                                            </ul>
+                            </div>
+                                                        </nav>
+
+            <div class="footer__col">
+                <div class="b-footer">
+                    <h2 class="b-footer__title">Контакти</h2>
+                    <div class="b-footer__block">
+                        <div class="b-footer__subtitle">Телефон кол-центру: </div>
+                        <ul class="b-footer__list">
+                            <li class="b-footer__item b-footer__item--call">
+                                Для стаціонарних телефонів                                                                                                                                                                                                                                                    <a href="tel:0567909900" class="b-footer__link"><strong>(056) 790 99 00</strong></a>
+                                                                                                                                                                                                                                                                                        <a href="tel:" class="b-footer__link"><strong></strong></a>
+                                                                                                                                                <a href="tel:" class="b-footer__link"><strong>Окрема лінія для юридичних клієнтів:</strong></a>
+                                                                                                                                                <a href="tel:+380675222112" class="b-footer__link"><strong>+38 (067) 522 21 12</strong></a>
+                                                                                                                                                <a href="tel:" class="b-footer__link"><strong></strong></a>
+                                                                                                    Для мобільних телефонів</li>
+
+                                                                                                <li class="b-footer__item"><a href="tel:+380667909900" class="b-footer__link"><strong>+38 (066) 790 99 00</strong></a></li>
+                                                                                                                                <li class="b-footer__item"><a href="tel:+380677909900" class="b-footer__link"><strong>+38 (067) 790 99 00</strong></a></li>
+                                                                                                                                                                                                                                                        <li class="b-footer__item"><a href="tel:+380637909900" class="b-footer__link"><strong>+38 (063) 790 99 00</strong></a></li>
+                                                                                                                                                                                                                                                                                                                                        <li class="b-footer__item b-footer__item--desc">Згідно з тарифами ваших операторів</li>
+                                                                                                                                                                                                                                                                                    <li class="b-footer__item">
+                                        <a href="tel:0800301497" class="b-footer__link"><strong>0 800 301 497 (безкоштовно)</strong></a>
+                                        <div class="show-number"><span>0800</span>показати номер телефона</div>
+                                    </li>
+                                                                                                                                                                                                                                                                                                                                                                                                </ul>
+                    </div>
+                                        <div class="b-footer__block">
+                        <div class="b-footer__subtitle">E-mail:</div>
+                        <ul class="b-footer__list">
+                                                        <li class="b-footer__item">
+                                                                <span> <strong>Консультації та загальні питання:<strong><br><a href="https://ok.dtek-dnem.com.ua/" style="border-bottom: 1px solid #0068a6; color: #0068a6;">Особистий кабінет</a><br><a href="https://www.facebook.com/dtekdnem" style="border-bottom: 1px solid #0068a6; color: #0068a6;">Messenger Facebook</a> </strong></strong></span><strong><strong>
+                                                                <a href="mailto:" class="b-footer__link"></a>
+                            </strong></strong></li><strong><strong>
+                                                        <li class="b-footer__item">
+                                                                <span> <strong>Офіційні звернення:<strong><br> </strong></strong></span><strong><strong>
+                                                                <a href="mailto:dnem@dtek.com" class="b-footer__link">dnem@dtek.com</a>
+                            </strong></strong></li><strong><strong>
+                                                    </strong></strong></strong></strong></ul><strong><strong><strong>
+                    </strong></strong></strong></div><strong><strong><strong>
+                                        <ul class="footer__social social">
+                                                <li class="social__item">
+                            <a href="https://www.facebook.com/dtekdnem" class="social__link social__link--fb" target="_blank">
+                                <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <g alt-filter="url(#filter0_i_120_171)">
+                                        <rect width="36" height="36" rx="18" fill="url(#paint1_linear_120_171)"></rect>
+                                        <path d="M20.4363 22.7709H25.0947L25.8264 18.0387H20.4363V15.4521C20.4363 13.4865 21.0789 11.7432 22.9176 11.7432H25.8723V7.61401C25.353 7.54381 24.255 7.39081 22.1805 7.39081C17.8479 7.39081 15.3081 9.67861 15.3081 14.8914V18.0396H10.854V22.7718H15.3072V35.7786C16.1892 35.91 17.0829 36 18 36C18.8289 36 19.638 35.9244 20.4363 35.8164V22.7709Z" fill="white"></path>
+                                    </g>
+                                    <defs>
+                                        <filter id="filter0_i_120_171" x="0" y="0" width="36" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                            <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                            <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                            <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                            <feOffset dy="4"></feOffset>
+                                            <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                            <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                            <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                            <feBlend mode="normal" in2="shape" result="effect1_innerShadow_120_171"></feBlend>
+                                        </filter>
+                                        <linearGradient id="paint1_linear_120_171" x1="5.3937" y1="5.3937" x2="32.9535" y2="32.9535" gradientUnits="userSpaceOnUse">
+                                            <stop stop-color="#2AA4F4"></stop>
+                                            <stop offset="1" stop-color="#007AD9"></stop>
+                                        </linearGradient>
+                                    </defs>
+                                </svg>
+                            </a>
+                        </li>
+                                                                        <li class="social__item">
+                            <a href="https://www.youtube.com/channel/UChFvH5CClhiESc9WZjmblQw?view_as=subscriber" class="social__link social__link--yt" target="_blank">
+                                <svg width="36" height="36" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <g alt-filter="url(#filter0_i_39_2)">
+                                        <rect width="40" height="40" rx="20" fill="#F40000"></rect>
+                                        <path fill-rule="evenodd" clip-rule="evenodd" d="M11.2625 27.0568C10.8702 26.9408 10.5123 26.7343 10.219 26.4549C9.9256 26.1754 9.7054 25.8312 9.57695 25.4512C8.84292 23.4874 8.62543 15.2869 10.0391 13.6681C10.5096 13.1414 11.1739 12.8172 11.8878 12.7658C15.6802 12.3677 27.3975 12.4208 28.7432 12.8985C29.1217 13.0183 29.4675 13.2203 29.7547 13.4891C30.0419 13.758 30.263 14.0868 30.4015 14.451C31.2035 16.4812 31.2307 23.8589 30.2928 25.8095C30.044 26.3173 29.6275 26.7285 29.1102 26.9772C27.6965 27.6672 13.1383 27.6539 11.2625 27.0568ZM17.2842 23.2087L24.0808 19.7587L17.2842 16.2821V23.2087Z" fill="white"></path>
+                                    </g>
+                                    <defs>
+                                        <filter id="filter0_i_39_2" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                            <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                            <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                            <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                            <feOffset dy="4"></feOffset>
+                                            <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                            <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                            <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                            <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_2"></feBlend>
+                                        </filter>
+                                    </defs>
+                                </svg>
+                            </a>
+                        </li>
+                                                                        <li class="social__item">
+                            <a href="https://www.instagram.com/dtekdnem?igsh=MTE4d2w3bWtxd3Fqbg==" class="social__link social__link--insta" target="_blank">
+                                <svg width="36" height="36" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <g alt-filter="url(#filter0_i_39_3)">
+                                        <rect width="40" height="40" rx="20" fill="url(#paint1_radial_3708_1317)"></rect>
+                                        <path d="M20 11.8072C22.6506 11.8072 23.0121 11.8072 24.0964 11.8072C25.0602 11.8072 25.5422 12.0482 25.9036 12.1687C26.3855 12.4096 26.747 12.5301 27.1084 12.8916C27.4699 13.253 27.7108 13.6145 27.8313 14.0964C27.9518 14.4578 28.0723 14.9398 28.1928 15.9036C28.1928 16.988 28.1928 17.2289 28.1928 20C28.1928 22.7711 28.1928 23.0121 28.1928 24.0964C28.1928 25.0602 27.9518 25.5422 27.8313 25.9036C27.5904 26.3855 27.4699 26.747 27.1084 27.1084C26.747 27.4699 26.3855 27.7108 25.9036 27.8313C25.5422 27.9518 25.0602 28.0723 24.0964 28.1928C23.0121 28.1928 22.7711 28.1928 20 28.1928C17.2289 28.1928 16.988 28.1928 15.9036 28.1928C14.9398 28.1928 14.4578 27.9518 14.0964 27.8313C13.6145 27.5904 13.253 27.4699 12.8916 27.1084C12.5301 26.747 12.2892 26.3855 12.1687 25.9036C12.0482 25.5422 11.9277 25.0602 11.8072 24.0964C11.8072 23.0121 11.8072 22.7711 11.8072 20C11.8072 17.2289 11.8072 16.988 11.8072 15.9036C11.8072 14.9398 12.0482 14.4578 12.1687 14.0964C12.4096 13.6145 12.5301 13.253 12.8916 12.8916C13.253 12.5301 13.6145 12.2892 14.0964 12.1687C14.4578 12.0482 14.9398 11.9277 15.9036 11.8072C16.988 11.8072 17.3494 11.8072 20 11.8072ZM20 10C17.2289 10 16.988 10 15.9036 10C14.8193 10 14.0964 10.241 13.494 10.4819C12.8916 10.7229 12.2892 11.0843 11.6867 11.6867C11.0843 12.2892 10.8434 12.7711 10.4819 13.494C10.241 14.0964 10.1205 14.8193 10 15.9036C10 16.988 10 17.3494 10 20C10 22.7711 10 23.0121 10 24.0964C10 25.1807 10.241 25.9036 10.4819 26.506C10.7229 27.1084 11.0843 27.7108 11.6867 28.3133C12.2892 28.9157 12.7711 29.1566 13.494 29.5181C14.0964 29.759 14.8193 29.8795 15.9036 30C16.988 30 17.3494 30 20 30C22.6506 30 23.0121 30 24.0964 30C25.1807 30 25.9036 29.759 26.506 29.5181C27.1084 29.2771 27.7108 28.9157 28.3133 28.3133C28.9157 27.7108 29.1566 27.2289 29.5181 26.506C29.759 25.9036 29.8795 25.1807 30 24.0964C30 23.0121 30 22.6506 30 20C30 17.3494 30 16.988 30 15.9036C30 14.8193 29.759 14.0964 29.5181 13.494C29.2771 12.8916 28.9157 12.2892 28.3133 11.6867C27.7108 11.0843 27.2289 10.8434 26.506 10.4819C25.9036 10.241 25.1807 10.1205 24.0964 10C23.0121 10 22.7711 10 20 10Z" fill="white"></path>
+                                        <path d="M20 14.8193C17.1084 14.8193 14.8193 17.1084 14.8193 20C14.8193 22.8916 17.1084 25.1807 20 25.1807C22.8916 25.1807 25.1807 22.8916 25.1807 20C25.1807 17.1084 22.8916 14.8193 20 14.8193ZM20 23.3735C18.1928 23.3735 16.6265 21.9277 16.6265 20C16.6265 18.1928 18.0723 16.6265 20 16.6265C21.8072 16.6265 23.3735 18.0723 23.3735 20C23.3735 21.8072 21.8072 23.3735 20 23.3735Z" fill="white"></path>
+                                        <path d="M25.3012 15.9036C25.9666 15.9036 26.506 15.3642 26.506 14.6988C26.506 14.0334 25.9666 13.494 25.3012 13.494C24.6358 13.494 24.0964 14.0334 24.0964 14.6988C24.0964 15.3642 24.6358 15.9036 25.3012 15.9036Z" fill="white"></path>
+                                        <defs>
+                                            <radialGradient id="paint1_radial_3708_1317" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(40.8047 0.812501) scale(92.3719)">
+                                                <stop stop-color="#F9ED32"></stop>
+                                                <stop offset="0.36" stop-color="#EE2A7B"></stop>
+                                                <stop offset="0.44" stop-color="#D22A8A"></stop>
+                                                <stop offset="0.6" stop-color="#8B2AB2"></stop>
+                                                <stop offset="0.83" stop-color="#1B2AF0"></stop>
+                                                <stop offset="0.88" stop-color="#002AFF"></stop>
+                                            </radialGradient>
+                                        </defs>
+                                    </g>
+                                    <defs>
+                                        <filter id="filter0_i_39_3" x="0" y="0" width="40" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                            <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                            <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                            <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                            <feOffset dy="4"></feOffset>
+                                            <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                            <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                            <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                            <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_3"></feBlend>
+                                        </filter>
+                                    </defs>
+                                </svg>
+                            </a>
+                        </li>
+                                                                            <li class="social__item">
+                                <a href="viber://pa?chatURI=dtekdniprovskielektromerezhi" class="social__link social__link--viber" rel="nofollow">
+                                    <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <g alt-filter="url(#filter0_i_39_4)">
+                                            <path d="M36 18C36 8.05887 27.9411 0 18 0C8.05887 0 0 8.05887 0 18C0 27.9411 8.05887 36 18 36C27.9411 36 36 27.9411 36 18Z" fill="#7360F2"></path>
+                                            <path d="M26.8153 9.13836C26.2199 8.59101 23.8094 6.83835 18.4362 6.81434C18.4362 6.81434 12.1027 6.4302 9.01515 9.26324C7.2961 10.9822 6.69109 13.4936 6.62867 16.6147C6.56624 19.7311 6.48461 25.5748 12.1171 27.1594H12.1219L12.1171 29.5747C12.1171 29.5747 12.0835 30.5542 12.7269 30.7511C13.5048 30.9912 13.9658 30.2469 14.7101 29.445C15.1182 29.0032 15.6799 28.3598 16.1073 27.8653C19.9583 28.1869 22.9211 27.4475 23.2571 27.337C24.035 27.0826 28.4383 26.5207 29.1537 20.677C29.8932 14.6652 28.7936 10.8574 26.8153 9.13836ZM27.4683 20.2545C26.8633 25.133 23.2955 25.4404 22.6377 25.6516C22.3592 25.7428 19.7567 26.3911 16.4819 26.175C16.4819 26.175 14.0426 29.1185 13.2839 29.882C13.1639 30.002 13.0246 30.05 12.9334 30.026C12.8037 29.9924 12.7653 29.8387 12.7701 29.6131C12.7701 29.2866 12.7893 25.594 12.7893 25.594C12.7845 25.594 12.7845 25.594 12.7893 25.594C8.02117 24.2735 8.29965 19.2989 8.35252 16.6963C8.40532 14.0938 8.89508 11.957 10.35 10.5213C12.9574 8.15886 18.3401 8.50934 18.3401 8.50934C22.8826 8.52854 25.0578 9.89706 25.562 10.3532C27.2378 11.7937 28.0925 15.227 27.4683 20.2545Z" fill="white"></path>
+                                            <path d="M20.6499 16.7876C20.4914 16.7876 20.3569 16.6627 20.3473 16.4995C20.2945 15.4671 19.8096 14.9629 18.8204 14.9101C18.6523 14.9005 18.5226 14.7565 18.5322 14.5884C18.5418 14.4203 18.6859 14.2907 18.854 14.3003C20.16 14.3723 20.8899 15.1214 20.9571 16.4659C20.9667 16.6339 20.8371 16.778 20.6691 16.7828C20.6595 16.7876 20.6547 16.7876 20.6499 16.7876Z" fill="white"></path>
+                                            <path d="M22.2055 17.3063H22.2007C22.0326 17.3015 21.8982 17.1623 21.903 16.9942C21.927 15.957 21.6293 15.1167 20.9954 14.4252C20.3664 13.7338 19.4973 13.3592 18.3497 13.2776C18.1816 13.2632 18.0568 13.1192 18.0712 12.9511C18.0856 12.783 18.2297 12.6582 18.3977 12.6726C19.6942 12.7686 20.717 13.22 21.4468 14.0171C22.1815 14.819 22.5368 15.8225 22.5128 17.0086C22.508 17.1767 22.3688 17.3063 22.2055 17.3063Z" fill="white"></path>
+                                            <path d="M23.7997 17.9305C23.6316 17.9305 23.4971 17.796 23.4971 17.6279C23.4827 15.7696 22.9497 14.3531 21.8645 13.2919C20.7938 12.2452 19.4348 11.7121 17.8359 11.6977C17.6678 11.6977 17.5334 11.5585 17.5334 11.3905C17.5334 11.2224 17.6726 11.0879 17.8359 11.0879C19.5981 11.1023 21.0962 11.6929 22.2823 12.855C23.4731 14.017 24.083 15.6208 24.1022 17.6183C24.107 17.7912 23.9725 17.9305 23.7997 17.9305C23.8045 17.9305 23.8045 17.9305 23.7997 17.9305ZM18.8923 20.5473C18.8923 20.5473 19.3196 20.5858 19.5501 20.3024L19.9967 19.7407C20.2127 19.4621 20.7362 19.2844 21.2451 19.5678C21.5285 19.7262 22.0422 20.0431 22.3592 20.2784C22.7 20.5281 23.3915 21.1043 23.3963 21.1091C23.7276 21.3877 23.8045 21.7958 23.5788 22.2328C23.5788 22.2328 23.5788 22.2376 23.5788 22.2424C23.3483 22.6505 23.0362 23.0347 22.6472 23.3899C22.6424 23.3899 22.6424 23.3947 22.6376 23.3947C22.3159 23.6637 21.999 23.8173 21.6917 23.851C21.6533 23.8606 21.6101 23.8606 21.5525 23.8606C21.418 23.8606 21.2835 23.8414 21.1491 23.7981L21.1395 23.7837C20.6593 23.6493 19.8622 23.3131 18.5369 22.5784C17.6726 22.1031 16.9571 21.6181 16.3473 21.1331C16.0256 20.8786 15.6991 20.5954 15.363 20.2592C15.3533 20.2496 15.3389 20.2352 15.3293 20.2256C15.3197 20.216 15.3053 20.2016 15.2957 20.192C15.2861 20.1824 15.2717 20.168 15.2621 20.1584C15.2525 20.1488 15.2381 20.1343 15.2285 20.1247C14.8972 19.7887 14.6091 19.4621 14.3546 19.1404C13.8696 18.5354 13.3847 17.8151 12.9093 16.9508C12.1746 15.6207 11.8385 14.8237 11.7041 14.3482L11.6897 14.3386C11.6464 14.2042 11.6272 14.0698 11.6272 13.9353C11.6272 13.8777 11.6272 13.8345 11.6368 13.7961C11.6753 13.4839 11.8289 13.1718 12.093 12.8501C12.093 12.8453 12.0978 12.8453 12.0978 12.8405C12.4531 12.4468 12.8372 12.1394 13.2454 11.9089C13.2454 11.9089 13.2502 11.9089 13.255 11.9089C13.6871 11.6833 14.0953 11.7601 14.3786 12.0914C14.3786 12.0914 14.9597 12.7877 15.2093 13.1286C15.4446 13.4503 15.7615 13.9593 15.92 14.2426C16.2033 14.7516 16.0256 15.275 15.7471 15.4911L15.1853 15.9376C14.902 16.1681 14.9404 16.5955 14.9404 16.5955C14.9404 16.5955 15.7712 19.7551 18.8923 20.5473Z" fill="white"></path>
+                                        </g>
+                                        <defs>
+                                            <filter id="filter0_i_39_4" x="0" y="0" width="36" height="40" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                                <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                                <feOffset dy="4"></feOffset>
+                                                <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                                <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                                <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_4"></feBlend>
+                                            </filter>
+                                        </defs>
+                                    </svg>
+                                </a>
+                            </li>
+                                                                            <li class="social__item">
+                                <a href="https://t.me/DTEKDniprovskiElektromerezhiBot" class="social__link social__link--telegram" rel="nofollow">
+                                    <svg width="36" height="36" viewBox="4 4 41 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <g alt-filter="url(#filter0_i_39_5)">
+                                            <linearGradient id="SVGID_1_" gradientUnits="userSpaceOnUse" x1="9.8581" y1="9.8581" x2="38.1419" y2="38.1419">
+                                                <stop offset="0" style="stop-color:#33BEF0"></stop>
+                                                <stop offset="1" style="stop-color:#0A85D9"></stop>
+                                            </linearGradient>
+                                            <path style="fill:url(#SVGID_1_);" d="M44,24c0,11.045-8.955,20-20,20S4,35.045,4,24S12.955,4,24,4S44,12.955,44,24z"></path>
+                                            <path style="opacity:0.05;" d="M10.119,23.466c8.155-3.695,17.733-7.704,19.208-8.284c3.252-1.279,4.67,0.028,4.448,2.113 c-0.273,2.555-1.567,9.99-2.363,15.317c-0.466,3.117-2.154,4.072-4.059,2.863c-1.445-0.917-6.413-4.17-7.72-5.282 c-0.891-0.758-1.512-1.608-0.88-2.474c0.185-0.253,0.658-0.763,0.921-1.017c1.319-1.278,1.141-1.553-0.454-0.412 c-0.19,0.136-1.292,0.935-1.745,1.237c-1.11,0.74-2.131,0.78-3.862,0.192c-1.416-0.481-2.776-0.852-3.634-1.223 C8.794,25.983,8.34,24.272,10.119,23.466z"></path>
+                                            <path style="opacity:0.07;" d="M10.836,23.591c7.572-3.385,16.884-7.264,18.246-7.813c3.264-1.318,4.465-0.536,4.114,2.011 c-0.326,2.358-1.483,9.654-2.294,14.545c-0.478,2.879-1.874,3.513-3.692,2.337c-1.139-0.734-5.723-3.754-6.835-4.633 c-0.86-0.679-1.751-1.463-0.71-2.598c0.348-0.379,2.27-2.234,3.707-3.614c0.833-0.801,0.536-1.196-0.469-0.508 c-1.843,1.263-4.858,3.262-5.396,3.625c-1.025,0.69-1.988,0.856-3.664,0.329c-1.321-0.416-2.597-0.819-3.262-1.078 C9.095,25.618,9.075,24.378,10.836,23.591z"></path>
+                                            <path style="fill:#FFFFFF;" d="M11.553,23.717c6.99-3.075,16.035-6.824,17.284-7.343c3.275-1.358,4.28-1.098,3.779,1.91 c-0.36,2.162-1.398,9.319-2.226,13.774c-0.491,2.642-1.593,2.955-3.325,1.812c-0.833-0.55-5.038-3.331-5.951-3.984 c-0.833-0.595-1.982-1.311-0.541-2.721c0.513-0.502,3.874-3.712,6.493-6.21c0.343-0.328-0.088-0.867-0.484-0.604 c-3.53,2.341-8.424,5.59-9.047,6.013c-0.941,0.639-1.845,0.932-3.467,0.466c-1.226-0.352-2.423-0.772-2.889-0.932 C9.384,25.282,9.81,24.484,11.553,23.717z"></path>
+                                        </g>
+                                        <defs>
+                                            <filter id="filter0_i_39_5" x="0" y="0" width="44" height="44" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+                                                <feFlood flood-opacity="0" result="BackgroundImageFix"></feFlood>
+                                                <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend>
+                                                <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"></feColorMatrix>
+                                                <feOffset dy="4"></feOffset>
+                                                <feGaussianBlur stdDeviation="2"></feGaussianBlur>
+                                                <feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"></feComposite>
+                                                <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"></feColorMatrix>
+                                                <feBlend mode="normal" in2="shape" result="effect1_innerShadow_39_5"></feBlend>
+                                            </filter>
+                                        </defs>
+                                    </svg>
+                                </a>
+                            </li>
+                                            </ul>
+                </strong></strong></strong></div><strong><strong><strong>
+            </strong></strong></strong></div><strong><strong><strong>
+        </strong></strong></strong></div><strong><strong><strong>
+    </strong></strong></strong></div><strong><strong><strong>
+            <svg style="height:0px;width:0px;">
+        <defs>
+            <radialGradient id="paint0_radial_3708_1317" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(40.8047 0.812501) scale(92.3719)">
+                <stop stop-color="#F9ED32"></stop>
+                <stop offset="0.36" stop-color="#EE2A7B"></stop>
+                <stop offset="0.44" stop-color="#D22A8A"></stop>
+                <stop offset="0.6" stop-color="#8B2AB2"></stop>
+                <stop offset="0.83" stop-color="#1B2AF0"></stop>
+                <stop offset="0.88" stop-color="#002AFF"></stop>
+            </radialGradient>
+            <linearGradient id="paint0_linear_120_171" x1="5.3937" y1="5.3937" x2="32.9535" y2="32.9535" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#2AA4F4"></stop>
+                <stop offset="1" stop-color="#007AD9"></stop>
+            </linearGradient>
+        </defs>
+    </svg>
+    <div class="footer__bottom">
+        <div class="footer__svg-antenna">
+            <svg width="1366" height="136" viewBox="0 0 1366 136" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M1217.75 18.1867H1247.63L1249.05 2.46196L1217.75 15.3114V18.1867ZM1257.41 18.1867H1287.29V15.3114L1255.99 2.46196L1257.41 18.1867ZM1249.39 20.1165L1248.52 29.7568L1256.27 27.1069L1255.64 20.1165H1249.39ZM1265.5 48.4541H1296.95V45.5866L1263.54 32.3069L1265.5 48.4541ZM1238.05 135.992H1230.77C1230.5 135.992 1230.24 135.878 1230.06 135.676C1229.87 135.475 1229.78 135.206 1229.81 134.935L1237.23 57.0252H-2031.11V55.0954H1238.29C1238.56 55.0954 1238.82 55.2095 1239 55.4111C1239.19 55.6118 1239.28 55.8814 1239.25 56.1518L1231.83 134.062H1237.17L1244.72 50.3839H1207.13C1206.6 50.3839 1206.16 49.9523 1206.16 49.419V44.9316C1206.16 44.5187 1206.43 44.1522 1206.82 44.0187L1246.52 30.4409L1247.46 20.1165H1216.78C1216.25 20.1165 1215.82 19.6849 1215.82 19.1516V14.6643C1215.82 14.2727 1216.05 13.9203 1216.41 13.7715L1249.79 0.0726166C1250.1 -0.0551605 1250.46 -0.0102386 1250.73 0.189255C1251 0.389572 1251.15 0.717239 1251.12 1.05275L1249.57 18.1867H1255.47L1253.92 1.05275C1253.89 0.717239 1254.04 0.389572 1254.31 0.189255C1254.58 -0.0110626 1254.94 -0.0563965 1255.25 0.0726166L1288.62 13.7715C1288.98 13.9203 1289.22 14.2727 1289.22 14.6643V19.1516C1289.22 19.6849 1288.79 20.1165 1288.26 20.1165H1257.58L1258.26 27.6881C1258.3 28.1316 1258.04 28.5446 1257.62 28.688L1248.33 31.8621L1247.43 41.84L1252.2 39.9901C1252.5 39.8698 1252.85 39.9172 1253.12 40.1146C1253.39 40.3112 1253.53 40.6311 1253.51 40.9616L1246.58 134.005H1265.87L1258.29 49.5051C1258.27 49.2355 1258.36 48.9672 1258.54 48.7677C1258.73 48.5678 1258.98 48.4541 1259.26 48.4541H1263.55L1261.42 30.9257C1261.38 30.5877 1261.52 30.2526 1261.79 30.0453C1262.06 29.8371 1262.42 29.786 1262.74 29.9121L1298.27 44.0348C1298.64 44.1811 1298.88 44.536 1298.88 44.9316V49.419C1298.88 49.9523 1298.45 50.3839 1297.92 50.3839H1265.73L1266.31 55.0954H1404.84V57.0252H1265.45C1264.96 57.0252 1264.55 56.6612 1264.49 56.1765L1263.79 50.3839H1260.31L1267.88 134.884C1267.91 135.153 1267.82 135.422 1267.63 135.621C1267.45 135.821 1267.19 135.935 1266.92 135.935H1245.54C1245.27 135.935 1245.01 135.823 1244.83 135.626C1244.65 135.43 1244.56 135.166 1244.58 134.898L1251.47 42.3428L1246.68 44.2029C1246.37 44.3237 1246.02 44.2747 1245.75 44.0743C1245.48 43.8736 1245.34 43.5492 1245.37 43.2162L1246.33 32.5455L1208.09 45.622V48.4541H1245.78C1246.05 48.4541 1246.31 48.5678 1246.49 48.7677C1246.67 48.968 1246.76 49.236 1246.74 49.5059L1239.01 135.114C1238.96 135.611 1238.55 135.992 1238.05 135.992Z" fill="#0F65A6"></path>
+            </svg>
+        </div>
+        <div class="footer__container footer__container--margin-xl">
+            <a href="/ua" class="footer__logo">
+                <img src="/img/logo2025.svg" alt="ДТЕК Дніпровські Електромережі">
+            </a>
+            <a href="https://play.google.com/store/apps/details?id=com.energyonline" class="footer__energy" target="_blank">energyonline</a>
+
+            <a href="/ua/gdpr" class="footer__gtpr">
+                Політика конфіденційності            </a>
+            <div class="footer__copyright" data-node="10.0.0.25">© ДТЕК Дніпровські Електромережі, 2025</div>
+        </div>
+    </div>
+</strong></strong></strong></footer><strong><strong><strong>
+
+    <div class="scroll-up">
+        <svg class="scroll-up__arrow" width="8" height="5" viewBox="0 0 8 5" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4.35355 0.646447C4.15829 0.451185 3.84171 0.451185 3.64645 0.646447L0.464466 3.82843C0.269204 4.02369 0.269204 4.34027 0.464466 4.53553C0.659728 4.7308 0.976311 4.7308 1.17157 4.53553L4 1.70711L6.82843 4.53553C7.02369 4.7308 7.34027 4.7308 7.53553 4.53553C7.7308 4.34027 7.7308 4.02369 7.53553 3.82843L4.35355 0.646447ZM4.5 2L4.5 1L3.5 1L3.5 2L4.5 2Z" fill="#C4C4C4"></path>
+        </svg>
+        <span>наверх</span>
+    </div>
+</strong></strong></strong></div>

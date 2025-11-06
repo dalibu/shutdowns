@@ -1,0 +1,27 @@
+# Файл: docker-compose.yml
+
+services:
+  # --- 1. FastAPI Parser API Service ---
+  dtek_api:
+    build: 
+      context: .
+      dockerfile: Dockerfile.parser 
+    container_name: dtek_api
+    ports:
+      - "8000:8000"
+    restart: always
+
+  # --- 2. Telegram Bot Service ---
+  dtek_bot:
+    build: 
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: dtek_bot
+    env_file:
+      - .env
+    environment:
+      # Бот обращается к API по имени сервиса внутри сети Docker
+      DTEK_API_URL: "http://dtek_api:8000/shutdowns"
+    depends_on:
+      - dtek_api
+    restart: always
