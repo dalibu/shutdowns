@@ -3,7 +3,7 @@ import re
 import asyncio
 import logging
 import random 
-from datetime import datetime, timedelta # ДОДАНО: timedelta
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple 
 
 import aiohttp
@@ -154,7 +154,7 @@ def format_shutdown_message(data: dict) -> str:
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
     # Игнорируем команды при парсинге адреса
-    text = text.replace('/check', '', 1).replace('/subscribe', '', 1).replace('/unsubscribe', '', 1).strip() 
+    text = text.replace('/check', '', 1).replace('/subscribe', '', 1).replace('/unsubscribe', '', 1).replace('/repeat', '', 1).strip() # ДОДАНО: /repeat
     
     parts = [p.strip() for p in text.split(',') if p.strip()]
     
@@ -423,6 +423,7 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
         "**Команди:**\n"
         "/check - перевірити графік за адресою.\n"
+        "/repeat - *НОВЕ!* Повторити останню перевірку /check.\n" # ДОДАНО
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
         "  *Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
         "/unsubscribe - скасувати підписку.\n"
@@ -633,6 +634,55 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 
+# --- НОВЫЙ ОБРАБОТЧИК ДЛЯ /repeat ---
+async def command_repeat_handler(message: types.Message, state: FSMContext) -> None:
+    """
+    Повторяет последнюю успешную проверку /check, используя адрес из FSMContext.
+    """
+    user_id = message.from_user.id
+
+    if user_id not in HUMAN_USERS:
+        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
+                             "за допомогою команди **/start**.")
+        await _handle_captcha_check(message, state)
+        return
+
+    data = await state.get_data()
+    address_data = data.get("last_checked_address")
+
+    if not address_data:
+        await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.")
+        return
+
+    city = address_data['city']
+    street = address_data['street']
+    house = address_data['house']
+    address_str = f"`{city}, {street}, {house}`"
+
+    await message.answer(f"🔄 **Повторюю перевірку** для адреси: {address_str}\n\n⏳ Очікуйте...")
+
+    try:
+        # Вызов API
+        data = await get_shutdowns_data(city, street, house)
+        
+        # Форматирование
+        response_text = format_shutdown_message(data)
+        
+        # Пропозиція про підписку
+        if user_id not in SUBSCRIPTIONS:
+             response_text += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
+        
+        await message.answer(response_text) 
+
+    except ValueError as e:
+        await message.answer(f"❌ **Помилка вводу/помилка API:** {e}")
+    except ConnectionError as e:
+        await message.answer(f"❌ **Помилка:** {e}")
+    except Exception as e:
+        logger.error(f"Critical error during repeat check for user {message.from_user.id}: {e}")
+        await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
+
+
 # --- 5. Main Execution ---
 
 async def main() -> None:
@@ -646,6 +696,7 @@ async def main() -> None:
     
     commands = [
         BotCommand(command="check", description="Перевірити графік за адресою"),
+        BotCommand(command="repeat", description="Повторити останню перевірку /check"), # ДОДАНО
         BotCommand(command="subscribe", description="Підписатися на оновлення (опціонально: /subscribe 3)"), 
         BotCommand(command="unsubscribe", description="Скасувати підписку"), 
         BotCommand(command="cancel", description="Скасувати поточну дію"),
@@ -658,6 +709,7 @@ async def main() -> None:
     # Регистрация captcha_answer_handler происходит декоратором
     dp.message.register(command_cancel_handler, Command("cancel"))
     dp.message.register(command_check_handler, Command("check")) 
+    dp.message.register(command_repeat_handler, Command("repeat")) # ДОДАНО
     dp.message.register(command_subscribe_handler, Command("subscribe")) 
     dp.message.register(command_unsubscribe_handler, Command("unsubscribe")) 
     
@@ -666,7 +718,7 @@ async def main() -> None:
     # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---
 
     logger.info("Бот запущено. Початок опитування...")
-    
+
     # Запускаємо опитування бота та фонову задачу паралельно
     await asyncio.gather(
         dp.start_polling(bot),

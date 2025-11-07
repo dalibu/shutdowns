@@ -31,6 +31,7 @@ from dtek_telegram_bot import (
     command_start_handler,
     captcha_answer_handler,
     command_check_handler,
+    command_repeat_handler, # <--- ДОБАВЛЕНО
     CaptchaState, # FSM State
     HUMAN_USERS, # Глобальный кеш
     SUBSCRIPTIONS, # ДОДАНО: Глобальный кеш подписок
@@ -432,3 +433,88 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             final_message = message_check.answer.call_args_list[1][0][0]
             # ИСПРАВЛЕНИЕ: Сравниваем с полным ожидаемым результатом
             self.assertEqual(final_message.strip(), expected_final_result.strip())
+
+    # ------------------------------------------------------------------
+    # --- НОВЫЕ ТЕСТЫ ДЛЯ КОМАНДЫ /repeat ------------------------------
+    # ------------------------------------------------------------------
+    
+    async def test_repeat_handler_success(self):
+        """
+        Тестирует успешное выполнение команды /repeat:
+        1. Пользователь прошёл CAPTCHA (HUMAN_USERS).
+        2. В FSMContext есть сохраненный адрес (last_checked_address).
+        3. Вызывается API и отправляется корректный ответ.
+        """
+        # 1. Mock Setup
+        user_id = 456
+        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2'}
+        
+        # Предварительная подготовка: Пользователь прошел CAPTCHA
+        HUMAN_USERS[user_id] = True 
+        
+        # Message Mocks
+        message_repeat = MagicMock(text="/repeat", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        
+        # FSMContext Mock: Устанавливаем сохраненный адрес
+        fsm_context = AsyncMock()
+        fsm_context.get_data.return_value = {"last_checked_address": address_data}
+        
+        # API Mock
+        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
+        expected_api_result = format_shutdown_message(mock_api_data)
+        
+        # Пользователь не подписан, ожидается подсказка
+        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT 
+
+        # 2. API MOCK CONTROL
+        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
+            
+            # --- ШАГ 1: /repeat ---
+            await command_repeat_handler(message_repeat, fsm_context)
+            
+            # Проверка вызова API:
+            mock_get_shutdowns.assert_called_once_with("м. Київ", "вул. Хрещатик", "2")
+            
+            # Проверка сообщений:
+            # 1. "Повторяю проверку..."
+            # 2. Результат
+            self.assertEqual(message_repeat.answer.call_count, 2)
+            
+            # Проверяем первое сообщение (уведомление)
+            self.assertIn("Повторюю перевірку", message_repeat.answer.call_args_list[0][0][0])
+            
+            # Проверяем финальный результат
+            final_message = message_repeat.answer.call_args_list[1][0][0]
+            self.assertEqual(final_message.strip(), expected_final_result.strip())
+
+    async def test_repeat_handler_no_previous_check(self):
+        """
+        Тестирует /repeat, когда в FSMContext нет сохраненного адреса.
+        """
+        # 1. Mock Setup
+        user_id = 789
+        
+        # Предварительная подготовка: Пользователь прошел CAPTCHA
+        HUMAN_USERS[user_id] = True 
+        
+        # Message Mocks
+        message_repeat = MagicMock(text="/repeat", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        
+        # FSMContext Mock: last_checked_address отсутствует
+        fsm_context = AsyncMock()
+        # Убедимся, что get_data возвращает пустой словарь (или не содержит нужного ключа)
+        fsm_context.get_data.return_value = {"another_key": "value"} 
+        
+        # 2. API MOCK CONTROL (убедимся, что API не вызывается)
+        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock()) as mock_get_shutdowns:
+            
+            # --- ШАГ 1: /repeat ---
+            await command_repeat_handler(message_repeat, fsm_context)
+            
+            # Проверка API:
+            mock_get_shutdowns.assert_not_called()
+            
+            # Проверка сообщений:
+            self.assertEqual(message_repeat.answer.call_count, 1)
+            error_message = message_repeat.answer.call_args_list[0][0][0]
+            self.assertIn("Спочатку вам потрібно перевірити графік", error_message)
