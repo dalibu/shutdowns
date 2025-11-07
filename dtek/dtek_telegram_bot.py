@@ -432,7 +432,7 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
         "**Команди:**\n"
         "/check - перевірити графік за адресою.\n"
-        "/repeat - *НОВЕ!* Повторити останню перевірку /check.\n"
+        "/repeat - повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
         "  *Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
         "/unsubscribe - скасувати підписку.\n"
@@ -622,7 +622,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         await state.update_data(last_checked_address=address_data)
         # --- КОНЕЦ ЛОГИКИ СОХРАНЕНИЯ ---
         
-        await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
+        await message.answer("⏳ Перевіряю графік. Очікуйте...")
 
         # Вызов API
         data = await get_shutdowns_data(city, street, house)
@@ -730,7 +730,7 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
          return
 
     # 3. Выполняем проверку
-    await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
+    await message.answer("⏳ Перевіряю графік. Очікуйте...")
 
     try:
         # --- Сохранение адреса для /repeat и /subscribe (временное сохранение) ---
