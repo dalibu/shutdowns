@@ -5,10 +5,12 @@ import aiohttp
 import asyncio
 import re
 import unittest 
+import hashlib 
 from unittest.mock import patch, MagicMock, AsyncMock
 from aioresponses import aioresponses
 from urllib.parse import urlencode
 from typing import List, Dict, Any
+from datetime import datetime, timedelta 
 
 # =========================================================================
 # === ФИКС: ОБЕСПЕЧЕНИЕ ИМПОРТА
@@ -27,11 +29,15 @@ from dtek_telegram_bot import (
     _get_captcha_data, 
     _pluralize_hours, 
     _get_shutdown_duration_str,
+    _get_schedule_hash, # ДОДАНО: Імпорт функції хешування
     # ИМПОРТЫ ДЛЯ ТЕСТИРОВАНИЯ ХЕНДЛЕРОВ
     command_start_handler,
     captcha_answer_handler,
     command_check_handler,
     command_repeat_handler,
+    command_subscribe_handler, # ДОДАНО
+    command_unsubscribe_handler, # ДОДАНО
+    subscription_checker_task, # ДОДАНО
     # ДОБАВЛЕНО: Импорт новых FSM-обработчиков
     process_city, 
     process_street, 
@@ -41,6 +47,7 @@ from dtek_telegram_bot import (
     CheckAddressState, # ДОБАВЛЕНО
     HUMAN_USERS, # Глобальный кеш
     SUBSCRIPTIONS, # ДОДАНО: Глобальный кеш подписок
+    CHECKER_LOOP_INTERVAL_SECONDS, # ДОДАНО: для імітації часу
 )
 
 
@@ -52,7 +59,7 @@ SUBSCRIBE_PROMPT = "\n\n💡 *Ви можете підписатися на ав
 
 # --- 1. Функции для мокирования HTTP (Только утилиты для тестов) ---
 def create_mock_url(city: str, street: str, house: str) -> str:
-    """Создает полный URL с query-параметрами для мокирования."""
+    """Создает полный URL с query-парамерами для мокирования."""
     query_params = {
         "city": city,
         "street": street,
@@ -81,6 +88,26 @@ MOCK_RESPONSE_OUTAGE = {
         ]
     }
 }
+
+MOCK_RESPONSE_OUTAGE_CHANGED = {
+    "city": "м. Київ",
+    "street": "вул. Хрещатик",
+    "house_num": "2",
+    "group": "2",
+    "schedule": {
+        "04.11.25": [
+            {"time": "00-03", "disconection": "full"},
+            {"time": "03-06", "disconection": "full"}, # ЗМІНА ТУТ
+            {"time": "06-09", "disconection": "none"},
+        ],
+        "05.11.25": [
+            {"time": "09-12", "disconection": "none"},
+            {"time": "12-15", "disconection": "full"},
+            {"time": "15-18", "disconection": "full"},
+        ]
+    }
+}
+
 
 MOCK_RESPONSE_NO_OUTAGE = {
     "city": "м. Одеса",
@@ -312,6 +339,38 @@ def test_format_message_multi_day_all_half_slots():
         "❌ **05.11.25**: 15:30 - 18:30 (3 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
+
+# ------------------------------------------------------------------
+# --- НОВИЙ ТЕСТ: Тестування функції _get_schedule_hash -------------
+# ------------------------------------------------------------------
+def test_get_schedule_hash():
+    """
+    Тестує генерацію хешу:
+    1. Перевіряє, що однаковий графік дає однаковий хеш.
+    2. Перевіряє, що змінений графік дає інший хеш.
+    """
+    
+    # 1. Однаковий графік (MOCK_RESPONSE_OUTAGE)
+    hash_original = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
+    hash_original_again = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
+    
+    assert len(hash_original) == 64 # SHA256 довжина
+    assert hash_original == hash_original_again
+    
+    # 2. Змінений графік (MOCK_RESPONSE_OUTAGE_CHANGED)
+    hash_changed = _get_schedule_hash(MOCK_RESPONSE_OUTAGE_CHANGED)
+    
+    assert hash_original != hash_changed
+    
+    # 3. Графік без відключень
+    hash_no_outage = _get_schedule_hash(MOCK_RESPONSE_NO_OUTAGE)
+    
+    assert hash_no_outage != hash_original
+    assert hash_no_outage != hash_changed
+    
+    # 4. Порожній графік (повинно повернути константу)
+    hash_empty = _get_schedule_hash({})
+    assert hash_empty == "NO_SCHEDULE_FOUND"
 
 
 # --- 5. Тесты для чистой бизнес-логики (CAPTCHA/склонения) ---
@@ -555,6 +614,10 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         expected_api_result = format_shutdown_message(mock_api_data)
         expected_final_result = expected_api_result + SUBSCRIBE_PROMPT 
 
+        # --- ИСПРАВЛЕНИЕ 1: Рассчитываем хеш, который код должен сохранить ---
+        expected_hash = _get_schedule_hash(mock_api_data)
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
         with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
             
             # --- ШАГ 1: /check (старт FSM) ---
@@ -590,10 +653,199 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             fsm_context.update_data.assert_any_call(house="100") 
             fsm_context.clear.assert_called_once()
             
-            # Проверяем, что last_checked_address был сохранен после clear()
-            fsm_context.update_data.assert_any_call(last_checked_address={'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100'})
+            # --- ИСПРАВЛЕНИЕ 1: Проверяем, что last_checked_address был сохранен (ВКЛЮЧАЯ ХЕШ) ---
+            expected_address_data = {'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100', 'hash': expected_hash}
+            fsm_context.update_data.assert_any_call(last_checked_address=expected_address_data)
+            # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
             
             # Проверка сообщений:
             self.assertEqual(message_house.answer.call_count, 2)
             final_message = message_house.answer.call_args_list[1][0][0]
             self.assertEqual(final_message.strip(), expected_final_result.strip())
+
+    # ------------------------------------------------------------------
+    # --- ФИКС 1: Тестування command_subscribe_handler ------------------
+    # ------------------------------------------------------------------
+    async def test_subscribe_handler_initial_subscription(self):
+        """
+        Тестує, що при першій підписці встановлюється next_check і last_schedule_hash = None.
+        ФИКС: Используем более надежный мок FSM context и проверяем chat_id.
+        """
+        user_id = 1000
+        # ИСПРАВЛЕНИЕ 1 (для Проблемы 1): Добавляем хеш в FSM, как это делает /check
+        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2', 'hash': 'some_hash_from_check'}
+        HUMAN_USERS[user_id] = True 
+        
+        # Для тесту /subscribe <interval>
+        user_mock = MagicMock(id=user_id)
+        chat_mock = MagicMock(id=user_id) # У ботов chat_id == user_id
+        
+        message_subscribe = MagicMock(
+            text="/subscribe 2.5", 
+            from_user=user_mock,
+            chat=chat_mock, # <--- ДОБАВЛЕНО
+            answer=AsyncMock()
+        )
+        
+        # ФИКС 1.1: Более надежный мок FSM context, чтобы избежать KeyError
+        fsm_context = MagicMock()
+        fsm_context.get_data = AsyncMock(return_value={"last_checked_address": address_data, "other_data": "test"})
+        fsm_context.set_state = AsyncMock()
+        fsm_context.update_data = AsyncMock()
+        fsm_context.clear = AsyncMock()
+        
+        # --- ШАГ 1: /subscribe ---
+        await command_subscribe_handler(message_subscribe, fsm_context)
+        
+        # Перевірка:
+        self.assertIn(user_id, SUBSCRIPTIONS) 
+        subscription = SUBSCRIPTIONS[user_id]
+        
+        self.assertEqual(subscription['city'], 'м. Київ')
+        self.assertEqual(subscription['interval_hours'], 2.5)
+        # ИСПРАВЛЕНИЕ 1 (для Проблемы 1): Хеш должен быть взят из FSM
+        self.assertEqual(subscription['last_schedule_hash'], 'some_hash_from_check') 
+        self.assertIsInstance(subscription['next_check'], datetime)
+        
+        message_subscribe.answer.assert_called_once()
+        
+        self.assertIn("Ви підписалися на автоматичні оновлення", message_subscribe.answer.call_args_list[0][0][0])
+        
+        # --- ИСПРАВЛЕНИЕ 2: (Assert 2) Меняем "годин" на "години" ---
+        self.assertIn("Інтервал перевірки: **2,5 години**", message_subscribe.answer.call_args_list[0][0][0])
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ 2 ---
+
+
+    # ------------------------------------------------------------------
+    # --- НОВИЙ ТЕСТ: Тестування command_unsubscribe_handler -----------
+    # ------------------------------------------------------------------
+    async def test_unsubscribe_handler(self):
+        """
+        Тестує успішне скасування підписки.
+        """
+        user_id = 1002
+        HUMAN_USERS[user_id] = True
+        
+        # 1. Створюємо підписку
+        SUBSCRIPTIONS[user_id] = {
+            'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2',
+            'interval_hours': 1.0,
+            'next_check': datetime.now(),
+            'last_schedule_hash': 'some_hash',
+            'chat_id': user_id 
+        }
+        self.assertIn(user_id, SUBSCRIPTIONS)
+
+        # 2. Моки
+        message_unsubscribe = MagicMock(
+            text="/unsubscribe", 
+            from_user=MagicMock(id=user_id),
+            answer=AsyncMock()
+        )
+        fsm_context = AsyncMock() 
+
+        # 3. Виклик
+        await command_unsubscribe_handler(message_unsubscribe, fsm_context)
+
+        # 4. Перевірка
+        self.assertNotIn(user_id, SUBSCRIPTIONS)
+        message_unsubscribe.answer.assert_called_once()
+        self.assertIn("Підписку скасовано", message_unsubscribe.answer.call_args[0][0])
+        
+    # ------------------------------------------------------------------
+    # --- ФИКС 2: Тестування subscription_checker_task (логіка хешу) ----
+    # ------------------------------------------------------------------
+    async def test_subscription_checker_notification_logic(self):
+        """
+        Тестує логіку відправки повідомлень у фоновій задачі, повністю контролюючи час.
+        """
+        user_id = 1001
+        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2'}
+        mock_bot = MagicMock(send_message=AsyncMock())
+        
+        initial_hash = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
+        changed_hash = _get_schedule_hash(MOCK_RESPONSE_OUTAGE_CHANGED)
+        
+        class InterruptSleep:
+            """Мок, который позволяет пройти одну итерацию цикла и прерывает вторую."""
+            def __init__(self):
+                self.first_call = True
+            
+            def __call__(self, delay):
+                if self.first_call:
+      
+                    self.first_call = False
+                    return 
+                raise StopAsyncIteration 
+    
+    
+        async def run_checker_once():
+            mock_sleep.side_effect = InterruptSleep()
+            try:
+                await subscription_checker_task(mock_bot)
+            except StopAsyncIteration:
+                pass
+            finally:
+                mock_sleep.side_effect = None 
+        
+        time_sequence = [
+            datetime(2025, 11, 7, 10, 0, 0), # 1: current_time (Cycle 1)
+            datetime(2025, 11, 7, 11, 5, 0), # 2: current_time (Cycle 2)
+            datetime(2025, 11, 7, 12, 10, 0) # 3: current_time (Cycle 3)
+        ]
+        
+        
+        with patch('dtek_telegram_bot.get_shutdowns_data') as mock_get_shutdowns, \
+             patch('dtek_telegram_bot.datetime') as mock_datetime_class, \
+             patch('dtek_telegram_bot.asyncio.sleep') as mock_sleep:
+            
+            mock_datetime_class.now.side_effect = time_sequence
+            mock_datetime_class.strptime = datetime.strptime
+
+            # --- ЦИКЛ 1: Перша перевірка (хеш None) ---
+            
+            SUBSCRIPTIONS[user_id] = {
+                **address_data,
+                'interval_hours': 1.0,
+                'next_check': datetime(2025, 11, 7, 9, 55, 0), 
+                'last_schedule_hash': None,
+                'chat_id': user_id, 
+            }
+            
+            mock_get_shutdowns.return_value = MOCK_RESPONSE_OUTAGE
+            
+            await run_checker_once()
+            
+            # Перевірка 1: Повідомлення було надіслано
+            mock_bot.send_message.assert_called_once()
+            self.assertIn("**Графік перевірено**", mock_bot.send_message.call_args[1]['text'])
+            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], initial_hash)
+            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], datetime(2025, 11, 7, 11, 0, 0))
+
+            # --- ЦИКЛ 2: Графік НЕ змінився ---
+            mock_bot.send_message.reset_mock() 
+            mock_get_shutdowns.reset_mock()
+            
+            mock_get_shutdowns.return_value = MOCK_RESPONSE_OUTAGE
+            
+            await run_checker_once() 
+            
+            # Перевірка 2: Повідомлення НЕ було надіслано
+            mock_bot.send_message.assert_not_called()
+            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], initial_hash)
+            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], datetime(2025, 11, 7, 12, 5, 0))
+
+
+            # --- ЦИКЛ 3: Графік ЗМІНИВСЯ ---
+            mock_bot.send_message.reset_mock()
+            mock_get_shutdowns.reset_mock()
+
+            mock_get_shutdowns.return_value = MOCK_RESPONSE_OUTAGE_CHANGED
+            
+            await run_checker_once() 
+
+            # Перевірка 3: Повідомлення БУЛО надіслано
+            mock_bot.send_message.assert_called_once()
+            self.assertIn("**ОНОВЛЕННЯ ГРАФІКУ!**", mock_bot.send_message.call_args[1]['text'])
+            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], changed_hash)
+            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], datetime(2025, 11, 7, 13, 10, 0))
