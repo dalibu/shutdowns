@@ -39,6 +39,14 @@ class CaptchaState(StatesGroup):
     """Состояния для прохождения CAPTCHA-проверки"""
     waiting_for_answer = State()
 
+# ДОБАВЛЕНО: Новый класс состояний для пошагового ввода адреса
+class CheckAddressState(StatesGroup):
+    """Состояния для пошагового ввода адреса через /check без аргументов"""
+    waiting_for_city = State()
+    waiting_for_street = State()
+    waiting_for_house = State()
+# КОНЕЦ ДОБАВЛЕННОГО БЛОКА
+
 # Кеш для хранения user_id пользователей, успешно прошедших проверку.
 HUMAN_USERS: Dict[int, bool] = {} 
 
@@ -76,7 +84,7 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
 
     # --- Расчет времени начала отключения ---
     try:
-        time_parts_start = re.split(r'\s*[-\–]\s*', first_slot.get('time', '0-0'))
+        time_parts_start = re.split(r'\s*[-\bi\–]\s*', first_slot.get('time', '0-0'))
         start_hour = int(time_parts_start[0])
         
         if first_slot.get('disconection') == 'full':
@@ -88,7 +96,7 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
 
     # --- Расчет времени конца отключения ---
     try:
-        time_parts_end = re.split(r'\s*[-\–]\s*', last_slot.get('time', '0-0'))
+        time_parts_end = re.split(r'\s*[-\bi\–]\s*', last_slot.get('time', '0-0'))
         end_hour = int(time_parts_end[1])
         
         if last_slot.get('disconection') == 'full':
@@ -154,7 +162,7 @@ def format_shutdown_message(data: dict) -> str:
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
     # Игнорируем команды при парсинге адреса
-    text = text.replace('/check', '', 1).replace('/subscribe', '', 1).replace('/unsubscribe', '', 1).replace('/repeat', '', 1).strip() # ДОДАНО: /repeat
+    text = text.replace('/check', '', 1).replace('/subscribe', '', 1).replace('/unsubscribe', '', 1).replace('/repeat', '', 1).strip()
     
     parts = [p.strip() for p in text.split(',') if p.strip()]
     
@@ -419,11 +427,12 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "👋 **Вітаю! Я бот для перевірки графіків відключень ДТЕК.**\n\n"
         "Для перевірки графіку, введіть команду **/check**, додавши адресу у форматі:\n"
         "`/check Місто, Вулиця, Будинок`\n\n"
+        "**АБО** просто введіть **/check** без адреси, щоб ввести дані покроково.\n\n" # ОБНОВЛЕНО
         "**Наприклад:**\n"
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n\n"
         "**Команди:**\n"
         "/check - перевірити графік за адресою.\n"
-        "/repeat - *НОВЕ!* Повторити останню перевірку /check.\n" # ДОДАНО
+        "/repeat - *НОВЕ!* Повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
         "  *Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
         "/unsubscribe - скасувати підписку.\n"
@@ -582,7 +591,7 @@ async def command_unsubscribe_handler(message: types.Message, state: FSMContext)
 async def command_cancel_handler(message: types.Message, state: FSMContext) -> None:
     # Добавляем очистку FSM состояния при отмене
     await state.clear()
-    await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку.")
+    await message.answer("Поточний ввід адреси неактивний. Введіть /check [адреса], щоб почати перевірку, або /check для покрокового вводу.")
 
 
 # --- ОБНОВЛЕННЫЙ command_check_handler ---
@@ -599,16 +608,19 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     text_args = message.text.replace('/check', '', 1).strip()
     
     if not text_args:
-        await message.answer("Будь ласка, введіть повну адресу в одному повідомленні, розділену комами (наприклад, `/check м. Дніпро, вул. Сонячна набережна, 6`).")
-        return
+        # НОВАЯ ЛОГИКА: Запуск пошагового ввода
+        await state.set_state(CheckAddressState.waiting_for_city)
+        await message.answer("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Київ`):")
+        return # Выход, ждем ввода города
 
+    # СУЩЕСТВУЮЩАЯ ЛОГИКА: Прямой ввод адреса через запятую
     try:
         city, street, house = parse_address_from_text(text_args)
         
-        # --- ДОДАНО: Сохраняем последнюю адрес для подписки в FSMContext ---
+        # --- Сохранение последней адрес для подписки в FSMContext ---
         address_data = {'city': city, 'street': street, 'house': house}
         await state.update_data(last_checked_address=address_data)
-        # --- КОНЕЦ ДОБАВЛЕННОЙ ЛОГИКИ ---
+        # --- КОНЕЦ ЛОГИКИ СОХРАНЕНИЯ ---
         
         await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
 
@@ -618,10 +630,9 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         # Форматирование
         response_text = format_shutdown_message(data)
         
-        # --- ДОДАНО: Пропозиція про підписку ---
+        # Пропозиція про підписку
         if user_id not in SUBSCRIPTIONS:
              response_text += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        # --- КОНЕЦ ДОБАВЛЕННОЙ ЛОГИКИ ---
 
         await message.answer(response_text) 
 
@@ -683,6 +694,82 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 
+# --- ДОБАВЛЕННЫЕ ОБРАБОТЧИКИ FSM ДЛЯ ПОШАГОВОГО ВВОДА АДРЕСА ---
+
+@dp.message(CheckAddressState.waiting_for_city, F.text)
+async def process_city(message: types.Message, state: FSMContext) -> None:
+    """Обрабатывает ввод города и запрашивает улицу."""
+    await state.update_data(city=message.text.strip())
+    await state.set_state(CheckAddressState.waiting_for_street)
+    await message.answer("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Хрещатик`):")
+
+@dp.message(CheckAddressState.waiting_for_street, F.text)
+async def process_street(message: types.Message, state: FSMContext) -> None:
+    """Обрабатывает ввод улицы и запрашивает номер дома."""
+    await state.update_data(street=message.text.strip())
+    await state.set_state(CheckAddressState.waiting_for_house)
+    await message.answer("📝 **Нарешті, введіть номер будинку** (наприклад, `2`):")
+
+@dp.message(CheckAddressState.waiting_for_house, F.text)
+async def process_house(message: types.Message, state: FSMContext) -> None:
+    """Обрабатывает ввод номера дома, выполняет проверку и завершает FSM."""
+    
+    # 1. Получаем все данные
+    await state.update_data(house=message.text.strip())
+    data = await state.get_data()
+    
+    city = data.get('city')
+    street = data.get('street')
+    house = data.get('house')
+    user_id = message.from_user.id
+    
+    # 2. Проверка, что все поля есть (на всякий случай)
+    if not all([city, street, house]):
+         await message.answer("❌ **Помилка.** Не вдалося отримати повну адресу. Спробуйте ще раз, набравши `/check`.")
+         await state.clear()
+         return
+
+    # 3. Выполняем проверку
+    await message.answer("⏳ Перевіряю графік. Це може зайняти декілька секунд...")
+
+    try:
+        # --- Сохранение адреса для /repeat и /subscribe (временное сохранение) ---
+        address_data = {'city': city, 'street': street, 'house': house}
+        # --- КОНЕЦ ЛОГИКИ СОХРАНЕНИЯ ---
+        
+        # Вызов API
+        api_data = await get_shutdowns_data(city, street, house)
+        
+        # Форматирование
+        response_text = format_shutdown_message(api_data)
+        
+        # 📌 ИСПРАВЛЕНИЕ: Сначала очищаем FSM state, затем сохраняем только last_checked_address
+        # Это гарантирует, что last_checked_address не будет очищен вместе с временными city/street/house
+        # данными текущего состояния.
+        await state.clear()
+        await state.update_data(last_checked_address=address_data)
+        # -------------------------------------------------------------------------
+        
+        # Пропозиція про підписку
+        if user_id not in SUBSCRIPTIONS:
+             response_text += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
+
+        await message.answer(response_text) 
+
+    except ValueError as e:
+        await message.answer(f"❌ **Помилка вводу/помилка API:** {e}")
+        await state.clear()
+    except ConnectionError as e:
+        await message.answer(f"❌ **Помилка:** {e}")
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Critical error during FSM check for user {user_id}: {e}")
+        await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
+        await state.clear()
+
+# --- КОНЕЦ ДОБАВЛЕННЫХ ОБРАБОТЧИКОВ FSM ---
+
+
 # --- 5. Main Execution ---
 
 async def main() -> None:
@@ -695,8 +782,8 @@ async def main() -> None:
     bot = Bot(BOT_TOKEN, default=default_props) 
     
     commands = [
-        BotCommand(command="check", description="Перевірити графік за адресою"),
-        BotCommand(command="repeat", description="Повторити останню перевірку /check"), # ДОДАНО
+        BotCommand(command="check", description="Перевірити графік за адресою (покроково або /check Місто,...)"), # ОБНОВЛЕНО
+        BotCommand(command="repeat", description="Повторити останню перевірку /check"),
         BotCommand(command="subscribe", description="Підписатися на оновлення (опціонально: /subscribe 3)"), 
         BotCommand(command="unsubscribe", description="Скасувати підписку"), 
         BotCommand(command="cancel", description="Скасувати поточну дію"),
@@ -709,16 +796,21 @@ async def main() -> None:
     # Регистрация captcha_answer_handler происходит декоратором
     dp.message.register(command_cancel_handler, Command("cancel"))
     dp.message.register(command_check_handler, Command("check")) 
-    dp.message.register(command_repeat_handler, Command("repeat")) # ДОДАНО
+    dp.message.register(command_repeat_handler, Command("repeat"))
     dp.message.register(command_subscribe_handler, Command("subscribe")) 
     dp.message.register(command_unsubscribe_handler, Command("unsubscribe")) 
     
+    # РЕГИСТРАЦИЯ FSM-ОБРАБОТЧИКОВ ДЛЯ АДРЕСА
+    dp.message.register(process_city, CheckAddressState.waiting_for_city, F.text)
+    dp.message.register(process_street, CheckAddressState.waiting_for_street, F.text)
+    dp.message.register(process_house, CheckAddressState.waiting_for_house, F.text)
+
     # --- ДОДАНО: Запуск фонової задачі ---
     checker_task = asyncio.create_task(subscription_checker_task(bot))
-    # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---
-
+    # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---\
+    
     logger.info("Бот запущено. Початок опитування...")
-
+    
     # Запускаємо опитування бота та фонову задачу паралельно
     await asyncio.gather(
         dp.start_polling(bot),

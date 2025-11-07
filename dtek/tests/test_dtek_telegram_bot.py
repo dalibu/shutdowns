@@ -31,8 +31,14 @@ from dtek_telegram_bot import (
     command_start_handler,
     captcha_answer_handler,
     command_check_handler,
-    command_repeat_handler, # <--- ДОБАВЛЕНО
+    command_repeat_handler,
+    # ДОБАВЛЕНО: Импорт новых FSM-обработчиков
+    process_city, 
+    process_street, 
+    process_house,
+    # КОНЕЦ ДОБАВЛЕННОГО БЛОКА
     CaptchaState, # FSM State
+    CheckAddressState, # ДОБАВЛЕНО
     HUMAN_USERS, # Глобальный кеш
     SUBSCRIPTIONS, # ДОДАНО: Глобальный кеш подписок
 )
@@ -45,7 +51,6 @@ API_BASE_URL = "http://dtek_api:8000"
 SUBSCRIBE_PROMPT = "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
 
 # --- 1. Функции для мокирования HTTP (Только утилиты для тестов) ---
-
 def create_mock_url(city: str, street: str, house: str) -> str:
     """Создает полный URL с query-параметрами для мокирования."""
     query_params = {
@@ -91,9 +96,9 @@ MOCK_RESPONSE_NO_OUTAGE = {
         ]
     }
 }
+# ... (Остальные тестовые функции TestBotBusinessLogic остаются без изменений)
 
 # --- 3. Тестовые функции для API-интеграции (проверка get_shutdowns_data) ---
-
 @pytest.mark.asyncio
 async def test_successful_outage_response():
     """Тестирование успешного ответа с запланированными отключениями."""
@@ -138,7 +143,6 @@ async def test_connection_error_mocked():
 
 
 # --- 4. Тестовые функции для форматирования сообщений (проверка format_shutdown_message) ---
-
 def test_format_message_no_outage():
     """
     Тестирование форматирования для случая без запланированных отключений в новом формате.
@@ -166,7 +170,7 @@ def test_format_message_no_outage():
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
-
+# ... (Остальные тесты форматирования format_message_... остаются без изменений)
 def test_format_message_half_slots():
     """
     Тест 1: начало 'half' (18:30) и конец 'half' (21:30) в новом формате.
@@ -518,3 +522,78 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(message_repeat.answer.call_count, 1)
             error_message = message_repeat.answer.call_args_list[0][0][0]
             self.assertIn("Спочатку вам потрібно перевірити графік", error_message)
+
+    # ------------------------------------------------------------------
+    # --- НОВЫЙ ТЕСТ: Пошаговый ввод адреса через FSM ------------------
+    # ------------------------------------------------------------------
+    async def test_check_handler_fsm_flow_success(self):
+        """
+        Тестирует пошаговый ввод адреса через FSM:
+        1. /check без аргументов -> Запрос города.
+        2. Ввод города -> Запрос улицы.
+        3. Ввод улицы -> Запрос дома.
+        4. Ввод дома -> Вызов API и отправка ответа, очистка FSM, сохранение last_checked_address.
+        """
+        user_id = 999
+        HUMAN_USERS[user_id] = True 
+        
+        # 1. Mock Messages
+        message_check_empty = MagicMock(text="/check", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        message_city = MagicMock(text="м. Львів", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        message_street = MagicMock(text="вул. Зелена", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        message_house = MagicMock(text="100", from_user=MagicMock(id=user_id), answer=AsyncMock())
+        
+        # 2. FSMContext Mock: Устанавливаем данные, которые будут возвращены при финальном вызове get_data
+        fsm_context = AsyncMock()
+        # Настраиваем get_data для финального вызова (должен вернуть все три части)
+        fsm_context.get_data.return_value = {'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100'}
+        
+        # API Mock
+        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
+        # Обновляем адрес в mock_api_data, чтобы он соответствовал введенному (иначе format_shutdown_message будет использовать "м. Київ")
+        mock_api_data.update(city="м. Львів", street="вул. Зелена", house_num="100") 
+        expected_api_result = format_shutdown_message(mock_api_data)
+        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT 
+
+        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
+            
+            # --- ШАГ 1: /check (старт FSM) ---
+            await command_check_handler(message_check_empty, fsm_context)
+            
+            # Проверка: FSM перешло в waiting_for_city и ответ был отправлен
+            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_city)
+            message_check_empty.answer.assert_called_once_with("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Київ`):")
+            
+            # --- ШАГ 2: Ввод города ---
+            await process_city(message_city, fsm_context)
+            
+            # Проверка: FSM перешло в waiting_for_street
+            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_street)
+            message_city.answer.assert_called_once_with("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Хрещатик`):")
+            fsm_context.update_data.assert_called_with(city="м. Львів")
+
+            # --- ШАГ 3: Ввод улицы ---
+            await process_street(message_street, fsm_context)
+
+            # Проверка: FSM перешло в waiting_for_house
+            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_house)
+            message_street.answer.assert_called_once_with("📝 **Нарешті, введіть номер будинку** (наприклад, `2`):")
+            fsm_context.update_data.assert_called_with(street="вул. Зелена")
+
+            # --- ШАГ 4: Ввод дома (Финальный шаг) ---
+            await process_house(message_house, fsm_context)
+
+            # Проверка API:
+            mock_get_shutdowns.assert_called_once_with("м. Львів", "вул. Зелена", "100")
+            
+            # Проверка FSM (обновление для новой логики сохранения/очистки):
+            fsm_context.update_data.assert_any_call(house="100") 
+            fsm_context.clear.assert_called_once()
+            
+            # Проверяем, что last_checked_address был сохранен после clear()
+            fsm_context.update_data.assert_any_call(last_checked_address={'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100'})
+            
+            # Проверка сообщений:
+            self.assertEqual(message_house.answer.call_count, 2)
+            final_message = message_house.answer.call_args_list[1][0][0]
+            self.assertEqual(final_message.strip(), expected_final_result.strip())
