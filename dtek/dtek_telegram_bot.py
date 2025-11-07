@@ -610,7 +610,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     if not text_args:
         # НОВАЯ ЛОГИКА: Запуск пошагового ввода
         await state.set_state(CheckAddressState.waiting_for_city)
-        await message.answer("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Київ`):")
+        await message.answer("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Дніпро`):")
         return # Выход, ждем ввода города
 
     # СУЩЕСТВУЮЩАЯ ЛОГИКА: Прямой ввод адреса через запятую
@@ -701,14 +701,14 @@ async def process_city(message: types.Message, state: FSMContext) -> None:
     """Обрабатывает ввод города и запрашивает улицу."""
     await state.update_data(city=message.text.strip())
     await state.set_state(CheckAddressState.waiting_for_street)
-    await message.answer("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Хрещатик`):")
+    await message.answer("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Сонячна набережна`):")
 
 @dp.message(CheckAddressState.waiting_for_street, F.text)
 async def process_street(message: types.Message, state: FSMContext) -> None:
     """Обрабатывает ввод улицы и запрашивает номер дома."""
     await state.update_data(street=message.text.strip())
     await state.set_state(CheckAddressState.waiting_for_house)
-    await message.answer("📝 **Нарешті, введіть номер будинку** (наприклад, `2`):")
+    await message.answer("📝 **Нарешті, введіть номер будинку** (наприклад, `6`):")
 
 @dp.message(CheckAddressState.waiting_for_house, F.text)
 async def process_house(message: types.Message, state: FSMContext) -> None:

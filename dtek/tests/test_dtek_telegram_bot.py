@@ -562,14 +562,14 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
             
             # Проверка: FSM перешло в waiting_for_city и ответ был отправлен
             fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_city)
-            message_check_empty.answer.assert_called_once_with("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Київ`):")
+            message_check_empty.answer.assert_called_once_with("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Дніпро`):")
             
             # --- ШАГ 2: Ввод города ---
             await process_city(message_city, fsm_context)
             
             # Проверка: FSM перешло в waiting_for_street
             fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_street)
-            message_city.answer.assert_called_once_with("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Хрещатик`):")
+            message_city.answer.assert_called_once_with("📝 **Тепер введіть назву вулиці** (наприклад, `вул. Сонячна набережна`):")
             fsm_context.update_data.assert_called_with(city="м. Львів")
 
             # --- ШАГ 3: Ввод улицы ---
@@ -577,7 +577,7 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
 
             # Проверка: FSM перешло в waiting_for_house
             fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_house)
-            message_street.answer.assert_called_once_with("📝 **Нарешті, введіть номер будинку** (наприклад, `2`):")
+            message_street.answer.assert_called_once_with("📝 **Нарешті, введіть номер будинку** (наприклад, `6`):")
             fsm_context.update_data.assert_called_with(street="вул. Зелена")
 
             # --- ШАГ 4: Ввод дома (Финальный шаг) ---
