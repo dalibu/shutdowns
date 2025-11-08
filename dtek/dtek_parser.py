@@ -8,6 +8,9 @@ from pathlib import Path
 import logging
 from logging import DEBUG, INFO, WARNING, ERROR
 from typing import List, Dict, Any 
+# ДОБАВЛЕНО: Для работы с часовыми поясами
+from datetime import datetime # ДОБАВЛЕНО
+import pytz # ДОБАВЛЕНО
 
 # --- 1. Конфигурация Логирования ---
 LOGGING_LEVEL = INFO 
@@ -16,10 +19,19 @@ logger.setLevel(LOGGING_LEVEL)
 
 # Настройка формата
 handler = logging.StreamHandler()
+
+# ДОБАВЛЕНО: Функция для преобразования времени в Киевский часовой пояс
+def custom_time(*args):
+    """Возвращает текущее время в Киевском часовом поясе для логирования."""
+    # Получаем текущее время в UTC, а затем конвертируем в 'Europe/Kyiv'
+    return datetime.now(pytz.timezone('Europe/Kyiv')).timetuple()
+
 formatter = logging.Formatter(
     '%(asctime)s %(name)s %(levelname)s %(message)s', 
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+# ИЗМЕНЕНО: Применение функции для логирования в Киевском часовом поясе
+formatter.converter = custom_time 
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)

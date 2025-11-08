@@ -4,10 +4,33 @@ from typing import Dict, List, Any
 import logging
 import asyncio 
 from playwright.async_api import TimeoutError # Импорт для явной обработки ошибок
+# ДОБАВЛЕНО: Для работы с часовыми поясами
+from datetime import datetime
+import pytz
 
 # Конфигурация логирования
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# ДОБАВЛЕНО: Функция для преобразования времени в Киевский часовой пояс
+def custom_time(*args):
+    """Возвращает текущее время в Киевском часовом поясе для логирования."""
+    # Получаем текущее время в UTC, а затем конвертируем в 'Europe/Kyiv'
+    return datetime.now(pytz.timezone('Europe/Kyiv')).timetuple()
+
+# Настройка формата
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    '%(asctime)s %(name)s %(levelname)s %(message)s', 
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+# ИЗМЕНЕНО: Применение функции для логирования в Киевском часовом поясе
+formatter.converter = custom_time 
+# МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ: Исправление ошибки, где handler устанавливал сам себя
+handler.setFormatter(formatter) 
+if not logger.handlers:
+    logger.addHandler(handler)
+
 
 # --- Pydantic Схемы ---
 

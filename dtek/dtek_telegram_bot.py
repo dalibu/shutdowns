@@ -824,6 +824,9 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
     house = data.get('house')
     user_id = message.from_user.id
     
+    # 📌 ИСПРАВЛЕНИЕ: Сохраняем предыдущий адрес на случай сбоя
+    last_checked_address_old = data.get('last_checked_address')
+    
     # 2. Проверка, что все поля есть (на всякий случай)
     if not all([city, street, house]):
          await message.answer("❌ **Помилка.** Не вдалося отримати повну адресу. Спробуйте ще раз, набравши `/check`.")
@@ -857,15 +860,29 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
         await message.answer(response_text) 
 
     except ValueError as e:
-        await message.answer(f"❌ **Помилка вводу/помилка API:** {e}")
         await state.clear()
+        error_message = f"❌ **Помилка вводу/помилка API:** {e}"
+        if last_checked_address_old:
+             await state.update_data(last_checked_address=last_checked_address_old)
+             error_message += "\n\n*Попередній успішний запит збережено. Ви можете його повторити командою `/repeat`.*"
+        await message.answer(error_message) 
+        
     except ConnectionError as e:
-        await message.answer(f"❌ **Помилка:** {e}")
         await state.clear()
+        error_message = f"❌ **Помилка:** {e}"
+        if last_checked_address_old:
+             await state.update_data(last_checked_address=last_checked_address_old)
+             error_message += "\n\n*Попередній успішний запит збережено. Ви можете його повторити командою `/repeat`.*"
+        await message.answer(error_message)
+        
     except Exception as e:
         logger.error(f"Critical error during FSM check for user {user_id}: {e}")
-        await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
         await state.clear()
+        error_message = f"❌ Виникла непередбачена помилка. Спробуйте пізніше."
+        if last_checked_address_old:
+             await state.update_data(last_checked_address=last_checked_address_old)
+             error_message += "\n\n*Попередній успішний запит збережено. Ви можете його повторити командою `/repeat`.*"
+        await message.answer(error_message)
 
 # --- КОНЕЦ ДОБАВЛЕННЫХ ОБРАБОТЧИКОВ FSM ---
 
