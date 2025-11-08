@@ -28,7 +28,7 @@ from dtek_telegram_bot import (
     # Функции для тестирования
     _get_captcha_data, 
     _pluralize_hours, 
-    _get_shutdown_duration_str,
+    _get_shutdown_duration_str_by_hours, # ИЗМЕНЕНО: Исправлен импорт
     _get_schedule_hash, # ДОДАНО: Імпорт функції хешування
     # ИМПОРТЫ ДЛЯ ТЕСТИРОВАНИЯ ХЕНДЛЕРОВ
     command_start_handler,
@@ -217,10 +217,11 @@ def test_format_message_half_slots():
         }
     }
 
+    # ИЗМЕНЕНО: Ожидаемый результат обновлен
     expected_output = (
         "🏠 Адреса: `м. Дніпро, вул. Сонячна набережна, 6`\n"
         "👥 Черга: `3.2`\n"
-        "❌ **04.11.25**: 18:30 - 21:30 (3 години)"
+        "❌ **04.11.25**: 18:30 - 21:00 (2,5 години), 21:30 - 22:00 (0,5 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
@@ -243,10 +244,11 @@ def test_format_message_full_start_half_end():
         }
     }
 
+    # ИЗМЕНЕНО: Ожидаемый результат обновлен
     expected_output = (
         "🏠 Адреса: `м. Львів, вул. Зелена, 100`\n"
         "👥 Черга: `4.1`\n"
-        "❌ **04.11.25**: 18:00 - 21:30 (3,5 години)"
+        "❌ **04.11.25**: 18:00 - 21:00 (3 години), 21:30 - 22:00 (0,5 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
@@ -299,11 +301,12 @@ def test_format_message_multi_day_complex_slots():
         }
     }
 
+    # ИЗМЕНЕНО: Ожидаемый результат обновлен
     expected_output = (
         "🏠 Адреса: `м. Одеса, вул. Приморська, 5`\n"
         "👥 Черга: `6.0`\n"
         "❌ **04.11.25**: 18:30 - 21:00 (2,5 години)\n"
-        "❌ **05.11.25**: 15:00 - 18:30 (3,5 години)"
+        "❌ **05.11.25**: 15:00 - 18:00 (3 години), 18:30 - 19:00 (0,5 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
@@ -332,11 +335,12 @@ def test_format_message_multi_day_all_half_slots():
         }
     }
 
+    # ИЗМЕНЕНО: Ожидаемый результат обновлен
     expected_output = (
         "🏠 Адреса: `м. Чернігів, вул. Івана Мазепи, 42`\n"
         "👥 Черга: `7.0`\n"
-        "❌ **04.11.25**: 18:30 - 21:30 (3 години)\n"
-        "❌ **05.11.25**: 15:30 - 18:30 (3 години)"
+        "❌ **04.11.25**: 18:30 - 21:00 (2,5 години), 21:30 - 22:00 (0,5 години)\n"
+        "❌ **05.11.25**: 15:30 - 18:00 (2,5 години), 18:30 - 19:00 (0,5 години)"
     )
     assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
@@ -409,28 +413,17 @@ class TestBotBusinessLogic(unittest.TestCase):
         self.assertEqual(_pluralize_hours(0.5), "години")
         self.assertEqual(_pluralize_hours(2.5), "години")
         
-    def test_get_shutdown_duration_str_basic(self):
-        """[ВОССТАНОВЛЕНО] Проверяет корректное форматирование длительности для стандартных случаев."""
-        self.assertEqual(_get_shutdown_duration_str('10:00', '13:00'), "3 години")
-        self.assertEqual(_get_shutdown_duration_str('18:30', '21:00'), "2,5 години")
-        self.assertEqual(_get_shutdown_duration_str('01:00', '02:00'), "1 годину")
-        self.assertEqual(_get_shutdown_duration_str('12:00', '12:30'), "0,5 години")
-        self.assertEqual(_get_shutdown_duration_str('08:00', '18:00'), "10 годин")
-
-    def test_get_shutdown_duration_str_midnight_rollover(self):
-        """[ВОССТАНОВЛЕНО] Проверяет расчет длительности через полночь."""
-        self.assertEqual(_get_shutdown_duration_str('22:00', '02:00'), "4 години")
-        self.assertEqual(_get_shutdown_duration_str('23:30', '06:00'), "6,5 години")
-        self.assertEqual(_get_shutdown_duration_str('23:30', '00:30'), "1 годину")
-
-    def test_get_shutdown_duration_str_edge_cases(self):
-        """Проверяет крайние и ошибочные случаи."""
-        
-        # Старт = Конец (24 часа)
-        self.assertEqual(_get_shutdown_duration_str('12:00', '12:00'), "24 години") 
-        # Неправильный формат времени
-        self.assertEqual(_get_shutdown_duration_str('10-00', '12:00'), "?")
-        self.assertEqual(_get_shutdown_duration_str('abc', 'def'), "?")
+    # 📌 ИЗМЕНЕНИЕ: Тесты для удаленной функции _get_shutdown_duration_str удалены.
+    # 📌 НОВЫЙ ТЕСТ: Добавлен тест для _get_shutdown_duration_str_by_hours
+    def test_get_shutdown_duration_str_by_hours(self):
+        """Проверяет корректное форматирование длительности для новой функции."""
+        self.assertEqual(_get_shutdown_duration_str_by_hours(3.0), "3 години")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(2.5), "2,5 години")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(1.0), "1 годину")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(0.5), "0,5 години")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(10.0), "10 годин")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(0.0), "0 годин")
+        self.assertEqual(_get_shutdown_duration_str_by_hours(21.0), "21 годину")
 
 
 # --- 6. ИНТЕГРАЦИОННЫЕ ТЕСТЫ ДЛЯ ХЕНДЛЕРОВ (CAPTCHA + CHECK) ---
@@ -510,7 +503,7 @@ class TestBotHandlers(unittest.IsolatedAsyncioTestCase):
         """
         # 1. Mock Setup
         user_id = 456
-        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2'}
+        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2', 'hash': 'some_hash'} # ИСПРАВЛЕНО
         
         # Предварительная подготовка: Пользователь прошел CAPTCHA
         HUMAN_USERS[user_id] = True 

@@ -73,49 +73,84 @@ def format_minutes_to_hh_m(minutes: int) -> str:
 
 def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
     """
-    Консолидирует слоты отключений и возвращает строку со временем ИЛИ статус "немає".
+    Консолидирует слоты отключений в ГРУППЫ и возвращает строку со временем.
     """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
     if not outage_slots:
         return "Відключення не заплановані" 
 
-    first_slot = outage_slots[0]
-    last_slot = outage_slots[-1]
+    # --- 1. Группировка смежных слотов ---
+    groups = [] # Список групп [{start_min, end_min, duration_hours}]
+    current_group = None
 
-    # --- Расчет времени начала отключения ---
-    try:
-        time_parts_start = re.split(r'\s*[-\bi\–]\s*', first_slot.get('time', '0-0'))
-        start_hour = int(time_parts_start[0])
+    for slot in outage_slots:
+        try:
+            # 1.1. Извлечение времени и длительности слота
+            time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
+            start_hour = int(time_parts[0])
+            end_hour = int(time_parts[1])
+            if end_hour == 0: # Обработка 23-00 (00 == 24)
+                end_hour = 24
+
+            slot_duration = 0.0
+            slot_start_min = 0
+            slot_end_min = 0
+
+            disconection = slot.get('disconection')
+            if disconection == 'full':
+                slot_duration = 1.0
+                slot_start_min = start_hour * 60
+                slot_end_min = end_hour * 60
+            elif disconection == 'half':
+                slot_duration = 0.5
+                # Логика из старой версии: half - это вторая половина часа
+                slot_start_min = start_hour * 60 + 30
+                slot_end_min = end_hour * 60
+            
+            # 1.2. Логика группировки
+            if current_group is None:
+                # Начинаем новую группу
+                current_group = {
+                    "start_min": slot_start_min,
+                    "end_min": slot_end_min,
+                    "duration_hours": slot_duration
+                }
+            # Слот (slot_start_min) начинается *сразу* после конца текущей группы (current_group.end_min)?
+            elif slot_start_min == current_group["end_min"]: 
+                # Продлеваем группу
+                current_group["end_min"] = slot_end_min
+                current_group["duration_hours"] += slot_duration
+            else:
+                # Разрыв. Сохраняем старую группу и начинаем новую.
+                groups.append(current_group)
+                current_group = {
+                    "start_min": slot_start_min,
+                    "end_min": slot_end_min,
+                    "duration_hours": slot_duration
+                }
         
-        if first_slot.get('disconection') == 'full':
-            outage_start_min = start_hour * 60 
-        else:
-            outage_start_min = start_hour * 60 + 30
-    except Exception:
-        return "Помилка парсингу часу початку"
+        except Exception as e:
+            logger.error(f"Error processing slot {slot}: {e}")
+            continue # Пропускаем битый слот
 
-    # --- Расчет времени конца отключения ---
-    try:
-        time_parts_end = re.split(r'\s*[-\bi\–]\s*', last_slot.get('time', '0-0'))
-        end_hour = int(time_parts_end[1])
+    # 1.3. Добавляем последнюю группу
+    if current_group:
+        groups.append(current_group)
+
+    # --- 2. Форматирование вывода ---
+    if not groups:
+         return "Помилка парсингу слотів"
+
+    output_parts = []
+    for group in groups:
+        start_time_final = format_minutes_to_hh_m(group["start_min"])
+        end_time_final = format_minutes_to_hh_m(group["end_min"])
+        duration_str = _get_shutdown_duration_str_by_hours(group["duration_hours"])
         
-        if last_slot.get('disconection') == 'full':
-            outage_end_min = end_hour * 60
-        else: 
-            outage_end_min = end_hour * 60 - 30
-
-    except Exception:
-        return "Помилка парсингу часу кінця"
+        output_parts.append(f"{start_time_final} - {end_time_final} ({duration_str})")
         
-    if outage_start_min >= outage_end_min:
-         return "Відключення не заплановані (або помилка часу)"
-
-    start_time_final = format_minutes_to_hh_m(outage_start_min)
-    end_time_final = format_minutes_to_hh_m(outage_end_min)
-    duration_str = _get_shutdown_duration_str(start_time_final, end_time_final)
-    
-    return f"{start_time_final} - {end_time_final} ({duration_str})"
+    return ", ".join(output_parts)
 
 
 def format_shutdown_message(data: dict) -> str:
@@ -202,32 +237,19 @@ def _pluralize_hours(value: float) -> str:
     # 0, 5-10, 15-20, ...: годин
     return "годин"
 
-def _get_shutdown_duration_str(start_time_str: str, end_time_str: str) -> str:
+# 📌 ИЗМЕНЕНИЕ: Упрощение функции расчета длительности. 
+# Теперь принимает просто количество часов (включая дробные).
+def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
     """
-    Рассчитывает продолжительность отключения (в часах) и возвращает форматированную строку
+    Принимает количество часов и возвращает форматированную строку
     с правильным склонением: '(X [година/години/годин])'.
     """
-    def time_to_minutes(time_str: str) -> int:
-        # Парсинг времени в формате 'HH:MM'
-        h, m = map(int, time_str.split(':'))
-        return h * 60 + m
-
     try:
-        start_minutes = time_to_minutes(start_time_str)
-        end_minutes = time_to_minutes(end_time_str)
-        
-        duration_minutes = end_minutes - start_minutes
-        
-        if duration_minutes < 0:
-             # Ночь, переход через полночь
-             duration_minutes += 24 * 60
-        elif duration_minutes == 0:
-             # Если время начала и конца совпадает, это полные сутки (24 часа)
-             duration_minutes = 24 * 60 
+        if duration_hours <= 0:
+             return "0 годин"
 
-        duration_hours = duration_minutes / 60.0
-        
         # Форматирование: 1.0 -> '1', 2.5 -> '2,5'. Используем запятую.
+        # Используем f"{duration_hours:g}" для удаления незначащих нулей (1.0 -> 1)
         if duration_hours % 1 == 0:
             hours_str = str(int(duration_hours))
         else:
@@ -922,7 +944,7 @@ async def main() -> None:
     
     # --- ДОДАНО: Запуск фонової задачі ---
     checker_task = asyncio.create_task(subscription_checker_task(bot))
-    # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---\
+    # --- КІНЕЦЬ ДОДАНОГО БЛОКУ ---
     
     logger.info("Бот запущено. Початок опитування...")
     
