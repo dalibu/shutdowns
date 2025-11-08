@@ -21,7 +21,7 @@ class ShutdownResponse(BaseModel):
     city: str = Field(..., json_schema_extra={"example": "м. Київ"}, description="Город")
     street: str = Field(..., json_schema_extra={"example": "вул. Хрещатик"}, description="Улица")
     house_num: str = Field(..., json_schema_extra={"example": "2"}, description="Номер дома")
-    group: str = Field(..., json_schema_extra={"example": "2"}, description="Группа отключения")
+    group: str = Field(..., json_schema_extra={"example": "2.1"}, description="Группа отключения")
     schedule: Dict[str, List[TimeSlot]] = Field(..., description="График по датам")
 
 # --- Импорт реального сервиса (run_parser_service) ---
