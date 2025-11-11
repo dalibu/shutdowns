@@ -207,3 +207,5 @@ marimo/_lsp/
 __marimo__/
 
 .DS_Store
+dtek/data/bot.db-wal
+dtek/data/bot.db-shm
