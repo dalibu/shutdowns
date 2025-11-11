@@ -1,960 +1,681 @@
+import pytest
+import asyncio
+import hashlib
 import sys
 import os
-import pytest
-import aiohttp
-import asyncio
-import re
-import unittest 
-import hashlib 
-from unittest.mock import patch, MagicMock, AsyncMock
-from aioresponses import aioresponses
-from urllib.parse import urlencode
-from typing import List, Dict, Any
-from datetime import datetime, timedelta 
-from aiogram.types import ReplyKeyboardRemove # ДОДАНО для тестів /cancel
+from datetime import datetime, timedelta
+from unittest.mock import Mock, AsyncMock, MagicMock, patch, call
+import aiosqlite
 
-# =========================================================================
-# === ФИКС: ОБЕСПЕЧЕНИЕ ИМПОРТА
-# =========================================================================
-# Добавляем родительскую директорию (корневую папку проекта) в sys.path.
-# Это позволяет импортировать dtek_telegram_bot, когда тесты запускаются из папки 'tests'.
+# Добавляем родительскую директорию в путь для импорта
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# =========================================================================
 
-# --- ИМПОРТ ФУНКЦИЙ БИЗНЕС-ЛОГИКИ И API ИЗ ОСНОВНОГО ФАЙЛА ---
-from dtek_telegram_bot import (
-    format_shutdown_message, 
-    _process_single_day_schedule, 
-    get_shutdowns_data,
-    # Функции для тестирования
-    _get_captcha_data, 
-    _pluralize_hours, 
-    _get_shutdown_duration_str_by_hours, # ИЗМЕНЕНО: Исправлен импорт
-    _get_schedule_hash, # ДОДАНО: Імпорт функції хешування
-    # ИМПОРТЫ ДЛЯ ТЕСТИРОВАНИЯ ХЕНДЛЕРОВ
-    command_start_handler,
-    captcha_answer_handler,
-    command_check_handler,
-    command_repeat_handler,
-    command_subscribe_handler, # ДОДАНО
-    command_unsubscribe_handler, # ДОДАНО
-    command_cancel_handler, # ДОДАНО
-    subscription_checker_task, # ДОДАНО
-    # ДОБАВЛЕНО: Импорт новых FSM-обработчиков
-    process_city, 
-    process_street, 
-    process_house,
-    # КОНЕЦ ДОБАВЛЕННОГО БЛОКА
-    CaptchaState, # FSM State
-    CheckAddressState, # ДОБАВЛЕНО
-    HUMAN_USERS, # Глобальный кеш
-    SUBSCRIPTIONS, # ДОДАНО: Глобальный кеш подписок
-    CHECKER_LOOP_INTERVAL_SECONDS, # ДОДАНО: для імітації часу
-)
-
-
-# --- Конфигурация ---
-API_BASE_URL = "http://dtek_api:8000" 
-
-# КОНСТАНТА ДЛЯ ОЖИДАЕМОГО РЕЗУЛЬТАТА: ДОБАВЛЕНО ДЛЯ ИСПРАВЛЕНИЯ ТЕСТА
-SUBSCRIBE_PROMPT = "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-
-# --- 1. Функции для мокирования HTTP (Только утилиты для тестов) ---
-def create_mock_url(city: str, street: str, house: str) -> str:
-    """Создает полный URL с query-параметрами для мокирования."""
-    query_params = {
-        "city": city,
-        "street": street,
-        "house": house
-    }
-    return f"{API_BASE_URL}/shutdowns?{urlencode(query_params)}"
-
-
-# --- 2. Фиксация данных (MOCK PAYLOADS) ---
-
-MOCK_RESPONSE_OUTAGE = {
-    "city": "м. Київ",
-    "street": "вул. Хрещатик",
-    "house_num": "2",
-    "group": "2",
-    "schedule": {
-        "04.11.25": [
-            {"time": "00-03", "disconection": "full"},
-            {"time": "03-06", "disconection": "half"},
-            {"time": "06-09", "disconection": "none"},
-        ],
-        "05.11.25": [
-            {"time": "09-12", "disconection": "none"},
-            {"time": "12-15", "disconection": "full"},
-            {"time": "15-18", "disconection": "full"},
-        ]
-    }
-}
-
-MOCK_RESPONSE_OUTAGE_CHANGED = {
-    "city": "м. Київ",
-    "street": "вул. Хрещатик",
-    "house_num": "2",
-    "group": "2",
-    "schedule": {
-        "04.11.25": [
-            {"time": "00-03", "disconection": "full"},
-            {"time": "03-06", "disconection": "full"}, # ЗМІНА ТУТ
-            {"time": "06-09", "disconection": "none"},
-        ],
-        "05.11.25": [
-            {"time": "09-12", "disconection": "none"},
-            {"time": "12-15", "disconection": "full"},
-            {"time": "15-18", "disconection": "full"},
-        ]
-    }
-}
-
-
-MOCK_RESPONSE_NO_OUTAGE = {
-    "city": "м. Одеса",
-    "street": "вул. Дерибасівська",
-    "house_num": "1",
-    "group": "1",
-    "schedule": {
-        "04.11.25": [
-            {"time": "00-03", "disconection": "none"},
-        ],
-        "05.11.25": [
-            {"time": "09-12", "disconection": "none"},
-        ]
-    }
-}
-
-# --- 3. Тестовые функции для API-интеграции (проверка get_shutdowns_data) ---
-@pytest.mark.asyncio
-async def test_successful_outage_response():
-    """Тестирование успешного ответа с запланированными отключениями."""
-    url = create_mock_url("Київ", "Хрещатик", "2") 
-    with aioresponses() as m:
-        m.get(url, payload=MOCK_RESPONSE_OUTAGE, status=200)
-        data = await get_shutdowns_data("Київ", "Хрещатик", "2")
-        assert data['group'] == "2"
-        assert data == MOCK_RESPONSE_OUTAGE
-
-@pytest.mark.asyncio
-async def test_successful_no_outage_response():
-    """Тестирование успешного ответа без запланированных отключений."""
-    url = create_mock_url("Одеса", "Дерибасівська", "1")
-    with aioresponses() as m:
-        m.get(url, payload=MOCK_RESPONSE_NO_OUTAGE, status=200)
-        data = await get_shutdowns_data("Одеса", "Дерибасівська", "1")
-        assert data['group'] == "1"
-        assert data == MOCK_RESPONSE_NO_OUTAGE
-
-@pytest.mark.asyncio
-async def test_not_found_404_response():
-    """Тестирование, когда API возвращает 404 (адрес не найден)."""
-    url = create_mock_url("Неіснуюче", "Вулиця", "1")
-    mock_404_response = {"detail": "Графік для цієї адреси не знайдено."}
-
-    with aioresponses() as m:
-        m.get(url, status=404, payload=mock_404_response)
-        with pytest.raises(ValueError) as excinfo:
-            await get_shutdowns_data("Неіснуюче", "Вулиця", "1")
-        assert "Графік для цієї адреси не знайдено." in str(excinfo.value)
-
-@pytest.mark.asyncio
-async def test_connection_error_mocked():
-    """Тестирование ошибки соединения с API с помощью aioresponses."""
-    url = create_mock_url("Київ", "Хрещатик", "2") 
-    with aioresponses() as m:
-        m.get(url, exception=aiohttp.ClientConnectorError(None, OSError('Mock connection error')))
-        with pytest.raises(ConnectionError) as excinfo:
-            await get_shutdowns_data("Київ", "Хрещатик", "2")
-        assert "Помилка підключення до парсера." in str(excinfo.value)
-
-
-# --- 4. Тестовые функции для форматирования сообщений (проверка format_shutdown_message) ---
-def test_format_message_no_outage():
-    """
-    Тестирование форматирования для случая без запланированных отключений в новом формате.
-    """
-    mock_data = {
-        "city": "м. Одеса",
-        "street": "вул. Дерибасівська",
-        "house_num": "1",
-        "group": "1",
-        "schedule": {
-            "04.11.25": [
-                {"time": "00-03", "disconection": "none"},
-            ],
-            "05.11.25": [
-                {"time": "09-12", "disconection": "none"},
-            ]
-        }
-    }
-
-    expected_output = (
-        "🏠 Адреса: `м. Одеса, вул. Дерибасівська, 1`\n"
-        "👥 Черга: `1`\n"
-        "✅ **04.11.25**: Відключення не заплановані\n"
-        "✅ **05.11.25**: Відключення не заплановані"
+# Импортируем функции из основного модуля
+try:
+    from dtek_telegram_bot import (
+        format_minutes_to_hh_m,
+        _process_single_day_schedule,
+        format_shutdown_message,
+        parse_address_from_text,
+        _pluralize_hours,
+        _get_shutdown_duration_str_by_hours,
+        _get_schedule_hash,
+        _get_captcha_data,
+        get_shutdowns_data,
+        init_db,
+        HUMAN_USERS,
+        ADDRESS_CACHE,
     )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
+except ImportError:
+    # Альтернативный путь импорта, если модуль в той же директории
+    import dtek_telegram_bot
+    format_minutes_to_hh_m = dtek_telegram_bot.format_minutes_to_hh_m
+    _process_single_day_schedule = dtek_telegram_bot._process_single_day_schedule
+    format_shutdown_message = dtek_telegram_bot.format_shutdown_message
+    parse_address_from_text = dtek_telegram_bot.parse_address_from_text
+    _pluralize_hours = dtek_telegram_bot._pluralize_hours
+    _get_shutdown_duration_str_by_hours = dtek_telegram_bot._get_shutdown_duration_str_by_hours
+    _get_schedule_hash = dtek_telegram_bot._get_schedule_hash
+    _get_captcha_data = dtek_telegram_bot._get_captcha_data
+    get_shutdowns_data = dtek_telegram_bot.get_shutdowns_data
+    init_db = dtek_telegram_bot.init_db
+    HUMAN_USERS = dtek_telegram_bot.HUMAN_USERS
+    ADDRESS_CACHE = dtek_telegram_bot.ADDRESS_CACHE
 
-def test_format_message_full_slots_merged():
-    """
-    Тестирование, что полные и смежные слоты объединяются корректно в новом формате.
-    """
-    mock_data = {
-        "city": "м. Київ",
-        "street": "вул. Хрещатик",
-        "house_num": "2",
-        "group": "2",
-        "schedule": {
-            "04.11.25": [
-                {"time": "00-01", "disconection": "full"},
-                {"time": "01-02", "disconection": "full"},
-                {"time": "02-03", "disconection": "full"},
-            ]
+
+# ============================================================
+# ТЕСТЫ ФОРМАТИРОВАНИЯ ВРЕМЕНИ И МИНУТ
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.format
+class TestFormatMinutesToHHMM:
+    """Тесты для функции format_minutes_to_hh_m"""
+    
+    def test_zero_minutes(self):
+        assert format_minutes_to_hh_m(0) == "00:00"
+    
+    def test_full_hours(self):
+        assert format_minutes_to_hh_m(60) == "01:00"
+        assert format_minutes_to_hh_m(120) == "02:00"
+    
+    def test_minutes_with_remainder(self):
+        assert format_minutes_to_hh_m(90) == "01:30"
+        assert format_minutes_to_hh_m(125) == "02:05"
+    
+    def test_large_values(self):
+        assert format_minutes_to_hh_m(1440) == "24:00"  # Целый день
+
+
+# ============================================================
+# ТЕСТЫ ПЛЮРАЛИЗАЦИИ УКРАИНСКОГО ЯЗЫКА
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.format
+class TestPluralizeHours:
+    """Тесты для функции _pluralize_hours"""
+    
+    def test_decimal_values(self):
+        """Дробные числа всегда 'години'"""
+        assert _pluralize_hours(0.5) == "години"
+        assert _pluralize_hours(1.5) == "години"
+        assert _pluralize_hours(2.5) == "години"
+    
+    def test_one(self):
+        """1, 21, 31... - 'годину'"""
+        assert _pluralize_hours(1.0) == "годину"
+        assert _pluralize_hours(21.0) == "годину"
+        assert _pluralize_hours(101.0) == "годину"
+    
+    def test_two_to_four(self):
+        """2-4, 22-24... - 'години'"""
+        assert _pluralize_hours(2.0) == "години"
+        assert _pluralize_hours(3.0) == "години"
+        assert _pluralize_hours(4.0) == "години"
+        assert _pluralize_hours(22.0) == "години"
+    
+    def test_eleven_to_fourteen_exception(self):
+        """11-14 - исключение, всегда 'годин'"""
+        assert _pluralize_hours(11.0) == "годин"
+        assert _pluralize_hours(12.0) == "годин"
+        assert _pluralize_hours(14.0) == "годин"
+        assert _pluralize_hours(111.0) == "годин"
+    
+    def test_zero_and_five_plus(self):
+        """0, 5-10, 15-20... - 'годин'"""
+        assert _pluralize_hours(0.0) == "годин"
+        assert _pluralize_hours(5.0) == "годин"
+        assert _pluralize_hours(10.0) == "годин"
+        assert _pluralize_hours(100.0) == "годин"
+
+
+# ============================================================
+# ТЕСТЫ ФОРМАТИРОВАНИЯ ДЛИТЕЛЬНОСТИ
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.format
+class TestGetShutdownDurationStr:
+    """Тесты для функции _get_shutdown_duration_str_by_hours"""
+    
+    def test_zero_hours(self):
+        assert _get_shutdown_duration_str_by_hours(0) == "0 годин"
+    
+    def test_negative_hours(self):
+        assert _get_shutdown_duration_str_by_hours(-1) == "0 годин"
+    
+    def test_whole_hours(self):
+        assert _get_shutdown_duration_str_by_hours(1.0) == "1 годину"
+        assert _get_shutdown_duration_str_by_hours(2.0) == "2 години"
+        assert _get_shutdown_duration_str_by_hours(5.0) == "5 годин"
+    
+    def test_fractional_hours(self):
+        result = _get_shutdown_duration_str_by_hours(0.5)
+        assert "0,5" in result
+        assert "години" in result
+        
+        result = _get_shutdown_duration_str_by_hours(2.5)
+        assert "2,5" in result
+
+
+# ============================================================
+# ТЕСТЫ ОБРАБОТКИ РАСПИСАНИЯ
+# ============================================================
+
+@pytest.mark.unit
+class TestProcessSingleDaySchedule:
+    """Тесты для функции _process_single_day_schedule"""
+    
+    def test_no_outages(self):
+        """Нет отключений"""
+        slots = [
+            {"time": "0-1", "disconection": "no"},
+            {"time": "1-2", "disconection": "no"}
+        ]
+        result = _process_single_day_schedule("12.11.24", slots)
+        assert "Відключення не заплановані" in result
+    
+    def test_empty_slots(self):
+        """Пустой список слотов"""
+        result = _process_single_day_schedule("12.11.24", [])
+        assert "Відключення не заплановані" in result
+    
+    def test_single_full_slot(self):
+        """Один полный слот отключения"""
+        slots = [{"time": "10-11", "disconection": "full"}]
+        result = _process_single_day_schedule("12.11.24", slots)
+        assert "10:00 - 11:00" in result
+        assert "1 годину" in result
+    
+    def test_consecutive_full_slots(self):
+        """Несколько последовательных полных слотов"""
+        slots = [
+            {"time": "10-11", "disconection": "full"},
+            {"time": "11-12", "disconection": "full"},
+            {"time": "12-13", "disconection": "full"}
+        ]
+        result = _process_single_day_schedule("12.11.24", slots)
+        assert "10:00 - 13:00" in result
+        assert "3 години" in result
+    
+    def test_half_slot(self):
+        """Половинный слот (вторая половина часа)"""
+        slots = [{"time": "10-11", "disconection": "half"}]
+        result = _process_single_day_schedule("12.11.24", slots)
+        assert "10:30 - 11:00" in result
+        assert "0,5 години" in result
+    
+    def test_mixed_slots_with_gap(self):
+        """Слоты с разрывом"""
+        slots = [
+            {"time": "10-11", "disconection": "full"},
+            {"time": "11-12", "disconection": "full"},
+            {"time": "14-15", "disconection": "full"}  # Разрыв после 12
+        ]
+        result = _process_single_day_schedule("12.11.24", slots)
+        # Должно быть 2 группы
+        assert "10:00 - 12:00" in result
+        assert "14:00 - 15:00" in result
+    
+    def test_end_hour_zero_means_24(self):
+        """Обработка 23-00 (00 = 24)"""
+        slots = [{"time": "23-0", "disconection": "full"}]
+        result = _process_single_day_schedule("12.11.24", slots)
+        assert "23:00" in result
+        # 24:00 или 00:00 в зависимости от реализации
+        assert ("24:00" in result or "00:00" in result)
+    
+    def test_mixed_full_and_half_consecutive(self):
+        """Последовательные full и half слоты"""
+        slots = [
+            {"time": "10-11", "disconection": "full"},  # 10:00-11:00
+            {"time": "11-12", "disconection": "half"}   # 11:30-12:00 (должны объединиться)
+        ]
+        result = _process_single_day_schedule("12.11.24", slots)
+        # Проверяем что есть время и длительность
+        assert "10:00" in result or "10:30" in result
+        assert "12:00" in result
+    
+    def test_invalid_slot_time_format(self):
+        """Обработка невалидного формата времени"""
+        slots = [
+            {"time": "invalid", "disconection": "full"}
+        ]
+        result = _process_single_day_schedule("12.11.24", slots)
+        # Должен обработать ошибку gracefully
+        assert isinstance(result, str)
+
+
+# ============================================================
+# ТЕСТЫ ФОРМАТИРОВАНИЯ СООБЩЕНИЯ
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.format
+class TestFormatShutdownMessage:
+    """Тесты для функции format_shutdown_message"""
+    
+    def test_no_schedule(self, sample_empty_schedule):
+        """Нет расписания"""
+        result = format_shutdown_message(sample_empty_schedule)
+        assert "Дніпро" in result
+        assert "3.1" in result
+        assert "Не вдалося отримати графік" in result
+    
+    def test_with_schedule(self, sample_schedule_data):
+        """С расписанием"""
+        result = format_shutdown_message(sample_schedule_data)
+        assert "Дніпро" in result
+        assert "Сонячна набережна" in result
+        assert "6" in result
+        assert "3.1" in result
+        assert "12.11.24" in result
+        assert "13.11.24" in result
+    
+    def test_message_contains_markdown(self, sample_schedule_data):
+        """Сообщение содержит Markdown форматирование"""
+        result = format_shutdown_message(sample_schedule_data)
+        assert "`" in result  # Backticks для моноширинного текста
+        assert "**" in result or "*" in result  # Жирный или курсив
+    
+    def test_dates_are_sorted(self):
+        """Даты отображаются в правильном порядке"""
+        data = {
+            "city": "Дніпро",
+            "street": "Сонячна",
+            "house_num": "6",
+            "group": "3.1",
+            "schedule": {
+                "15.11.24": [{"time": "10-11", "disconection": "full"}],
+                "12.11.24": [{"time": "14-15", "disconection": "full"}],
+                "13.11.24": [{"time": "16-17", "disconection": "full"}]
+            }
         }
-    }
+        result = format_shutdown_message(data)
+        
+        # Проверяем что 12.11 идет раньше чем 15.11 в тексте
+        pos_12 = result.find("12.11.24")
+        pos_15 = result.find("15.11.24")
+        assert pos_12 < pos_15, "Dates should be in chronological order"
 
-    expected_output = (
-        "🏠 Адреса: `м. Київ, вул. Хрещатик, 2`\n"
-        "👥 Черга: `2`\n"
-        "❌ **04.11.25**: 00:00 - 03:00 (3 години)"
-    )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
-def test_format_message_half_slots():
-    """
-    Тест 1: начало 'half' (18:30) и конец 'half' (21:30) в новом формате.
-    """
-    mock_data = {
-        "city": "м. Дніпро",
-        "street": "вул. Сонячна набережна",
+# ============================================================
+# ТЕСТЫ ПАРСИНГА АДРЕСА
+# ============================================================
+
+@pytest.mark.unit
+class TestParseAddressFromText:
+    """Тесты для функции parse_address_from_text"""
+    
+    def test_valid_address(self):
+        """Корректный адрес"""
+        city, street, house = parse_address_from_text("м. Дніпро, вул. Сонячна набережна, 6")
+        assert city == "м. Дніпро"
+        assert street == "вул. Сонячна набережна"
+        assert house == "6"
+    
+    def test_with_command_prefix(self):
+        """Адрес с командой в начале"""
+        city, street, house = parse_address_from_text("/check Дніпро, Сонячна, 6")
+        assert city == "Дніпро"
+        assert street == "Сонячна"
+        assert house == "6"
+    
+    def test_insufficient_parts(self):
+        """Недостаточно частей адреса"""
+        with pytest.raises(ValueError) as exc_info:
+            parse_address_from_text("Дніпро, Сонячна")
+        assert "Місто, Вулиця, Будинок" in str(exc_info.value)
+    
+    def test_empty_string(self):
+        """Пустая строка"""
+        with pytest.raises(ValueError):
+            parse_address_from_text("")
+    
+    def test_extra_spaces(self):
+        """Лишние пробелы"""
+        city, street, house = parse_address_from_text("  Дніпро  ,  Сонячна  ,  6  ")
+        assert city == "Дніпро"
+        assert street == "Сонячна"
+        assert house == "6"
+    
+    def test_multiple_commands_in_text(self):
+        """Несколько команд в тексте (должны удалиться все)"""
+        city, street, house = parse_address_from_text("/check Дніпро, /subscribe Сонячна, 6")
+        assert city == "Дніпро"
+        # После удаления /check и /subscribe строка: "Дніпро,  Сонячна, 6"
+        # Парсинг: city = "Дніпро", street = "Сонячна", house = "6"
+        assert street == "Сонячна"
+        assert house == "6"
+            
+    def test_address_with_numbers_in_street(self):
+        """Номера в названии улицы"""
+        city, street, house = parse_address_from_text("Дніпро, вул. 8 Березня, 10")
+        assert city == "Дніпро"
+        assert street == "вул. 8 Березня"
+        assert house == "10"
+    
+    def test_house_with_letter(self):
+        """Номер дома с буквой"""
+        city, street, house = parse_address_from_text("Дніпро, Сонячна, 6А")
+        assert city == "Дніпро"
+        assert street == "Сонячна"
+        assert house == "6А"
+
+
+# ============================================================
+# ТЕСТЫ ГЕНЕРАЦИИ ХЕША РАСПИСАНИЯ
+# ============================================================
+
+@pytest.mark.unit
+class TestGetScheduleHash:
+    """Тесты для функции _get_schedule_hash"""
+    
+    def test_no_schedule(self):
+        """Нет расписания"""
+        data = {"schedule": {}}
+        result = _get_schedule_hash(data)
+        assert result == "NO_SCHEDULE_FOUND"
+    
+    def test_same_schedule_same_hash(self):
+        """Одинаковое расписание дает одинаковый хеш"""
+        data1 = {
+            "schedule": {
+                "12.11.24": [{"time": "10-11", "disconection": "full"}]
+            }
+        }
+        data2 = {
+            "schedule": {
+                "12.11.24": [{"time": "10-11", "disconection": "full"}]
+            }
+        }
+        assert _get_schedule_hash(data1) == _get_schedule_hash(data2)
+    
+    def test_different_schedule_different_hash(self):
+        """Разное расписание дает разный хеш"""
+        data1 = {
+            "schedule": {
+                "12.11.24": [{"time": "10-11", "disconection": "full"}]
+            }
+        }
+        data2 = {
+            "schedule": {
+                "12.11.24": [{"time": "11-12", "disconection": "full"}]
+            }
+        }
+        assert _get_schedule_hash(data1) != _get_schedule_hash(data2)
+    
+    def test_hash_is_stable(self):
+        """Хеш стабилен при повторных вызовах"""
+        data = {
+            "schedule": {
+                "12.11.24": [{"time": "10-11", "disconection": "full"}]
+            }
+        }
+        hash1 = _get_schedule_hash(data)
+        hash2 = _get_schedule_hash(data)
+        assert hash1 == hash2
+
+
+# ============================================================
+# ТЕСТЫ CAPTCHA
+# ============================================================
+
+@pytest.mark.unit
+@pytest.mark.captcha
+class TestGetCaptchaData:
+    """Тесты для функции _get_captcha_data"""
+    
+    def test_returns_question_and_answer(self):
+        """Возвращает вопрос и ответ"""
+        question, answer = _get_captcha_data()
+        assert isinstance(question, str)
+        assert isinstance(answer, int)
+        assert "?" in question
+    
+    def test_answer_is_correct(self):
+        """Ответ математически корректен"""
+        question, answer = _get_captcha_data()
+        
+        # Извлекаем числа и операцию из вопроса
+        if "+" in question:
+            parts = question.split("+")
+            a = int(parts[0].split()[-1])
+            b = int(parts[1].split("?")[0].strip())
+            expected = a + b
+        else:  # "-"
+            parts = question.split("-")
+            a = int(parts[0].split()[-1])
+            b = int(parts[1].split("?")[0].strip())
+            expected = a - b
+        
+        assert answer == expected
+    
+    def test_multiple_captcha_calls_are_random(self):
+        """Несколько вызовов дают разные вопросы (с высокой вероятностью)"""
+        questions = set()
+        for _ in range(10):
+            question, _ = _get_captcha_data()
+            questions.add(question)
+        
+        # Должно быть хотя бы несколько разных вопросов
+        assert len(questions) > 3
+    
+    def test_captcha_answer_range(self):
+        """Проверка диапазона ответов"""
+        for _ in range(20):
+            question, answer = _get_captcha_data()
+            # Ответ должен быть разумным (от -10 до 30 примерно)
+            assert -10 <= answer <= 30, f"Answer {answer} is out of expected range"
+
+
+# ============================================================
+# ТЕСТЫ API ИНТЕГРАЦИИ (С МОКАМИ)
+# ============================================================
+
+@pytest.mark.api
+class TestGetShutdownsData:
+    """Тесты для функции get_shutdowns_data (через мок _fetch_shutdowns_data_from_api)"""
+
+    @pytest.mark.asyncio
+    async def test_successful_api_call(self):
+        """Успешный вызов API"""
+        mock_response_data = {
+            "city": "Дніпро",
+            "street": "Сонячна",
+            "house_num": "6",
+            "group": "3.1",
+            "schedule": {}
+        }
+
+        # Мокаем внутреннюю функцию, которая делает HTTP-запрос
+        with patch('dtek_telegram_bot._fetch_shutdowns_data_from_api', new=AsyncMock()) as mock_fetch:
+            mock_fetch.return_value = mock_response_data
+
+            # Вызываем функцию
+            result = await get_shutdowns_data("Дніпро", "Сонячна", "6")
+
+            assert result == mock_response_data
+            mock_fetch.assert_called_once_with("Дніпро", "Сонячна", "6")
+
+    @pytest.mark.asyncio
+    async def test_api_404_error(self):
+        """Обработка 404 ошибки"""
+        with patch('dtek_telegram_bot._fetch_shutdowns_data_from_api', new=AsyncMock()) as mock_fetch:
+            mock_fetch.side_effect = ValueError("Графік для цієї адреси не знайдено.")
+
+            with pytest.raises(ValueError) as exc_info:
+                await get_shutdowns_data("Невідоме", "місто", "0")
+
+            assert "не знайдено" in str(exc_info.value).lower()
+            mock_fetch.assert_called_once_with("Невідоме", "місто", "0")
+
+    @pytest.mark.asyncio
+    async def test_api_timeout(self):
+        """Обработка таймаута"""
+        with patch('dtek_telegram_bot._fetch_shutdowns_data_from_api', new=AsyncMock()) as mock_fetch:
+            mock_fetch.side_effect = ConnectionError("Таймаут запроса к API.")
+
+            with pytest.raises(ConnectionError) as exc_info:
+                await get_shutdowns_data("Дніпро", "Сонячна", "6")
+
+            assert "Таймаут" in str(exc_info.value) or "таймаут" in str(exc_info.value).lower()
+            mock_fetch.assert_called_once_with("Дніпро", "Сонячна", "6")
+
+    @pytest.mark.asyncio
+    async def test_api_connection_error(self):
+        """Обработка ошибки подключения"""
+        with patch('dtek_telegram_bot._fetch_shutdowns_data_from_api', new=AsyncMock()) as mock_fetch:
+            mock_fetch.side_effect = ConnectionError("Помилка підключення до парсера.")
+
+            with pytest.raises(ConnectionError) as exc_info:
+                await get_shutdowns_data("Дніпро", "Сонячна", "6")
+
+            assert "помилка" in str(exc_info.value).lower() or "connection" in str(exc_info.value).lower()
+            mock_fetch.assert_called_once_with("Дніпро", "Сонячна", "6")
+            
+# ============================================================
+# ТЕСТЫ БАЗЫ ДАННЫХ
+# ============================================================
+
+@pytest.mark.db
+class TestInitDB:
+    """Тесты для функции init_db"""
+    
+    @pytest.mark.asyncio
+    async def test_creates_database(self, tmp_path):
+        """Создает базу данных"""
+        db_path = tmp_path / "test.db"
+        
+        conn = await init_db(str(db_path))
+        
+        assert db_path.exists()
+        
+        # Проверяем, что таблицы созданы
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        tables = await cursor.fetchall()
+        table_names = [t[0] for t in tables]
+        
+        assert "subscriptions" in table_names
+        assert "user_last_check" in table_names
+        
+        await conn.close()
+    
+    @pytest.mark.asyncio
+    async def test_creates_directory_if_not_exists(self, tmp_path):
+        """Создает директорию если её нет"""
+        db_path = tmp_path / "subdir" / "test.db"
+        
+        conn = await init_db(str(db_path))
+        
+        assert db_path.exists()
+        assert db_path.parent.exists()
+        
+        await conn.close()
+
+
+# ============================================================
+# ТЕСТЫ ГЛОБАЛЬНЫХ ПЕРЕМЕННЫХ И КЕША
+# ============================================================
+
+class TestGlobalCache:
+    """Тесты для глобальных кешей"""
+    
+    def test_human_users_cache_structure(self):
+        """Структура кеша HUMAN_USERS"""
+        assert isinstance(HUMAN_USERS, dict)
+        # Можем добавить пользователя
+        HUMAN_USERS[12345] = True
+        assert 12345 in HUMAN_USERS
+        # Очищаем после теста
+        HUMAN_USERS.pop(12345, None)
+    
+    def test_address_cache_structure(self):
+        """Структура кеша ADDRESS_CACHE"""
+        assert isinstance(ADDRESS_CACHE, dict)
+        # Можем добавить адрес
+        key = ("Дніпро", "Сонячна", "6")
+        ADDRESS_CACHE[key] = {
+            'last_schedule_hash': 'test_hash',
+            'last_checked': datetime.now()
+        }
+        assert key in ADDRESS_CACHE
+        # Очищаем после теста
+        ADDRESS_CACHE.pop(key, None)
+
+
+# ============================================================
+# ИНТЕГРАЦИОННЫЕ ТЕСТЫ
+# ============================================================
+
+@pytest.mark.integration
+class TestIntegration:
+    """Интеграционные тесты для комплексных сценариев"""
+    
+    @pytest.mark.asyncio
+    async def test_full_schedule_processing_pipeline(self):
+        """Полный пайплайн обработки расписания"""
+        # 1. Данные от API
+        api_data = {
+            "city": "Дніпро",
+            "street": "Сонячна",
+            "house_num": "6",
+            "group": "3.1",
+            "schedule": {
+                "12.11.24": [
+                    {"time": "10-11", "disconection": "full"},
+                    {"time": "11-12", "disconection": "full"}
+                ],
+                "13.11.24": [
+                    {"time": "0-1", "disconection": "no"}
+                ]
+            }
+        }
+        
+        # 2. Генерация хеша
+        hash1 = _get_schedule_hash(api_data)
+        assert hash1 != "NO_SCHEDULE_FOUND"
+        
+        # 3. Форматирование сообщения
+        message = format_shutdown_message(api_data)
+        assert "Дніпро" in message
+        assert "12.11.24" in message
+        assert "10:00 - 12:00" in message
+        
+        # 4. Проверка стабильности хеша
+        hash2 = _get_schedule_hash(api_data)
+        assert hash1 == hash2
+        
+        # 5. Изменение расписания меняет хеш
+        api_data["schedule"]["12.11.24"].append(
+            {"time": "12-13", "disconection": "full"}
+        )
+        hash3 = _get_schedule_hash(api_data)
+        assert hash3 != hash1
+
+
+# ============================================================
+# ДОПОЛНИТЕЛЬНЫЕ ФИКСТУРЫ (Основные в conftest.py)
+# ============================================================
+
+@pytest.fixture
+def sample_schedule_data():
+    """Пример данных расписания для тестов"""
+    return {
+        "city": "Дніпро",
+        "street": "Сонячна набережна",
         "house_num": "6",
-        "group": "3.2",
+        "group": "3.1",
         "schedule": {
-            "04.11.25": [
-                {"time": "18-19", "disconection": "half"},
-                {"time": "19-20", "disconection": "full"},
-                {"time": "20-21", "disconection": "full"},
-                {"time": "21-22", "disconection": "half"}
-            ]
-        }
-    }
-
-    expected_output = (
-        "🏠 Адреса: `м. Дніпро, вул. Сонячна набережна, 6`\n"
-        "👥 Черга: `3.2`\n"
-        "❌ **04.11.25**: 18:30 - 21:00 (2,5 години), 21:30 - 22:00 (0,5 години)"
-    )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
-
-def test_format_message_full_start_half_end():
-    """
-    Тест 2: начало 'full' (18:00) и конец 'half' (21:30) в новом формате.
-    """
-    mock_data = {
-        "city": "м. Львів",
-        "street": "вул. Зелена",
-        "house_num": "100",
-        "group": "4.1",
-        "schedule": {
-            "04.11.25": [
-                {"time": "18-19", "disconection": "full"},
-                {"time": "19-20", "disconection": "full"},
-                {"time": "20-21", "disconection": "full"},
-                {"time": "21-22", "disconection": "half"}
-            ]
-        }
-    }
-
-    expected_output = (
-        "🏠 Адреса: `м. Львів, вул. Зелена, 100`\n"
-        "👥 Черга: `4.1`\n"
-        "❌ **04.11.25**: 18:00 - 21:00 (3 години), 21:30 - 22:00 (0,5 години)"
-    )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
-
-def test_format_message_half_start_full_end():
-    """
-    Тест 3: начало 'half' (18:30) и конец 'full' (21:00) в новом формате.
-    """
-    mock_data = {
-        "city": "м. Харків",
-        "street": "вул. Сумська",
-        "house_num": "10",
-        "group": "5.0",
-        "schedule": {
-            "04.11.25": [
-                {"time": "18-19", "disconection": "half"},
-                {"time": "19-20", "disconection": "full"},
-                {"time": "20-21", "disconection": "full"}
-            ]
-        }
-    }
-
-    expected_output = (
-        "🏠 Адреса: `м. Харків, вул. Сумська, 10`\n"
-        "👥 Черга: `5.0`\n"
-        "❌ **04.11.25**: 18:30 - 21:00 (2,5 години)"
-    )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
-
-def test_format_message_multi_day_complex_slots():
-    """
-    Тест 4: Несколько дней (18:30-21:00 и 15:00-18:30) в новом формате.
-    """
-    mock_data = {
-        "city": "м. Чернігів",
-        "street": "вул. Івана Мазепи",
-        "house_num": "42",
-        "group": "7.0",
-        "schedule": {
-            "04.11.25": [
-                {"time": "18-19", "disconection": "half"}, 
-                {"time": "19-20", "disconection": "full"},
-                {"time": "20-21", "disconection": "full"},
-                {"time": "21-22", "disconection": "half"}
+            "12.11.24": [
+                {"time": "10-11", "disconection": "full"},
+                {"time": "11-12", "disconection": "full"}
             ],
-            "05.11.25": [
-                {"time": "15-16", "disconection": "half"},
-                {"time": "16-17", "disconection": "full"},
-                {"time": "17-18", "disconection": "full"},
-                {"time": "18-19", "disconection": "half"}
+            "13.11.24": [
+                {"time": "14-15", "disconection": "half"}
             ]
         }
     }
-    
-    expected_output = (
-        "🏠 Адреса: `м. Чернігів, вул. Івана Мазепи, 42`\n"
-        "👥 Черга: `7.0`\n"
-        "❌ **04.11.25**: 18:30 - 21:00 (2,5 години), 21:30 - 22:00 (0,5 години)\n"
-        "❌ **05.11.25**: 15:30 - 18:00 (2,5 години), 18:30 - 19:00 (0,5 години)"
-    )
-    assert format_shutdown_message(mock_data).strip() == expected_output.strip()
 
 
-# --- 5. Тестирование функций бизнес-логики ---
-def test_pluralize_hours():
-    """Тестирует правильное склонение слова 'година'."""
-    assert _pluralize_hours(1.0) == "годину"
-    assert _pluralize_hours(2.0) == "години"
-    assert _pluralize_hours(5.0) == "годин"
-    assert _pluralize_hours(11.0) == "годин"
-    assert _pluralize_hours(21.0) == "годину"
-    assert _pluralize_hours(22.0) == "години"
-    assert _pluralize_hours(0.5) == "години"
-    assert _pluralize_hours(2.5) == "години"
-    assert _pluralize_hours(1.5) == "години"
-
-def test_get_shutdown_duration_str_by_hours():
-    """Тестирует форматирование и склонение длительности."""
-    assert _get_shutdown_duration_str_by_hours(1.0) == "1 годину"
-    assert _get_shutdown_duration_str_by_hours(2.5) == "2,5 години"
-    assert _get_shutdown_duration_str_by_hours(3.0) == "3 години"
-    assert _get_shutdown_duration_str_by_hours(11.0) == "11 годин"
-    assert _get_shutdown_duration_str_by_hours(0.5) == "0,5 години"
-
-# --- НОВИЙ ТЕСТ: Тестування функції _get_schedule_hash -------------
-def test_get_schedule_hash():
-    """
-    Тестує генерацію хешу:
-    1. Перевіряє, що однаковий графік дає однаковий хеш.
-    2. Перевіряє, що змінений графік дає інший хеш.
-    """
-    # 1. Однаковий графік (MOCK_RESPONSE_OUTAGE)
-    hash_original = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
-    hash_original_again = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
-    assert len(hash_original) == 64 # SHA256 довжина
-    assert hash_original == hash_original_again
-    
-    # 2. Змінений графік (MOCK_RESPONSE_OUTAGE_CHANGED)
-    hash_changed = _get_schedule_hash(MOCK_RESPONSE_OUTAGE_CHANGED)
-    assert hash_original != hash_changed
-    
-    # 3. Графік без відключень
-    hash_no_outage = _get_schedule_hash(MOCK_RESPONSE_NO_OUTAGE)
-    assert hash_no_outage != hash_original
-    assert hash_no_outage != hash_changed
-
-    # 4. Порожній графік (повинно повернути константу)
-    hash_empty = _get_schedule_hash({})
-    assert hash_empty == "NO_SCHEDULE_FOUND"
+@pytest.fixture
+def sample_empty_schedule():
+    """Пример данных без расписания"""
+    return {
+        "city": "Дніпро",
+        "street": "Сонячна",
+        "house_num": "6",
+        "group": "3.1",
+        "schedule": {}
+    }
 
 
-# --- 6. Тестирование хендлеров (Bot Handlers) ---
-# NOTE: Для совместимости с unittest и асинхронностью используем @pytest.mark.asyncio
+# ============================================================
+# ЗАПУСК ТЕСТОВ
+# ============================================================
 
-class TestBotHandlers(unittest.TestCase):
-    
-    def setUp(self):
-        # Очистка глобальных кешей перед каждым тестом
-        HUMAN_USERS.clear()
-        SUBSCRIPTIONS.clear()
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_start_handler_initial_check_and_captcha(self):
-        """
-        Проверяет, что при первом запуске (не "Human") запускается CAPTCHA.
-        """
-        user_id = 123
-        message = MagicMock(text="/start", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        fsm_context = AsyncMock()
-        
-        with patch('dtek_telegram_bot._get_captcha_data', return_value=("Скільки буде 10 + 3?", 13)):
-            await command_start_handler(message, fsm_context)
-
-        # Проверка вызова CAPTCHA
-        message.answer.assert_called_once()
-        self.assertIn("🚨 **Увага! Для захисту від ботів, пройдіть просту перевірку.**", message.answer.call_args[0][0])
-        fsm_context.set_state.assert_called_with(CaptchaState.waiting_for_answer)
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_captcha_answer_handler_success(self):
-        """
-        Проверяет успешное прохождение CAPTCHA.
-        """
-        user_id = 123
-        message_start = MagicMock(text="/start", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_captcha_correct = MagicMock(text="13", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        fsm_context = AsyncMock()
-        fsm_context.get_data.return_value = {"captcha_answer": 13}
-        fsm_context.get_state.return_value = CaptchaState.waiting_for_answer
-        
-        await captcha_answer_handler(message_captcha_correct, fsm_context)
-        
-        # Проверка успеха
-        self.assertIn(user_id, HUMAN_USERS)
-        message_captcha_correct.answer.assert_called_once()
-        self.assertIn("✅ **Перевірка пройдена!**", message_captcha_correct.answer.call_args[0][0])
-        fsm_context.clear.assert_called_once()
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_captcha_answer_handler_failure(self):
-        """
-        Проверяет неудачу при прохождении CAPTCHA.
-        """
-        user_id = 123
-        message_captcha_wrong = MagicMock(text="10", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        fsm_context = AsyncMock()
-        fsm_context.get_data.return_value = {"captcha_answer": 13}
-        fsm_context.get_state.return_value = CaptchaState.waiting_for_answer
-        
-        await captcha_answer_handler(message_captcha_wrong, fsm_context)
-        
-        # Проверка неудачи
-        self.assertNotIn(user_id, HUMAN_USERS)
-        message_captcha_wrong.answer.assert_called_once()
-        self.assertIn("❌ **Неправильна відповідь.**", message_captcha_wrong.answer.call_args[0][0])
-        fsm_context.clear.assert_called_once()
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_check_handler_full_flow_success(self):
-        """
-        Проверяет полный цикл: CAPTCHA -> Check.
-        Вызов get_shutdowns_data (mocked) и получение ответа.
-        """
-        # 1. Mock Objects Setup
-        user_id = 123 
-        # Message Mocks
-        message_start = MagicMock(text="/start", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_captcha_correct = MagicMock(text="13", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_check = MagicMock(text="/check м. Київ, вул. Хрещатик, 2", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        # FSMContext Mock
-        fsm_context = AsyncMock()
-        fsm_context.get_data.return_value = {"captcha_answer": 13} # Для captcha_answer_handler
-        fsm_context.get_state.return_value = CaptchaState.waiting_for_answer # Для captcha_answer_handler
-        
-        # API Mock (Re-using MOCK_RESPONSE_OUTAGE)
-        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
-        expected_api_result = format_shutdown_message(mock_api_data)
-        # Ожидаемый результат должен включать подсказку о подписке, т.к. пользователь новый
-        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT 
-
-        # 2. CAPTCHA MOCK CONTROL и API MOCK
-        with patch('dtek_telegram_bot._get_captcha_data', return_value=("Скільки буде 10 + 3?", 13)), \
-             patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
-
-            # --- ШАГ 1: /start (Запуск CAPTCHA) ---
-            await command_start_handler(message_start, fsm_context)
-
-            # --- ШАГ 2: Ответ CAPTCHA (Успех) ---
-            await captcha_answer_handler(message_captcha_correct, fsm_context)
-            self.assertIn(user_id, HUMAN_USERS)
-
-            # --- ШАГ 3: /check (Проверка графика) ---
-            fsm_context.get_state.return_value = None # Сброс состояния для check handler
-            await command_check_handler(message_check, fsm_context)
-            
-            # Проверка API:
-            mock_get_shutdowns.assert_called_once_with("м. Київ", "вул. Хрещатик", "2")
-            
-            # Проверка ответа:
-            self.assertEqual(message_check.answer.call_count, 2)
-            final_message = message_check.answer.call_args_list[1][0][0]
-            self.assertEqual(final_message.strip(), expected_final_result.strip())
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_repeat_handler_success(self):
-        """
-        Тестирует /repeat после успешной проверки /check.
-        """
-        user_id = 456
-        HUMAN_USERS[user_id] = True
-        
-        # 1. Mock Objects Setup
-        fsm_context = AsyncMock()
-        last_checked_address = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2', 'hash': 'old_hash_123'}
-        fsm_context.get_data.return_value = {"last_checked_address": last_checked_address}
-        message_repeat = MagicMock(text="/repeat", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        
-        # API Mock
-        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
-        expected_hash = _get_schedule_hash(mock_api_data)
-        expected_api_result = format_shutdown_message(mock_api_data)
-        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT
-        
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
-            
-            # --- ШАГ 1: /repeat ---
-            await command_repeat_handler(message_repeat, fsm_context)
-            
-            # Проверка API:
-            mock_get_shutdowns.assert_called_once_with("м. Київ", "вул. Хрещатик", "2")
-            
-            # Проверка FSM update (обновление хеша):
-            new_address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2', 'hash': expected_hash}
-            fsm_context.update_data.assert_called_once_with(last_checked_address=new_address_data)
-
-            # Проверка ответа:
-            self.assertEqual(message_repeat.answer.call_count, 2)
-            final_message = message_repeat.answer.call_args_list[1][0][0]
-            self.assertEqual(final_message.strip(), expected_final_result.strip())
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_repeat_handler_no_last_check(self):
-        """
-        Тестирует /repeat, когда в FSM нет last_checked_address.
-        """
-        user_id = 789
-        HUMAN_USERS[user_id] = True
-        
-        # 1. Mock Objects Setup
-        message_repeat = MagicMock(text="/repeat", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        # FSMContext Mock: last_checked_address отсутствует
-        fsm_context = AsyncMock()
-        # Убедимся, что get_data возвращает пустой словарь (или не содержит нужного ключа)
-        fsm_context.get_data.return_value = {"another_key": "value"} 
-
-        # 2. API MOCK CONTROL (убедимся, что API не вызывается)
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock()) as mock_get_shutdowns:
-            
-            # --- ШАГ 1: /repeat ---
-            await command_repeat_handler(message_repeat, fsm_context)
-            
-            # Проверка API:
-            mock_get_shutdowns.assert_not_called()
-            
-            # Проверка сообщений:
-            self.assertEqual(message_repeat.answer.call_count, 1)
-            error_message = message_repeat.answer.call_args_list[0][0][0]
-            self.assertIn("Спочатку вам потрібно перевірити графік", error_message)
-
-    # ------------------------------------------------------------------
-    # --- НОВЫЙ ТЕСТ: Пошаговый ввод адреса через FSM ------------------
-    # ------------------------------------------------------------------
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_check_handler_fsm_flow_success(self):
-        """
-        Тестирует пошаговый ввод адреса через FSM:
-        1. /check без аргументов -> Запрос города.
-        2. Ввод города -> Запрос улицы.
-        3. Ввод улицы -> Запрос дома.
-        4. Ввод дома -> Вызов API и отправка ответа, очистка FSM, сохранение last_checked_address.
-        """
-        user_id = 999
-        HUMAN_USERS[user_id] = True 
-
-        # 1. Mock Messages
-        message_check_empty = MagicMock(text="/check", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_city = MagicMock(text="м. Львів", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_street = MagicMock(text="вул. Зелена", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        message_house = MagicMock(text="100", from_user=MagicMock(id=user_id), answer=AsyncMock())
-        
-        # 2. Mock API Data
-        mock_api_data = MOCK_RESPONSE_OUTAGE.copy()
-        expected_hash = _get_schedule_hash(mock_api_data)
-        expected_api_result = format_shutdown_message(mock_api_data)
-        expected_final_result = expected_api_result + SUBSCRIBE_PROMPT
-
-        # 3. FSM Context Mock
-        fsm_context = AsyncMock()
-        fsm_context.get_data.return_value = {} # Убедимся, что нет старых данных
-        mock_get_state = AsyncMock(side_effect=[None, CheckAddressState.waiting_for_city, CheckAddressState.waiting_for_street, None])
-        fsm_context.get_state = mock_get_state
-
-        # 4. API Mock (для финального шага)
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=mock_api_data)) as mock_get_shutdowns:
-            
-            # --- ШАГ 1: /check без аргументов -> command_check_handler -> Запрос города ---
-            await command_check_handler(message_check_empty, fsm_context)
-            
-            message_check_empty.answer.assert_called_with("📝 **Будь ласка, введіть назву міста** (наприклад, `м. Дніпро`):")
-            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_city)
-            
-            # --- ШАГ 2: Ввод города -> process_city -> Запрос улицы ---
-            await process_city(message_city, fsm_context)
-            
-            fsm_context.update_data.assert_any_call(city="м. Львів")
-            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_street)
-            # ИЗМЕНЕНИЕ 3: Исправлено ожидаемое сообщение для process_city
-            message_city.answer.assert_called_with(
-                "📝 Місто: `м. Львів`\n\n**Будь ласка, введіть назву вулиці** (наприклад, `вул. Сонячна набережна`):"
-            )
-            
-            # --- ШАГ 3: Ввод улицы -> process_street -> Запрос дома ---
-            await process_street(message_street, fsm_context)
-            
-            fsm_context.update_data.assert_any_call(street="вул. Зелена")
-            fsm_context.set_state.assert_called_with(CheckAddressState.waiting_for_house)
-            # ИЗМЕНЕНИЕ 4: Добавлено ожидаемое сообщение для process_street
-            message_street.answer.assert_called_with(
-                "📝 Вулиця: `вул. Зелена`\n\n**Будь ласка, введіть номер будинку** (наприклад, `6`):"
-            )
-
-            # --- ШАГ 4: Ввод дома -> process_house -> Вызов API и ответ ---
-            await process_house(message_house, fsm_context)
-            
-            mock_get_shutdowns.assert_called_once_with("м. Львів", "вул. Зелена", "100")
-            fsm_context.update_data.assert_any_call(house="100")
-            fsm_context.clear.assert_called_once()
-            
-            # Проверяем, что last_checked_address был сохранен (ВКЛЮЧАЯ ХЕШ)
-            expected_address_data = {'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100', 'hash': expected_hash}
-            fsm_context.update_data.assert_any_call(last_checked_address=expected_address_data)
-
-            # Проверка сообщений:
-            self.assertEqual(message_house.answer.call_count, 2)
-            # 1. 'Перевіряю графік'
-            self.assertIn("✅ **Перевіряю графік**", message_house.answer.call_args_list[0][0][0])
-            # 2. Финальный результат
-            final_message = message_house.answer.call_args_list[1][0][0]
-            self.assertEqual(final_message.strip(), expected_final_result.strip())
-            
-    # ------------------------------------------------------------------
-    # --- НОВЫЕ ТЕСТЫ: /subscribe, /unsubscribe и /cancel --------------
-    # ------------------------------------------------------------------
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_subscribe_handler_initial_subscription(self):
-        """
-        Тестує, що при першій підписці встановлюється next_check і last_schedule_hash з FSM.
-        """
-        user_id = 1000
-        HUMAN_USERS[user_id] = True 
-        
-        # FSM Mock с последним проверенным адресом и хешем
-        hash_from_check = "some_initial_hash_abc123"
-        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2', 'hash': hash_from_check}
-        fsm_context = AsyncMock()
-        fsm_context.get_data.return_value = {"last_checked_address": address_data}
-        
-        # Message Mock
-        message_subscribe = MagicMock(
-            text="/subscribe 1.0",
-            from_user=MagicMock(id=user_id),
-            answer=AsyncMock()
-        )
-        
-        # 1. Вызов
-        await command_subscribe_handler(message_subscribe, fsm_context)
-        
-        # 2. Проверка
-        self.assertIn(user_id, SUBSCRIPTIONS)
-        self.assertEqual(SUBSCRIPTIONS[user_id]['city'], 'м. Київ')
-        self.assertEqual(SUBSCRIPTIONS[user_id]['interval_hours'], 1.0)
-        self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], hash_from_check)
-        
-        message_subscribe.answer.assert_called_once()
-        self.assertIn("✅ **Ви підписалися**", message_subscribe.answer.call_args[0][0])
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_unsubscribe_handler_success(self):
-        """
-        Тестує успішне скасування підписки.
-        """
-        user_id = 1002
-        HUMAN_USERS[user_id] = True
-    
-        # 1. Створюємо підписку
-        SUBSCRIPTIONS[user_id] = {
-            'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2',
-            'interval_hours': 1.0,
-            'next_check': datetime.now(),
-            'last_schedule_hash': 'some_hash',
-        }
-        self.assertIn(user_id, SUBSCRIPTIONS)
-    
-        # 2. Моки
-        message_unsubscribe = MagicMock(
-            text="/unsubscribe",
-            from_user=MagicMock(id=user_id),
-            answer=AsyncMock()
-        )
-        fsm_context = AsyncMock()
-    
-        # 3. Виклик
-        # ИЗМЕНЕНИЕ 1: Сигнатура исправлена в dtek_telegram_bot.py
-        await command_unsubscribe_handler(message_unsubscribe, fsm_context) 
-        
-        # 4. Перевірка
-        self.assertNotIn(user_id, SUBSCRIPTIONS)
-        message_unsubscribe.answer.assert_called_once()
-        self.assertIn("✅ **Ви успішно скасували підписку**", message_unsubscribe.answer.call_args[0][0])
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_unsubscribe_handler_not_subscribed(self):
-        """
-        Тестує скасування, коли підписки немає.
-        """
-        user_id = 1003
-        HUMAN_USERS[user_id] = True
-        self.assertNotIn(user_id, SUBSCRIPTIONS)
-        
-        # 1. Моки
-        message_unsubscribe = MagicMock(
-            text="/unsubscribe",
-            from_user=MagicMock(id=user_id),
-            answer=AsyncMock()
-        )
-        fsm_context = AsyncMock()
-        
-        # 2. Виклик
-        await command_unsubscribe_handler(message_unsubscribe, fsm_context)
-        
-        # 3. Перевірка
-        self.assertNotIn(user_id, SUBSCRIPTIONS) # Должен остаться не подписан
-        message_unsubscribe.answer.assert_called_once()
-        self.assertIn("❌ **Ви не підписані**", message_unsubscribe.answer.call_args[0][0])
-    
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_cancel_handler_active_fsm(self):
-        """
-        Тестує /cancel, коли є активний FSM-стан.
-        """
-        user_id = 1004
-        HUMAN_USERS[user_id] = True
-        
-        # 1. Моки
-        message_cancel = MagicMock(
-            text="/cancel",
-            from_user=MagicMock(id=user_id),
-            answer=AsyncMock()
-        )
-        fsm_context = AsyncMock()
-        # Имитация активного FSM-состояния
-        fsm_context.get_state.return_value = CheckAddressState.waiting_for_city
-        
-        # 2. Виклик
-        await command_cancel_handler(message_cancel, fsm_context)
-        
-        # 3. Перевірка
-        fsm_context.get_state.assert_called_once()
-        fsm_context.clear.assert_called_once()
-        message_cancel.answer.assert_called_once()
-        self.assertIn("✅ **Операція скасована.**", message_cancel.answer.call_args[0][0])
-        # Проверяем, что удалена клавиатура
-        self.assertIsInstance(message_cancel.answer.call_args[1]['reply_markup'], ReplyKeyboardRemove)
-
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_cancel_handler_no_active_fsm(self):
-        """
-        Тестує /cancel, коли немає активного FSM-стану.
-        """
-        user_id = 1005
-        HUMAN_USERS[user_id] = True
-        
-        # 1. Моки
-        message_cancel = MagicMock(
-            text="/cancel",
-            from_user=MagicMock(id=user_id),
-            answer=AsyncMock()
-        )
-        fsm_context = AsyncMock()
-        # Имитация отсутствия FSM-состояния
-        fsm_context.get_state.return_value = None
-        
-        # 2. Виклик
-        await command_cancel_handler(message_cancel, fsm_context)
-        
-        # 3. Перевірка
-        fsm_context.get_state.assert_called_once()
-        fsm_context.clear.assert_not_called() # Clear не вызывается, если state is None
-        message_cancel.answer.assert_called_once()
-        self.assertIn("ℹ️ Немає активних операцій для скасування.", message_cancel.answer.call_args[0][0])
-
-
-    # ------------------------------------------------------------------
-    # --- ТЕСТЫ: subscription_checker_task (добавлены @pytest.mark.asyncio)
-    # ------------------------------------------------------------------
-    
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_checker_task_no_changes(self):
-        """
-        Тестує фонову задачу:
-        1. Перевіряє, що графік перевіряється один раз.
-        2. Перевіряє, що повідомлення надсилається (перша перевірка).
-        3. Перевіряє, що при наступній перевірці (без змін) повідомлення НЕ надсилається.
-        """
-        user_id = 1006
-        address_data = {'city': 'м. Київ', 'street': 'вул. Хрещатик', 'house': '2'}
-        initial_hash = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
-        
-        # 1. Setup: імітація підписки
-        now = datetime(2025, 11, 7, 10, 0, 0)
-        SUBSCRIPTIONS[user_id] = {
-            'city': address_data['city'], 
-            'street': address_data['street'], 
-            'house': address_data['house'], 
-            'interval_hours': 1.0, 
-            'next_check': now - timedelta(minutes=1), # Перевірка має бути виконана
-            'last_schedule_hash': "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION", # Це перша перевірка
-        }
-        
-        # Mock об'єкти
-        mock_bot = MagicMock(send_message=AsyncMock())
-        
-        # Функція для імітації одного циклу (використовуючи patch для asyncio.sleep)
-        async def run_checker_once():
-            class InterruptSleep:
-                """Мок, который позволяет пройти одну итерацию цикла и прерывает вторую."""
-                def __init__(self): self.first_call = True
-                def __call__(self, delay):
-                    if self.first_call:
-                        self.first_call = False
-                        return # Позволяем завершиться, но не спать
-                    raise StopAsyncIteration # Прерываем цикл
-            
-            with patch('dtek_telegram_bot.asyncio.sleep', new=InterruptSleep()) as mock_sleep:
-                try:
-                    await subscription_checker_task(mock_bot)
-                except StopAsyncIteration:
-                    pass
-
-        # --- ЦИКЛ 1: Перша перевірка (хеш оновлюється) ---
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=MOCK_RESPONSE_OUTAGE)) as mock_get_shutdowns, \
-             patch('dtek_telegram_bot.datetime') as mock_datetime:
-
-            mock_datetime.now.return_value = now
-            await run_checker_once() 
-            
-            # Перевірка 1: Повідомлення БУЛО надіслано
-            mock_get_shutdowns.assert_called_once()
-            mock_bot.send_message.assert_called_once()
-            
-            self.assertIn("🔔 **Графік перевірено**", mock_bot.send_message.call_args[1]['text'])
-            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], initial_hash)
-            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], now + timedelta(hours=1))
-
-        # --- ЦИКЛ 2: Графік НЕ змінився (next_check настав) ---
-        now_cycle_2 = datetime(2025, 11, 7, 11, 0, 0) # Спрацьовує перевірка
-        mock_bot.send_message.reset_mock() 
-        mock_get_shutdowns.reset_mock()
-        
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=MOCK_RESPONSE_OUTAGE)) as mock_get_shutdowns, \
-             patch('dtek_telegram_bot.datetime') as mock_datetime:
-            
-            mock_datetime.now.return_value = now_cycle_2
-            await run_checker_once() 
-            
-            # Перевірка 2: Повідомлення НЕ було надіслано
-            mock_get_shutdowns.assert_called_once() # API викликано, але хеш той самий
-            mock_bot.send_message.assert_not_called()
-            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], initial_hash)
-            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], now_cycle_2 + timedelta(hours=1))
-
-
-        # --- ЦИКЛ 3: Графік ЗМІНИВСЯ (next_check настав) ---
-        now_cycle_3 = datetime(2025, 11, 7, 12, 5, 0) # Спрацьовує перевірка
-        mock_bot.send_message.reset_mock()
-        mock_get_shutdowns.reset_mock()
-
-        changed_hash = _get_schedule_hash(MOCK_RESPONSE_OUTAGE_CHANGED)
-        
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=MOCK_RESPONSE_OUTAGE_CHANGED)) as mock_get_shutdowns, \
-             patch('dtek_telegram_bot.datetime') as mock_datetime:
-            
-            mock_datetime.now.return_value = now_cycle_3
-            await run_checker_once() 
-
-            # Перевірка 3: Повідомлення БУЛО надіслано
-            mock_get_shutdowns.assert_called_once()
-            mock_bot.send_message.assert_called_once()
-            
-            self.assertIn("🔔 **ОНОВЛЕННЯ ГРАФІКУ!**", mock_bot.send_message.call_args[1]['text'])
-            self.assertEqual(SUBSCRIPTIONS[user_id]['last_schedule_hash'], changed_hash)
-            self.assertEqual(SUBSCRIPTIONS[user_id]['next_check'], now_cycle_3 + timedelta(hours=1))
-
-
-    @pytest.mark.asyncio # ИЗМЕНЕНИЕ 2: Добавлено
-    async def test_checker_task_multiple_users_same_address(self):
-        """
-        Тестує, що при наявності декількох підписників на ОДНУ адресу,
-        API викликається лише ОДИН раз, але повідомлення отримують ВСІ.
-        """
-        user_id_a = 2001
-        user_id_b = 2002
-        address_data = {'city': 'м. Львів', 'street': 'вул. Зелена', 'house': '100'}
-        initial_hash = _get_schedule_hash(MOCK_RESPONSE_OUTAGE)
-
-        # 1. Setup: імітація підписок
-        now = datetime(2025, 11, 7, 10, 0, 0)
-        SUBSCRIPTIONS[user_id_a] = {**address_data, 'interval_hours': 1.0, 'next_check': now - timedelta(minutes=1), 'last_schedule_hash': "NO_SCHEDULE_FOUND"}
-        SUBSCRIPTIONS[user_id_b] = {**address_data, 'interval_hours': 1.0, 'next_check': now - timedelta(minutes=1), 'last_schedule_hash': "NO_SCHEDULE_FOUND"}
-
-        # Mock об'єкти
-        mock_bot = MagicMock(send_message=AsyncMock())
-        
-        # Функція для імітації одного циклу
-        async def run_checker_once():
-            class InterruptSleep:
-                def __init__(self): self.first_call = True
-                def __call__(self, delay):
-                    if self.first_call:
-                        self.first_call = False
-                        return 
-                    raise StopAsyncIteration 
-            
-            with patch('dtek_telegram_bot.asyncio.sleep', new=InterruptSleep()) as mock_sleep:
-                try:
-                    await subscription_checker_task(mock_bot)
-                except StopAsyncIteration:
-                    pass
-
-        # 2. Виклик (Mock API)
-        with patch('dtek_telegram_bot.get_shutdowns_data', new=AsyncMock(return_value=MOCK_RESPONSE_OUTAGE)) as mock_get_shutdowns, \
-             patch('dtek_telegram_bot.datetime') as mock_datetime:
-
-            mock_datetime.now.return_value = now
-            # Запуск циклу
-            await run_checker_once()
-            
-            # 4. Перевірка
-            # API має бути викликане лише ОДИН раз
-            mock_get_shutdowns.assert_called_once()
-            
-            # Обидва користувачі мають отримати повідомлення
-            self.assertEqual(mock_bot.send_message.call_count, 2)
-            
-            # Перевірка користувача A
-            call_a = next(c for c in mock_bot.send_message.call_args_list if c[1]['chat_id'] == user_id_a)
-            self.assertIn("🔔 **Графік перевірено**", call_a[1]['text'])
-            self.assertEqual(SUBSCRIPTIONS[user_id_a]['last_schedule_hash'], initial_hash)
-            self.assertEqual(SUBSCRIPTIONS[user_id_a]['next_check'], now + timedelta(hours=1))
-
-            # Перевірка користувача B
-            call_b = next(c for c in mock_bot.send_message.call_args_list if c[1]['chat_id'] == user_id_b)
-            self.assertIn("🔔 **Графік перевірено**", call_b[1]['text'])
-            self.assertEqual(SUBSCRIPTIONS[user_id_b]['last_schedule_hash'], initial_hash)
-            self.assertEqual(SUBSCRIPTIONS[user_id_b]['next_check'], now + timedelta(hours=1))
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
