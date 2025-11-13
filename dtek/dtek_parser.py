@@ -60,7 +60,7 @@ def _clean_address_part(part: str, prefixes: list[str]) -> str:
     return part.strip()
 
 
-async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False) -> Dict[str, Any]:
+async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False, skip_input_on_debug: bool = False) -> Dict[str, Any]:
     """
     Основная логика парсинга.
     Возвращает единый словарь с общей информацией и вложенным графиком по дням.
@@ -77,11 +77,22 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
     
     # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (2/3): Изменяем пути к файлам ===
     # 2a. Создаем директорию 'out', если она не существует
-    Path(OUT_DIR).mkdir(exist_ok=True)
+    out_path = Path(OUT_DIR)
+    out_path.mkdir(exist_ok=True)
+    
+    # УДАЛЯЕМ все содержимое директории 'out' при каждом запуске
+    for item in out_path.iterdir():
+        try:
+            if item.is_file():
+                item.unlink()  # Удаляем файл
+            elif item.is_dir():
+                item.rmdir()  # Удаляем пустую директорию (или используйте shutil.rmtree(item) для рекурсивного удаления)
+        except OSError as e:
+            logger.warning(f"Не удалось удалить {item}: {e}")
     
     # 2b. Определяем пути внутри OUT_DIR
-    json_path = Path(OUT_DIR) / OUTPUT_FILENAME
-    png_path = Path(OUT_DIR) / SCREENSHOT_FILENAME
+    json_path = out_path / OUTPUT_FILENAME
+    png_path = out_path / SCREENSHOT_FILENAME
     # ==========================================================
 
     logger.info(f"--- 1. Запуск Playwright для адреса: {city}, {street}, {house} ---")
@@ -94,7 +105,7 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
         page = await browser.new_page()
         
         try:
-            URL = "https://www.dtek-dnem.com.ua/ua/shutdowns"
+            URL = "https://www.dtek-dnem.com.ua/ua/shutdowns    "
             logger.info(f"Загрузка страницы: {URL}")
             await page.goto(URL, wait_until="load", timeout=60000)
             logger.debug("Страница успешно загружена.")
@@ -169,8 +180,10 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             group_text = await page.locator(group_selector).inner_text()
             group_final = group_text.replace("Черга", "").strip()
             
-            screenshot_selector = "div.discon-fact.active"
-            await page.locator(screenshot_selector).screenshot(path=png_path)
+            if is_debug:
+                screenshot_selector = "div.discon-fact.active"
+                await page.locator(screenshot_selector).screenshot(path=png_path)
+                logger.info(f"Скриншот сохранен: {png_path}")
             
             # 📌 Инициализируем агрегированный словарь
             aggregated_result = {
@@ -234,7 +247,8 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             if is_debug:
                  keep_open = True
                  print("✅ Успешное выполнение в режиме отладки (--debug).")
-                 input("Нажмите Enter, чтобы закрыть браузер...")
+                 if not skip_input_on_debug:
+                     input("Нажмите Enter, чтобы закрыть браузер...")
 
             # 📌 Возвращаем ЕДИНЫЙ агрегированный словарь
             return aggregated_result
@@ -242,16 +256,16 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
         except Exception as e:
             logger.error(f"Произошла ошибка в Playwright: {type(e).__name__}: {e}")
             
-            # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (3/3): Удаляем из папки out ===
-            # Удаляем файлы, используя обновленные пути
-            if os.path.exists(json_path): os.remove(json_path)
-            if os.path.exists(png_path): os.remove(png_path)
-            # ==========================================================
+            # Удаляем файлы, используя обновленные пути, только если в режиме отладки
+            if is_debug:
+                if os.path.exists(json_path): os.remove(json_path)
+                if os.path.exists(png_path): os.remove(png_path)
 
             if is_debug:
                 keep_open = True
                 print("❌ Ошибка в режиме отладки (--debug).")
-                input("Нажмите Enter, чтобы закрыть браузер...")
+                if not skip_input_on_debug:
+                    input("Нажмите Enter, чтобы закрыть браузер...")
             else:
                 # В режиме без debug ошибку нужно пробросить
                 raise e
@@ -313,8 +327,7 @@ async def cli_entry_point():
         exit(1)
 
 
-    # Сохранение JSON в режиме CLI (только если данные получены)
-    if final_data:
+    if final_data and args.debug:
         json_output = json.dumps(final_data, indent=4, ensure_ascii=False)
         
         # 📌 Используем новый путь

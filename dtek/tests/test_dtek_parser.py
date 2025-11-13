@@ -153,7 +153,7 @@ async def test_parser_success(mock_async_playwright, mock_playwright_components)
     
     mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_components[0]
     
-    result = await run_parser_service(DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE)
+    result = await run_parser_service(DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE, is_debug=True, skip_input_on_debug=True)
     
     assert isinstance(result, dict)
     assert result["group"] == "3" 
@@ -182,6 +182,7 @@ async def test_parser_timeout_handling(mock_async_playwright, mock_playwright_co
 
     mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_components[0]
     
+    # Важно: тест вызывает функцию без is_debug, так что input не должен вызываться и в случае ошибки
     with pytest.raises(TimeoutError) as excinfo:
         await run_parser_service(DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE)
     
