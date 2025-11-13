@@ -373,6 +373,7 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
             return None # Не было валидных групп отключений
 
         # 2. Настройка рисования (Pillow)
+        # --- Размер, отступы и центр ---
         size = 250 
         padding = 25 
         center = (size // 2, size // 2)
@@ -381,6 +382,8 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
         
         image = Image.new('RGB', (size, size), (255, 255, 255))
         draw = ImageDraw.Draw(image)
+        deg_per_minute = 0.25 # 360 / 1440
+        deg_per_hour = 15
 
         # 3. Загрузка шрифта
         font_size = 14 
@@ -392,15 +395,10 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
             logger.warning(f"Specified font at FONT_PATH ('{FONT_PATH}') not found. Using default PIL font.")
             font = ImageFont.load_default()
 
-        # 4. Рисуем 24 белых сектора (база)
-        deg_per_hour = 15
-        for h in range(24):
-            start_angle = (h * deg_per_hour) - 90.1 # -90 (сдвиг к 12 часам) + 0.1 (перекрытие)
-            end_angle = ((h + 1) * deg_per_hour) - 90
-            draw.pieslice(bbox, start_angle, end_angle, fill='#FFFFFF', outline='#AAAAAA')
+        # 4. Рисуем большое белое кольцо (основа)
+        draw.ellipse(bbox, fill='#FFFFFF', outline='#000000', width=1) # Контур сделан черным для разделения с фоном
 
         # 5. Рисуем красные сектора (отключения)
-        deg_per_minute = 0.25 # 360 / 1440
         for group in groups:
             start_min = group['start_min']
             end_min = group['end_min']
@@ -411,9 +409,18 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
             if abs(start_angle - end_angle) < 0.1:
                 end_angle += 360.0
             
-            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None)
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None) # Без контура для красных
+        
+        # --- НОВАЯ ЛОГИКА: Рисуем черные линии сетки (24 линии) поверх секторов ---
+        for h in range(24):
+            angle_rad_line = math.radians((h * deg_per_hour) - 90) # Угол для часа h
+            x_end = center[0] + radius * math.cos(angle_rad_line)
+            y_end = center[1] + radius * math.sin(angle_rad_line)
+            # Рисуем черную линию от центра до края круга
+            draw.line([center, (x_end, y_end)], fill="#000000", width=1)
+        # --------------------------------------------------------------------------
 
-        # --- Рисуем часовую стрелку (текущее время) с учетом Киевского времени ---
+        # 6. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
         kiev_tz = pytz.timezone('Europe/Kiev')
         now = datetime.now(kiev_tz) # Берем текущее время в Киевском часовом поясе
         current_minutes = now.hour * 60 + now.minute
@@ -430,31 +437,29 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
         x_end = center[0] + hand_length * math.cos(angle_rad)
         y_end = center[1] + hand_length * math.sin(angle_rad)
         
-        # 5.1 Рисуем основную линию стрелки
+        # 6.1 Рисуем основную линию стрелки
         HAND_COLOR = "#000000" 
         draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
         
-        # 5.2 Рисуем наконечник стрелки (маленький треугольник)
+        # 6.2 Рисуем наконечник стрелки (маленький треугольник)
         perp_angle_rad = angle_rad + math.pi / 2
         
         # Точки наконечника: T1 (на конце), T2 и T3 (основание)
-        # Координаты основания треугольника
-        base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) # База чуть сдвинута
+        base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) 
         base_y = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad)
         
-        # Сдвиг T2 и T3 перпендикулярно
         x2 = base_x + (arrowhead_size / 2) * math.cos(perp_angle_rad)
         y2 = base_y + (arrowhead_size / 2) * math.sin(perp_angle_rad)
         
         x3 = base_x - (arrowhead_size / 2) * math.cos(perp_angle_rad)
         y3 = base_y - (arrowhead_size / 2) * math.sin(perp_angle_rad)
         
-        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR) # Чёрный наконечник
+        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR) 
         
         # Рисуем кружок в центре для завершения вида часов
         draw.ellipse([center[0]-3, center[1]-3, center[0]+3, center[1]+3], fill=HAND_COLOR, outline="#000000")
         
-        # 6. Рисуем метки часов
+        # 7. Рисуем метки часов
         label_radius = radius + (padding * 0.5) 
         for h in range(24):
             text = str(h)
@@ -471,7 +476,7 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
                 text_width, text_height = draw.textsize(text, font=font)
                 draw.text((x - text_width / 2, y - text_height / 2), text, fill="black", font=font)
 
-        # 7. Сохранение в байты
+        # 8. Сохранение в байты
         buf = io.BytesIO()
         image.save(buf, format='PNG')
         buf.seek(0)
