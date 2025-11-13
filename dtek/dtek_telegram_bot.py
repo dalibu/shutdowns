@@ -15,12 +15,11 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext 
 from aiogram.fsm.state import State, StatesGroup 
 
-# --- НОВЫЕ ИМПОРТЫ ДЛЯ ГРАФИКОВ ---
-import matplotlib
-matplotlib.use('Agg') # Важно для запуска в non-GUI окружении
-import matplotlib.pyplot as plt
-import numpy as np
+# --- НОВЫЕ ИМПОРТЫ ДЛЯ ГРАФИКОВ (PIL) ---
 import io
+import math
+from PIL import Image, ImageDraw, ImageFont
+# (Импорты matplotlib и numpy удалены)
 # ----------------------------------
 
 # --- 1. Конфігурація ---
@@ -326,22 +325,20 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
 
 # ---------------------------------------------------------
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ГРАФИКА ---
+# --- ИЗМЕНЕННАЯ ФУНКЦИЯ ГЕНЕРАЦИИ ГРАФИКА (НА PIL) ---
 def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
     """
-    Генерирует 24-часовое изображение графика (clock-face) на основе слотов.
+    Генерирует 24-часовое изображение графика (clock-face) на основе слотов, используя Pillow.
     """
     try:
-        N = 1440 # 1440 минут в дне
-        radii = np.ones(N)
-        colors = ['#FFFFFF'] * N # Белый (есть свет)
+        # 1. Логика консолидации слотов (скопирована из _process_single_day_schedule)
+        outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
+        if not outage_slots:
+            return None # Нет отключений - нет картинки
 
-        has_outage = False
-        for slot in slots:
-            disconection = slot.get('disconection')
-            if disconection not in ('full', 'half'):
-                continue
-                
+        groups = []
+        current_group = None
+        for slot in outage_slots:
             try:
                 time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
                 start_hour = int(time_parts[0])
@@ -351,7 +348,8 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
                 
                 slot_start_min = 0
                 slot_end_min = 0
-
+                disconection = slot.get('disconection')
+                
                 if disconection == 'full':
                     slot_start_min = start_hour * 60
                     slot_end_min = end_hour * 60
@@ -359,58 +357,97 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
                     slot_start_min = start_hour * 60 + 30
                     slot_end_min = end_hour * 60
 
-                if slot_end_min > slot_start_min:
-                    has_outage = True
-                    # Убедимся, что end_min не больше 1440
-                    end_idx = min(slot_end_min, N)
-                    for i in range(slot_start_min, end_idx):
-                        if 0 <= i < N:
-                            colors[i] = '#FF0000' # Красный (нет света)
+                if current_group is None:
+                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
+                elif slot_start_min == current_group["end_min"]: 
+                    current_group["end_min"] = slot_end_min
+                else:
+                    groups.append(current_group)
+                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
             except Exception:
-                continue 
+                continue # Пропускаем битый слот
 
-        if not has_outage:
-            return None # Не генерируем картинку, если нет отключений
+        if current_group:
+            groups.append(current_group)
 
-        # 2. Настройка графика
-        theta = np.linspace(0.0, 2 * np.pi, N, endpoint=False)
-        width = (2 * np.pi) / N + 0.001 # Чуть больше, чтобы перекрыть пробелы
+        if not groups:
+            return None # Не было валидных групп отключений
 
-        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={'projection': 'polar'})
+        # 2. Настройка рисования (Pillow)
+        size = 400
+        padding = 40
+        center = (size // 2, size // 2)
+        radius = (size // 2) - padding
+        bbox = [padding, padding, size - padding, size - padding] # Bounding box
         
-        ax.bar(theta, radii, width=width, bottom=0.0, color=colors, alpha=1.0, edgecolor='none')
+        image = Image.new('RGB', (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
 
-        # 3. Настройка осей
-        ax.set_theta_zero_location('N') # 0 (полночь) сверху
-        ax.set_theta_direction(-1) # По часовой стрелке
-        
-        # Метки часов (0-23)
-        # --- ИЗМЕНЕНИЕ: Увеличен шрифт ---
-        ax.set_xticks(np.linspace(0, 2 * np.pi, 24, endpoint=False))
-        ax.set_xticklabels([str(i) for i in range(24)], fontsize=14)
-        
-        # Убираем радиальные метки
-        ax.set_rticks([])
-        
-        # Настраиваем сетку (только радиальные линии, как в примере)
-        ax.yaxis.grid(False)
-        ax.xaxis.grid(True, color='black', linestyle='-', linewidth=0.5, alpha=0.7)
+        # 3. Загрузка шрифта
+        font_size = 24 # <-- ИЗМЕНЕНИЕ 1: Увеличен размер
+        font = None
+        try:
+            # Пытаемся загрузить шрифт, который часто есть в Linux (и в Docker-образах)
+            font = ImageFont.truetype("DejaVuSans.ttf", font_size)
+        except IOError:
+            try:
+                # Пытаемся загрузить шрифт Windows
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except IOError:
+                # Фоллбэк на очень маленький шрифт по умолчанию
+                logger.warning("No TTF fonts found (DejaVuSans, Arial). Using default PIL font.")
+                font = ImageFont.load_default()
 
-        # Устанавливаем предел, чтобы график занимал все место
-        ax.set_ylim(0, 1.0) 
-        ax.spines['polar'].set_visible(False) # Убираем внешнюю рамку
-        
-        plt.tight_layout()
+        # 4. Рисуем 24 белых сектора (база)
+        deg_per_hour = 15
+        for h in range(24):
+            start_angle = (h * deg_per_hour) - 90.1 # -90 (сдвиг к 12 часам) + 0.1 (перекрытие)
+            end_angle = ((h + 1) * deg_per_hour) - 90
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FFFFFF', outline='#AAAAAA')
 
-        # 4. Сохранение в байты
+        # 5. Рисуем красные сектора (отключения)
+        deg_per_minute = 0.25 # 360 / 1440
+        for group in groups:
+            start_min = group['start_min']
+            end_min = group['end_min']
+            
+            start_angle = (start_min * deg_per_minute) - 90
+            end_angle = (end_min * deg_per_minute) - 90
+            
+            # Убедимся, что начальный и конечный угол не совпадают (для 00:00-24:00)
+            if abs(start_angle - end_angle) < 0.1:
+                end_angle += 360.0
+            
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None)
+
+        # 6. Рисуем метки часов
+        label_radius = radius + (padding // 2)
+        for h in range(24):
+            text = str(h)
+            
+            # --- ИЗМЕНЕНИЕ 2: Угол для НАЧАЛА часового сектора ---
+            # (Убран + (deg_per_hour / 2))
+            angle_rad = math.radians((h * deg_per_hour) - 90) 
+            
+            x = center[0] + label_radius * math.cos(angle_rad)
+            y = center[1] + label_radius * math.sin(angle_rad)
+            
+            # Используем anchor="mm" для центрирования текста (требует PIL >= 9.2.0)
+            try:
+                draw.text((x, y), text, fill="black", font=font, anchor="mm")
+            except TypeError:
+                # Фоллбэк для старых версий PIL (без anchor)
+                text_width, text_height = draw.textsize(text, font=font)
+                draw.text((x - text_width / 2, y - text_height / 2), text, fill="black", font=font)
+
+        # 7. Сохранение в байты
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1)
-        plt.close(fig)
+        image.save(buf, format='PNG')
         buf.seek(0)
         return buf.getvalue()
 
     except Exception as e:
-        logger.error(f"Failed to generate schedule image: {e}", exc_info=True)
+        logger.error(f"Failed to generate schedule image with PIL: {e}", exc_info=True)
         return None
 # -----------------------------------------------
 
@@ -670,10 +707,10 @@ async def captcha_answer_handler(message: types.Message, state: FSMContext) -> N
             "❌ **Неправильна відповідь.** Спробуйте ще раз, ввівши **/start**."
         )
 
-# --- ОБРАБОТЧИК /cancel (ДОЛЖЕН БЫТЬ ПЕРВЫМ ПЕРЕД FSM-ОБРАБОТЧИКАМИ) ---
+# --- ОБРАБОТЧИК /cancel (ДОЛЖЕН БЫТЬ ПЕРВЫМыМ ПЕРЕД FSM-ОБРАБОТЧИКАМИ) ---
 @dp.message(Command("cancel"))
 async def command_cancel_handler(message: types.Message, state: FSMContext) -> None:
-    """Обработчик команды /cancel, который срабатывает независимо от текущего состояния FSM."""
+    """Обработчик команды /cancel, который срабатыет независимо от текущего состояния FSM."""
     current_state = await state.get_state()
     if current_state is None:
         await message.answer("Немає активних дій для скасування.")
@@ -720,7 +757,7 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
         is_subscribed = bool(await cursor.fetchone())
         
-        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        # --- Вызов новой функции-отправщика ---
         await send_schedule_response(message, api_data, is_subscribed)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -770,7 +807,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
         is_subscribed = bool(await cursor.fetchone())
         
-        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        # --- Вызов новой функции-отправщика ---
         await send_schedule_response(message, api_data, is_subscribed)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
@@ -821,7 +858,7 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
         is_subscribed = bool(await cursor.fetchone())
         
-        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        # --- Вызов новой функции-отправщика ---
         await send_schedule_response(message, data, is_subscribed)
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
