@@ -10,10 +10,18 @@ from typing import List, Dict, Any, Tuple
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F 
 from aiogram.filters import Command 
-from aiogram.types import BotCommand, ReplyKeyboardRemove
+from aiogram.types import BotCommand, ReplyKeyboardRemove, BufferedInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext 
 from aiogram.fsm.state import State, StatesGroup 
+
+# --- НОВЫЕ ИМПОРТЫ ДЛЯ ГРАФИКОВ ---
+import matplotlib
+matplotlib.use('Agg') # Важно для запуска в non-GUI окружении
+import matplotlib.pyplot as plt
+import numpy as np
+import io
+# ----------------------------------
 
 # --- 1. Конфігурація ---
 BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
@@ -158,7 +166,10 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
     return ", ".join(output_parts)
 
 def format_shutdown_message(data: dict) -> str:
-    """Форматирует агрегированный JSON-ответ в новый, компактный формат."""
+    """
+    Форматирует агрегированный JSON-ответ в новый, компактный формат.
+    (Используется для фоновых уведомлений)
+    """
     city = data.get("city", "Н/Д")
     street = data.get("street", "Н/Д")
     house = data.get("house_num", "Н/Д")
@@ -252,6 +263,156 @@ def _get_schedule_hash(data: dict) -> str:
 
     schedule_string = "|".join(schedule_parts)
     return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
+
+# --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОТВЕТА ---
+async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
+    """
+    Отправляет пользователю форматированный ответ, 
+    разбитый по дням (текст + изображение для каждого дня).
+    """
+    try:
+        # 1. Отправляем "шапку" (Адрес, Черга)
+        city = api_data.get("city", "Н/Д")
+        street = api_data.get("street", "Н/Д")
+        house = api_data.get("house_num", "Н/Д")
+        group = api_data.get("group", "Н/Д")
+        header = (
+            f"🏠 Адреса: `{city}, {street}, {house}`\n"
+            f"👥 Черга: `{group}`"
+        )
+        await message.answer(header)
+
+        schedule = api_data.get("schedule", {})
+        if not schedule:
+            await message.answer("❌ *Не вдалося отримати графік відключень.*")
+            if not is_subscribed:
+                await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+            return
+
+        # 2. Сортируем даты
+        try:
+            sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        except ValueError:
+            sorted_dates = sorted(schedule.keys())
+
+        # 3. Цикл по дням (Текст + Картинка)
+        for date in sorted_dates:
+            slots = schedule.get(date, [])
+            result_str = _process_single_day_schedule(date, slots)
+            
+            if "Відключення не заплановані" in result_str or "Помилка" in result_str:
+                line = f"✅ **{date}**: {result_str}"
+            else:
+                line = f"❌ **{date}**: {result_str}"
+            
+            # Отправляем текст для этого дня
+            await message.answer(line)
+            
+            # Генерируем и отправляем картинку для этого дня
+            # _generate_schedule_image вернет None, если отключений нет
+            image_data = _generate_schedule_image(slots)
+            
+            if image_data:
+                image_file = BufferedInputFile(image_data, filename=f"schedule_{date}.png")
+                await message.answer_photo(photo=image_file)
+
+        # 4. Отправляем "подвал" (приглашение к подписке)
+        if not is_subscribed:
+            await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+    
+    except Exception as e:
+        logger.error(f"Error in send_schedule_response for user {message.from_user.id}: {e}", exc_info=True)
+        await message.answer("❌ Сталася помилка під час формування відповіді.")
+
+# ---------------------------------------------------------
+
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ГРАФИКА ---
+def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
+    """
+    Генерирует 24-часовое изображение графика (clock-face) на основе слотов.
+    """
+    try:
+        N = 1440 # 1440 минут в дне
+        radii = np.ones(N)
+        colors = ['#FFFFFF'] * N # Белый (есть свет)
+
+        has_outage = False
+        for slot in slots:
+            disconection = slot.get('disconection')
+            if disconection not in ('full', 'half'):
+                continue
+                
+            try:
+                time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
+                start_hour = int(time_parts[0])
+                end_hour = int(time_parts[1])
+                if end_hour == 0:
+                    end_hour = 24
+                
+                slot_start_min = 0
+                slot_end_min = 0
+
+                if disconection == 'full':
+                    slot_start_min = start_hour * 60
+                    slot_end_min = end_hour * 60
+                elif disconection == 'half':
+                    slot_start_min = start_hour * 60 + 30
+                    slot_end_min = end_hour * 60
+
+                if slot_end_min > slot_start_min:
+                    has_outage = True
+                    # Убедимся, что end_min не больше 1440
+                    end_idx = min(slot_end_min, N)
+                    for i in range(slot_start_min, end_idx):
+                        if 0 <= i < N:
+                            colors[i] = '#FF0000' # Красный (нет света)
+            except Exception:
+                continue 
+
+        if not has_outage:
+            return None # Не генерируем картинку, если нет отключений
+
+        # 2. Настройка графика
+        theta = np.linspace(0.0, 2 * np.pi, N, endpoint=False)
+        width = (2 * np.pi) / N + 0.001 # Чуть больше, чтобы перекрыть пробелы
+
+        fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={'projection': 'polar'})
+        
+        ax.bar(theta, radii, width=width, bottom=0.0, color=colors, alpha=1.0, edgecolor='none')
+
+        # 3. Настройка осей
+        ax.set_theta_zero_location('N') # 0 (полночь) сверху
+        ax.set_theta_direction(-1) # По часовой стрелке
+        
+        # Метки часов (0-23)
+        # --- ИЗМЕНЕНИЕ: Увеличен шрифт ---
+        ax.set_xticks(np.linspace(0, 2 * np.pi, 24, endpoint=False))
+        ax.set_xticklabels([str(i) for i in range(24)], fontsize=14)
+        
+        # Убираем радиальные метки
+        ax.set_rticks([])
+        
+        # Настраиваем сетку (только радиальные линии, как в примере)
+        ax.yaxis.grid(False)
+        ax.xaxis.grid(True, color='black', linestyle='-', linewidth=0.5, alpha=0.7)
+
+        # Устанавливаем предел, чтобы график занимал все место
+        ax.set_ylim(0, 1.0) 
+        ax.spines['polar'].set_visible(False) # Убираем внешнюю рамку
+        
+        plt.tight_layout()
+
+        # 4. Сохранение в байты
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to generate schedule image: {e}", exc_info=True)
+        return None
+# -----------------------------------------------
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
 def _get_captcha_data() -> Tuple[str, int]:
@@ -554,13 +715,15 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
             (user_id, city, street, house, current_hash)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(api_data)
         await state.clear()
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        await send_schedule_response(message, api_data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (ValueError, ConnectionError) as e:
         await state.clear()
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
@@ -603,12 +766,14 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
             (user_id, city, street, house, current_hash)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(api_data)
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        await send_schedule_response(message, api_data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         error_message = f"❌ **{error_type}:** {e}"
@@ -652,12 +817,14 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
             (current_hash, user_id)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(data)
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- ИЗМЕНЕНИЕ: Вызов новой функции-отправщика ---
+        await send_schedule_response(message, data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         await message.answer(f"❌ **{error_type}:** {e}")

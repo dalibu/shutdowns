@@ -13,3 +13,5 @@ aiohttp
 httpx
 pytz
 aiosqlite
+matplotlib
+numpy
