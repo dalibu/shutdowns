@@ -1,5 +1,3 @@
-  # Файл: docker-compose.yml
-
   services:
     # --- 1. FastAPI Parser API Service ---
     dtek_api:
@@ -15,17 +13,14 @@
     dtek_bot:
       build: 
         context: .
-        dockerfile: Dockerfile.bot # Убедитесь, что этот файл существует и содержит VOLUME ["/data"]
+        dockerfile: Dockerfile.bot
       container_name: dtek_bot 
       env_file:
         - .env
       environment:
-        # Исправлено: переменная API_BASE_URL, а не DTEK_API_URL
         API_BASE_URL: "http://dtek_api:8000"
         # Бот обращается к API по имени сервиса внутри сети Docker
-        DTEK_API_URL: "http://dtek_api:8000/shutdowns"
         # DB_PATH можно не указывать, так как по умолчанию в коде /data/bot.db
-        # DB_PATH: "/data/bot.db" # <- Необязательно, если в коде стоит дефолт
       volumes:
         # --- PRODUCTION: Используем именованный volume ---
         - bot_db:/data
