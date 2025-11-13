@@ -10,15 +10,24 @@ from typing import List, Dict, Any, Tuple
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F 
 from aiogram.filters import Command 
-from aiogram.types import BotCommand, ReplyKeyboardRemove
+from aiogram.types import BotCommand, ReplyKeyboardRemove, BufferedInputFile 
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext 
 from aiogram.fsm.state import State, StatesGroup 
+
+# --- НОВІ ІМПОРТИ ДЛЯ ГРАФІКІВ (PIL) ---
+import io
+import math
+import pytz 
+from PIL import Image, ImageDraw, ImageFont
+# ----------------------------------
 
 # --- 1. Конфігурація ---
 BOT_TOKEN = os.getenv("DTEK_SHUTDOWNS_TELEGRAM_BOT_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://dtek_api:8000") 
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
+# --- Додано шлях до шрифту (універсальний, відносно папки зі скриптом) ---
+FONT_PATH = os.getenv("FONT_PATH", os.path.join(os.path.dirname(__file__), "resources", "DejaVuSans.ttf")) 
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -253,6 +262,226 @@ def _get_schedule_hash(data: dict) -> str:
     schedule_string = "|".join(schedule_parts)
     return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
 
+# --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОТВЕТА ---
+async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
+    """
+    Отправляет пользователю форматированный ответ, 
+    разбитый по дням (текст + изображение для каждого дня).
+    """
+    try:
+        # 1. Отправляем "шапку" (Адрес, Черга)
+        city = api_data.get("city", "Н/Д")
+        street = api_data.get("street", "Н/Д")
+        house = api_data.get("house_num", "Н/Д")
+        group = api_data.get("group", "Н/Д")
+        header = (
+            f"🏠 Адреса: `{city}, {street}, {house}`\n"
+            f"👥 Черга: `{group}`"
+        )
+        await message.answer(header)
+
+        schedule = api_data.get("schedule", {})
+        if not schedule:
+            await message.answer("❌ *Не вдалося отримати графік відключень.*")
+            if not is_subscribed:
+                await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+            return
+
+        # 2. Сортируем даты
+        try:
+            sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        except ValueError:
+            sorted_dates = sorted(schedule.keys())
+
+        # 3. Цикл по дням (Текст + Картинка)
+        for date in sorted_dates:
+            slots = schedule.get(date, [])
+            result_str = _process_single_day_schedule(date, slots)
+            
+            if "Відключення не заплановані" in result_str or "Помилка" in result_str:
+                line = f"✅ **{date}**: {result_str}"
+            else:
+                line = f"❌ **{date}**: {result_str}"
+            
+            # Отправляем текст для этого дня
+            await message.answer(line)
+            
+            # Генерируем и отправляем картинку для этого дня
+            image_data = _generate_schedule_image(slots)
+            
+            if image_data:
+                image_file = BufferedInputFile(image_data, filename=f"schedule_{date}.png")
+                await message.answer_photo(photo=image_file)
+
+        # 4. Отправляем "подвал" (приглашение к подписке)
+        if not is_subscribed:
+            await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+    
+    except Exception as e:
+        logger.error(f"Error in send_schedule_response for user {message.from_user.id}: {e}", exc_info=True)
+        await message.answer("❌ Сталася помилка під час формування відповіді.")
+
+# ---------------------------------------------------------
+
+# --- НОВАЯ ФУНКЦИЯ ГЕНЕРАЦИИ ГРАФИКА (НА PIL) ---
+def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
+    """
+    Генерирует 24-часовое изображение графика (clock-face) на основе слотов, используя Pillow.
+    """
+    global FONT_PATH
+    try:
+        # 1. Логика консолидации слотов (скопирована из _process_single_day_schedule)
+        outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
+        if not outage_slots:
+            return None # Нет отключений - нет картинки
+
+        groups = []
+        current_group = None
+        for slot in outage_slots:
+            try:
+                time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
+                start_hour = int(time_parts[0])
+                end_hour = int(time_parts[1])
+                if end_hour == 0:
+                    end_hour = 24
+                
+                slot_start_min = 0
+                slot_end_min = 0
+                disconection = slot.get('disconection')
+                
+                if disconection == 'full':
+                    slot_start_min = start_hour * 60
+                    slot_end_min = end_hour * 60
+                elif disconection == 'half':
+                    slot_start_min = start_hour * 60 + 30
+                    slot_end_min = end_hour * 60
+
+                if current_group is None:
+                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
+                elif slot_start_min == current_group["end_min"]: 
+                    current_group["end_min"] = slot_end_min
+                else:
+                    groups.append(current_group)
+                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
+            except Exception:
+                continue # Пропускаем битый слот
+
+        if current_group:
+            groups.append(current_group)
+
+        if not groups:
+            return None # Не было валидных групп отключений
+
+        # 2. Настройка рисования (Pillow)
+        size = 250 
+        padding = 25 
+        center = (size // 2, size // 2)
+        radius = (size // 2) - padding
+        bbox = [padding, padding, size - padding, size - padding] # Bounding box
+        
+        image = Image.new('RGB', (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+
+        # 3. Загрузка шрифта
+        font_size = 14 
+        font = None
+        try:
+            # --- Загрузка из FONT_PATH (используется новый путь из ENV/default) ---
+            font = ImageFont.truetype(FONT_PATH, font_size)
+        except IOError:
+            logger.warning(f"Specified font at FONT_PATH ('{FONT_PATH}') not found. Using default PIL font.")
+            font = ImageFont.load_default()
+
+        # 4. Рисуем 24 белых сектора (база)
+        deg_per_hour = 15
+        for h in range(24):
+            start_angle = (h * deg_per_hour) - 90.1 # -90 (сдвиг к 12 часам) + 0.1 (перекрытие)
+            end_angle = ((h + 1) * deg_per_hour) - 90
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FFFFFF', outline='#AAAAAA')
+
+        # 5. Рисуем красные сектора (отключения)
+        deg_per_minute = 0.25 # 360 / 1440
+        for group in groups:
+            start_min = group['start_min']
+            end_min = group['end_min']
+            
+            start_angle = (start_min * deg_per_minute) - 90
+            end_angle = (end_min * deg_per_minute) - 90
+            
+            if abs(start_angle - end_angle) < 0.1:
+                end_angle += 360.0
+            
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None)
+
+        # --- Рисуем часовую стрелку (текущее время) с учетом Киевского времени ---
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz) # Берем текущее время в Киевском часовом поясе
+        current_minutes = now.hour * 60 + now.minute
+        
+        angle_deg = (current_minutes * deg_per_minute) - 90 # Угол в градусах (0 deg = 3 часа)
+        angle_rad = math.radians(angle_deg)
+        
+        # Параметры стрелки
+        hand_length = radius - 10 
+        hand_width = 2
+        arrowhead_size = 8
+        
+        # Координаты конца стрелки
+        x_end = center[0] + hand_length * math.cos(angle_rad)
+        y_end = center[1] + hand_length * math.sin(angle_rad)
+        
+        # 5.1 Рисуем основную линию стрелки
+        HAND_COLOR = "#000000" 
+        draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
+        
+        # 5.2 Рисуем наконечник стрелки (маленький треугольник)
+        perp_angle_rad = angle_rad + math.pi / 2
+        
+        # Точки наконечника: T1 (на конце), T2 и T3 (основание)
+        # Координаты основания треугольника
+        base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) # База чуть сдвинута
+        base_y = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad)
+        
+        # Сдвиг T2 и T3 перпендикулярно
+        x2 = base_x + (arrowhead_size / 2) * math.cos(perp_angle_rad)
+        y2 = base_y + (arrowhead_size / 2) * math.sin(perp_angle_rad)
+        
+        x3 = base_x - (arrowhead_size / 2) * math.cos(perp_angle_rad)
+        y3 = base_y - (arrowhead_size / 2) * math.sin(perp_angle_rad)
+        
+        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR) # Чёрный наконечник
+        
+        # Рисуем кружок в центре для завершения вида часов
+        draw.ellipse([center[0]-3, center[1]-3, center[0]+3, center[1]+3], fill=HAND_COLOR, outline="#000000")
+        
+        # 6. Рисуем метки часов
+        label_radius = radius + (padding * 0.5) 
+        for h in range(24):
+            text = str(h)
+            angle_rad_label = math.radians((h * deg_per_hour) - 90) 
+            
+            x = center[0] + label_radius * math.cos(angle_rad_label)
+            y = center[1] + label_radius * math.sin(angle_rad_label)
+            
+            try:
+                # anchor="mm" работает только с ImageFont.truetype
+                draw.text((x, y), text, fill="black", font=font, anchor="mm")
+            except Exception:
+                # Fallback for older PIL/ImageFont.load_default()
+                text_width, text_height = draw.textsize(text, font=font)
+                draw.text((x - text_width / 2, y - text_height / 2), text, fill="black", font=font)
+
+        # 7. Сохранение в байты
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to generate schedule image with PIL: {e}", exc_info=True)
+        return None
+# -----------------------------------------------
+
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
 def _get_captcha_data() -> Tuple[str, int]:
     """Генерирует простое математическое задание и ответ."""
@@ -432,6 +661,17 @@ async def subscription_checker_task(bot: Bot):
                         text=final_message,
                         parse_mode="Markdown"
                     )
+                    
+                    # --- ДОБАВЛЕНИЕ ОТПРАВКИ ГРАФИКА ---
+                    # Находим первый день в расписании для изображения, если оно есть
+                    first_date = next(iter(data.get("schedule", {})), None)
+                    if first_date:
+                        image_data = _generate_schedule_image(data["schedule"][first_date])
+                        if image_data:
+                            image_file = BufferedInputFile(image_data, filename="schedule_update.png")
+                            await bot.send_photo(chat_id=user_id, photo=image_file)
+                    # ------------------------------------
+                    
                     db_updates_success.append((next_check_time, new_hash, user_id))
                     logger.info(f"Notification sent to user {user_id}. Hash updated to {new_hash[:8]}.")
                 except Exception as e:
@@ -554,13 +794,15 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
             (user_id, city, street, house, current_hash)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(api_data)
         await state.clear()
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- Вызов функции-отправщика с графиком ---
+        await send_schedule_response(message, api_data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (ValueError, ConnectionError) as e:
         await state.clear()
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
@@ -603,12 +845,14 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
             (user_id, city, street, house, current_hash)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(api_data)
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- Вызов функции-отправщика с графиком ---
+        await send_schedule_response(message, api_data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+        
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         error_message = f"❌ **{error_type}:** {e}"
@@ -652,12 +896,14 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
             (current_hash, user_id)
         )
         await db_conn.commit()
-        response_text = format_shutdown_message(data)
+        
         cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = await cursor.fetchone()
-        if not is_subscribed:
-            response_text += "\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-        await message.answer(response_text)
+        is_subscribed = bool(await cursor.fetchone())
+        
+        # --- Вызов функции-отправщика с графиком ---
+        await send_schedule_response(message, data, is_subscribed)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         await message.answer(f"❌ **{error_type}:** {e}")

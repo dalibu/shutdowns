@@ -13,3 +13,4 @@ aiohttp
 httpx
 pytz
 aiosqlite
+Pillow>=9.0.0

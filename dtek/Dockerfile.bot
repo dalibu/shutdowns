@@ -16,6 +16,13 @@ COPY dtek_telegram_bot.py .
 # Опционально: создаём директорию /data (не обязательно, volume всё равно перезапишет)
 RUN mkdir -p /data
 
+# Создайте папку resources в рабочей директории
+RUN mkdir -p /app/resources
+
+# Скопируйте папку resources вместе с файлом шрифта в контейнер
+# Предполагается, что папка resources находится рядом с Dockerfile
+COPY resources/ /app/resources/
+
 # Указываем, что /data будет использоваться как точка монтирования volume
 # Это хорошая практика для ясности
 VOLUME ["/data"]
