@@ -266,7 +266,7 @@ def _get_schedule_hash(data: dict) -> str:
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
     """
     Отправляет пользователю форматированный ответ, 
-    разбитый по дням (текст + изображение для каждого дня).
+    разбитый по дням (текст) и один общий 48-часовой график (изображение).
     """
     try:
         # 1. Отправляем "шапку" (Адрес, Черга)
@@ -293,8 +293,9 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Цикл по дням (Текст + Картинка)
-        for date in sorted_dates:
+        # 3. Цикл по дням (Только текст)
+        all_slots_48h = {}
+        for idx, date in enumerate(sorted_dates):
             slots = schedule.get(date, [])
             result_str = _process_single_day_schedule(date, slots)
             
@@ -306,14 +307,20 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             # Отправляем текст для этого дня
             await message.answer(line)
             
-            # Генерируем и отправляем картинку для этого дня
-            image_data = _generate_schedule_image(slots)
+            # Собираем слоты для 48-часового графика, но только для первых двух дней
+            if idx < 2:
+                all_slots_48h[date] = slots
+        
+        # 4. Генерируем и отправляем общий 48-часовой график (если есть данные хотя бы за 1 день)
+        if all_slots_48h:
+            image_data = _generate_48h_schedule_image(all_slots_48h)
             
             if image_data:
-                image_file = BufferedInputFile(image_data, filename=f"schedule_{date}.png")
+                await message.answer("📊 **Загальний графік на 48 годин**:")
+                image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
                 await message.answer_photo(photo=image_file)
 
-        # 4. Отправляем "подвал" (приглашение к подписке)
+        # 5. Отправляем "подвал" (приглашение к подписке)
         if not is_subscribed:
             await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
     
@@ -323,58 +330,80 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
 
 # ---------------------------------------------------------
 
-# --- НОВАЯ ФУНКЦИЯ ГЕНЕРАЦИИ ГРАФИКА (НА PIL) ---
-def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
+# --- СТАРАЯ ФУНКЦИЯ УДАЛЕНА И ЗАМЕНЕНА НА НОВУЮ 48-ЧАСОВУЮ ---
+def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) -> bytes:
     """
-    Генерирует 24-часовое изображение графика (clock-face) на основе слотов, используя Pillow.
+    Генерирует 48-часовое изображение графика (clock-face) на основе слотов, используя Pillow.
+    Принимает словарь {дата: [слоты]}. Использует до двух дней.
+    Слоты второго дня сдвигаются на 24 часа.
     """
     global FONT_PATH
+    
+    if not days_slots:
+        return None
+
     try:
-        # 1. Логика консолидации слотов (скопирована из _process_single_day_schedule)
-        outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
-        if not outage_slots:
+        # 1. Сортировка дат и объединение слотов в 48-часовом пространстве
+        try:
+            sorted_dates = sorted(days_slots.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        except ValueError:
+            sorted_dates = sorted(days_slots.keys())
+        
+        total_outage_groups = []
+        minutes_in_day = 24 * 60
+        
+        for idx, date in enumerate(sorted_dates[:2]): # Берем только 2 дня
+            day_slots = days_slots[date]
+            day_offset_minutes = idx * minutes_in_day # 0 для первого дня, 1440 для второго
+            
+            outage_slots = [s for s in day_slots if s.get('disconection') in ('full', 'half')]
+            
+            groups = []
+            current_group = None
+            for slot in outage_slots:
+                try:
+                    time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
+                    start_hour = int(time_parts[0])
+                    end_hour = int(time_parts[1])
+                    if end_hour == 0:
+                        end_hour = 24
+                    
+                    slot_start_min = 0
+                    slot_end_min = 0
+                    disconection = slot.get('disconection')
+                    
+                    if disconection == 'full':
+                        slot_start_min = start_hour * 60
+                        slot_end_min = end_hour * 60
+                    elif disconection == 'half':
+                        slot_start_min = start_hour * 60 + 30
+                        slot_end_min = end_hour * 60
+
+                    # Сдвиг на 24 часа для второго дня
+                    slot_start_min += day_offset_minutes
+                    slot_end_min += day_offset_minutes
+
+                    if current_group is None:
+                        current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
+                    elif slot_start_min == current_group["end_min"]: 
+                        current_group["end_min"] = slot_end_min
+                    else:
+                        groups.append(current_group)
+                        current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
+                except Exception:
+                    continue # Пропускаем битый слот
+
+            if current_group:
+                groups.append(current_group)
+            
+            total_outage_groups.extend(groups)
+
+        if not total_outage_groups:
             return None # Нет отключений - нет картинки
-
-        groups = []
-        current_group = None
-        for slot in outage_slots:
-            try:
-                time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
-                start_hour = int(time_parts[0])
-                end_hour = int(time_parts[1])
-                if end_hour == 0:
-                    end_hour = 24
-                
-                slot_start_min = 0
-                slot_end_min = 0
-                disconection = slot.get('disconection')
-                
-                if disconection == 'full':
-                    slot_start_min = start_hour * 60
-                    slot_end_min = end_hour * 60
-                elif disconection == 'half':
-                    slot_start_min = start_hour * 60 + 30
-                    slot_end_min = end_hour * 60
-
-                if current_group is None:
-                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
-                elif slot_start_min == current_group["end_min"]: 
-                    current_group["end_min"] = slot_end_min
-                else:
-                    groups.append(current_group)
-                    current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
-            except Exception:
-                continue # Пропускаем битый слот
-
-        if current_group:
-            groups.append(current_group)
-
-        if not groups:
-            return None # Не было валидных групп отключений
 
         # 2. Настройка рисования (Pillow)
         # --- Размер, отступы и центр ---
-        size = 250 
+        size = 350
         padding = 25 
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
@@ -382,69 +411,82 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
         
         image = Image.new('RGB', (size, size), (255, 255, 255))
         draw = ImageDraw.Draw(image)
-        deg_per_minute = 0.25 # 360 / 1440
-        deg_per_hour = 15
+        # 48 часов = 2880 минут. 360 / 2880 = 0.125 градуса на минуту
+        deg_per_minute = 360.0 / 2880.0 
+        deg_per_hour = 360.0 / 48.0 # 7.5 градуса на час
 
         # 3. Загрузка шрифта
         font_size = 14 
         font = None
         try:
-            # --- Загрузка из FONT_PATH (используется новый путь из ENV/default) ---
             font = ImageFont.truetype(FONT_PATH, font_size)
         except IOError:
             logger.warning(f"Specified font at FONT_PATH ('{FONT_PATH}') not found. Using default PIL font.")
             font = ImageFont.load_default()
 
         # 4. Рисуем большое белое кольцо (основа)
-        draw.ellipse(bbox, fill='#FFFFFF', outline='#000000', width=1) # Контур сделан черным для разделения с фоном
+        draw.ellipse(bbox, fill='#FFFFFF', outline='#000000', width=1) 
 
         # 5. Рисуем красные сектора (отключения)
-        for group in groups:
+        for group in total_outage_groups:
             start_min = group['start_min']
             end_min = group['end_min']
             
+            # Начало от 00:00 первого дня. 0 градусов = 0 часов. -90 = 24 часа.
             start_angle = (start_min * deg_per_minute) - 90
             end_angle = (end_min * deg_per_minute) - 90
             
             if abs(start_angle - end_angle) < 0.1:
                 end_angle += 360.0
             
-            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None) # Без контура для красных
+            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None)
         
-        # --- НОВАЯ ЛОГИКА: Рисуем черные линии сетки (24 линии) поверх секторов ---
-        for h in range(24):
-            angle_rad_line = math.radians((h * deg_per_hour) - 90) # Угол для часа h
+        # 6. Рисуем линии сетки (24-часовой разделитель + вертикальная линия)
+        for h in range(48):
+            angle_deg = (h * deg_per_hour) - 90 # Угол для часа h (0-47)
+            angle_rad_line = math.radians(angle_deg) 
+            
+            line_width = 1
+            line_color = "#000000"
+            
+            if h == 0 or h == 24: # Разделительная линия между двумя днями
+                pass # Залишаємо чорну лінію
+            else: # Видаляємо всі інші лінії 
+                continue
+
+
             x_end = center[0] + radius * math.cos(angle_rad_line)
             y_end = center[1] + radius * math.sin(angle_rad_line)
-            # Рисуем черную линию от центра до края круга
-            draw.line([center, (x_end, y_end)], fill="#000000", width=1)
-        # --------------------------------------------------------------------------
-
-        # 6. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
+            
+            draw.line([center, (x_end, y_end)], fill=line_color, width=line_width)
+        
+        # 7. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
         kiev_tz = pytz.timezone('Europe/Kiev')
         now = datetime.now(kiev_tz) # Берем текущее время в Киевском часовом поясе
+        
+        # Нам нужно 24-часовое время первого дня (0-24h)
         current_minutes = now.hour * 60 + now.minute
         
-        angle_deg = (current_minutes * deg_per_minute) - 90 # Угол в градусах (0 deg = 3 часа)
+        # Угол в 48-часовом пространстве: 0 deg = 0 часов. -90 = 24 часа.
+        angle_deg = (current_minutes * deg_per_minute) - 90 
         angle_rad = math.radians(angle_deg)
         
-        # Параметры стрелки
+        # Параметры стрелки (толстая и заметная)
         hand_length = radius - 10 
-        hand_width = 2
-        arrowhead_size = 8
+        hand_width = 3
+        arrowhead_size = 10
         
         # Координаты конца стрелки
         x_end = center[0] + hand_length * math.cos(angle_rad)
         y_end = center[1] + hand_length * math.sin(angle_rad)
         
-        # 6.1 Рисуем основную линию стрелки
-        HAND_COLOR = "#000000" 
+        # 7.1 Рисуем основную линию стрелки (ЧЕРНАЯ)
+        HAND_COLOR = "#000000" # Изменено с красного на черный
         draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
         
-        # 6.2 Рисуем наконечник стрелки (маленький треугольник)
+        # 7.2 Рисуем наконечник стрелки
         perp_angle_rad = angle_rad + math.pi / 2
         
-        # Точки наконечника: T1 (на конце), T2 и T3 (основание)
         base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) 
         base_y = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad)
         
@@ -456,34 +498,40 @@ def _generate_schedule_image(slots: List[Dict[str, Any]]) -> bytes:
         
         draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR) 
         
-        # Рисуем кружок в центре для завершения вида часов
-        draw.ellipse([center[0]-3, center[1]-3, center[0]+3, center[1]+3], fill=HAND_COLOR, outline="#000000")
+        # Рисуем кружок в центре 
+        draw.ellipse([center[0]-4, center[1]-4, center[0]+4, center[1]+4], fill=HAND_COLOR, outline="#000000", width=1)
         
-        # 7. Рисуем метки часов
-        label_radius = radius + (padding * 0.5) 
-        for h in range(24):
-            text = str(h)
-            angle_rad_label = math.radians((h * deg_per_hour) - 90) 
+        # 8. Рисуем метки часов (от 0 до 23 для каждого дня)
+        label_radius = radius + (padding * 0.8) # Немного отодвигаем метки
+        
+        # Метки: 0, 1, ..., 23, 0, 1, ..., 23 (48 меток)
+        for h_total in range(48): 
+            text = str(h_total % 24) # Метка 0-23
+            angle_deg = (h_total * deg_per_hour) - 90 
+            angle_rad_label = math.radians(angle_deg) 
             
             x = center[0] + label_radius * math.cos(angle_rad_label)
             y = center[1] + label_radius * math.sin(angle_rad_label)
             
-            try:
-                # anchor="mm" работает только с ImageFont.truetype
-                draw.text((x, y), text, fill="black", font=font, anchor="mm")
-            except Exception:
-                # Fallback for older PIL/ImageFont.load_default()
-                text_width, text_height = draw.textsize(text, font=font)
-                draw.text((x - text_width / 2, y - text_height / 2), text, fill="black", font=font)
+            # Выделяем метку 24h/0h второго дня (на 90 градусах)
+            label_color = "black" 
 
-        # 8. Сохранение в байты
+            try:
+                # anchor="mm" - центрирует текст
+                draw.text((x, y), text, fill=label_color, font=font, anchor="mm")
+            except Exception:
+                # Резервный вариант, если anchor не поддерживается (старые PIL/Pillow)
+                text_width, text_height = draw.textsize(text, font=font)
+                draw.text((x - text_width / 2, y - text_height / 2), text, fill=label_color, font=font)
+
+        # 9. Сохранение в байты
         buf = io.BytesIO()
         image.save(buf, format='PNG')
         buf.seek(0)
         return buf.getvalue()
 
     except Exception as e:
-        logger.error(f"Failed to generate schedule image with PIL: {e}", exc_info=True)
+        logger.error(f"Failed to generate 48h schedule image with PIL: {e}", exc_info=True)
         return None
 # -----------------------------------------------
 
@@ -667,13 +715,24 @@ async def subscription_checker_task(bot: Bot):
                         parse_mode="Markdown"
                     )
                     
-                    # --- ДОБАВЛЕНИЕ ОТПРАВКИ ГРАФИКА ---
-                    # Находим первый день в расписании для изображения, если оно есть
-                    first_date = next(iter(data.get("schedule", {})), None)
-                    if first_date:
-                        image_data = _generate_schedule_image(data["schedule"][first_date])
+                    # --- ДОБАВЛЕНИЕ ОТПРАВКИ ГРАФИКА (48-часовой) ---
+                    schedule = data.get("schedule", {})
+                    try:
+                        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+                    except ValueError:
+                        sorted_dates = sorted(schedule.keys())
+
+                    days_slots_48h = {
+                        date: schedule[date] 
+                        for idx, date in enumerate(sorted_dates) 
+                        if idx < 2
+                    }
+
+                    if days_slots_48h:
+                        image_data = _generate_48h_schedule_image(days_slots_48h)
                         if image_data:
-                            image_file = BufferedInputFile(image_data, filename="schedule_update.png")
+                            await bot.send_message(chat_id=user_id, text="📊 **Загальний графік на 48 годин**:")
+                            image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
                             await bot.send_photo(chat_id=user_id, photo=image_file)
                     # ------------------------------------
                     
