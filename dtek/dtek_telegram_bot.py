@@ -330,7 +330,6 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
 
 # ---------------------------------------------------------
 
-# --- СТАРАЯ ФУНКЦИЯ УДАЛЕНА И ЗАМЕНЕНА НА НОВУЮ 48-ЧАСОВУЮ ---
 def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) -> bytes:
     """
     Генерирует 48-часовое изображение графика (clock-face) на основе слотов, используя Pillow.
@@ -403,8 +402,8 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # 2. Настройка рисования (Pillow)
         # --- Размер, отступы и центр ---
-        size = 350
-        padding = 25 
+        size = 300
+        padding = 20 
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
         bbox = [padding, padding, size - padding, size - padding] # Bounding box
@@ -496,13 +495,78 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         x3 = base_x - (arrowhead_size / 2) * math.cos(perp_angle_rad)
         y3 = base_y - (arrowhead_size / 2) * math.sin(perp_angle_rad)
         
-        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR) 
+        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR)
+
+        # 7.3. Рисуємо білий круг в центрі (50% від радіусу)
+        inner_radius = int(radius * 0.50)
+        inner_bbox = [
+            center[0] - inner_radius,
+            center[1] - inner_radius,
+            center[0] + inner_radius,
+            center[1] + inner_radius
+        ]
+        draw.ellipse(inner_bbox, fill='#FFFFFF', outline='#000000', width=1)
         
-        # Рисуем кружок в центре 
-        draw.ellipse([center[0]-4, center[1]-4, center[0]+4, center[1]+4], fill=HAND_COLOR, outline="#000000", width=1)
+        # 7.4. Рисуємо вертикальну чорну лінію посередині білого круга
+        draw.line(
+            [(center[0], center[1] - inner_radius), (center[0], center[1] + inner_radius)],
+            fill='#000000',
+            width=1
+        )
+        
+        # 7.5. Додаємо дати у центральний круг
+        try:
+            # Отримуємо дати з days_slots (перші 2 дні)
+            dates_list = list(days_slots.keys())[:2]
+            
+            # Використовуємо той самий шрифт, що і для міток годин
+            date_font = font
+            
+            if len(dates_list) >= 1:
+                # Перша дата (ПРАВА половина) - читається зверху вниз
+                date1 = dates_list[0]
+                # Позиція для першої дати (справа від центру)
+                date1_x = center[0] + inner_radius // 2
+                date1_y = center[1]
+                
+                # Створюємо тимчасове зображення для вертикального тексту
+                temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
+                temp_draw = ImageDraw.Draw(temp_img)
+                temp_draw.text((50, 10), date1, fill='#000000', font=date_font, anchor="mt")
+                # Повертаємо на -90 градусів (проти годинникової стрілки) для читання зверху вниз
+                rotated1 = temp_img.rotate(-90, expand=True)
+                # Вставляємо на основне зображення
+                bbox1 = rotated1.getbbox()
+                if bbox1:
+                    cropped1 = rotated1.crop(bbox1)
+                    paste_x1 = int(date1_x - cropped1.width // 2)
+                    paste_y1 = int(date1_y - cropped1.height // 2)
+                    image.paste(cropped1, (paste_x1, paste_y1), cropped1)
+            
+            if len(dates_list) >= 2:
+                # Друга дата (ЛІВА половина) - змінено місцями
+                date2 = dates_list[1]
+                date2_x = center[0] - inner_radius // 2
+                date2_y = center[1]
+                
+                # Створюємо тимчасове зображення для вертикального тексту
+                temp_img2 = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
+                temp_draw2 = ImageDraw.Draw(temp_img2)
+                temp_draw2.text((50, 10), date2, fill='#000000', font=date_font, anchor="mt")
+                # Повертаємо на 90 градусів
+                rotated2 = temp_img2.rotate(90, expand=True)
+                # Вставляємо на основне зображення
+                bbox2 = rotated2.getbbox()
+                if bbox2:
+                    cropped2 = rotated2.crop(bbox2)
+                    paste_x2 = int(date2_x - cropped2.width // 2)
+                    paste_y2 = int(date2_y - cropped2.height // 2)
+                    image.paste(cropped2, (paste_x2, paste_y2), cropped2)
+        except Exception as e:
+            logger.error(f"Failed to add dates to center circle: {e}")
         
         # 8. Рисуем метки часов (от 0 до 23 для каждого дня)
-        label_radius = radius + (padding * 0.8) # Немного отодвигаем метки
+        label_radius = radius + (padding * 0.6) # Немного отодвигаем метки
         
         # Метки: 0, 1, ..., 23, 0, 1, ..., 23 (48 меток)
         for h_total in range(48): 
