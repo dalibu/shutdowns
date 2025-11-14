@@ -362,22 +362,24 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             for slot in outage_slots:
                 try:
                     time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
-                    start_hour = int(time_parts[0])
-                    end_hour = int(time_parts[1])
-                    if end_hour == 0:
-                        end_hour = 24
+                    start_hour_raw = int(time_parts[0])
+                    end_hour_raw = int(time_parts[1])
+                    
+                    if end_hour_raw == 0:
+                        end_hour_raw = 24
                     
                     slot_start_min = 0
                     slot_end_min = 0
                     disconection = slot.get('disconection')
                     
                     if disconection == 'full':
-                        slot_start_min = start_hour * 60
-                        slot_end_min = end_hour * 60
+                        slot_start_min = start_hour_raw * 60
+                        slot_end_min = end_hour_raw * 60
                     elif disconection == 'half':
-                        slot_start_min = start_hour * 60 + 30
-                        slot_end_min = end_hour * 60
-
+                        # Включение/отключение на полчаса
+                        slot_start_min = start_hour_raw * 60 + (30 if start_hour_raw != end_hour_raw else 0)
+                        slot_end_min = end_hour_raw * 60
+                        
                     # Сдвиг на 24 часа для второго дня
                     slot_start_min += day_offset_minutes
                     slot_end_min += day_offset_minutes
@@ -400,10 +402,27 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         if not total_outage_groups:
             return None # Нет отключений - нет картинки
 
+        # --- НОВЫЙ НАБОР: Часы, которые нужно показать ---
+        # ИЗМЕНЕНИЕ: Логика перенесена ПОСЛЕ формирования total_outage_groups
+        hours_to_display = {0, 24, 48} # Всегда показываем 0, 24, 48
+
+        for group in total_outage_groups:
+            start_min_48h = group['start_min']
+            end_min_48h = group['end_min']
+
+            # Конвертируем минуты в 48-часовом пространстве в часы
+            # Начальный час: округляем ВНИЗ (e.g., 09:30 -> 9)
+            start_hour_48h = math.floor(start_min_48h / 60)
+            # Конечный час: округляем ВВЕРХ (e.g., 16:30 -> 17)
+            end_hour_48h = math.ceil(end_min_48h / 60)
+
+            hours_to_display.add(start_hour_48h)
+            hours_to_display.add(end_hour_48h)
+
         # 2. Настройка рисования (Pillow)
         # --- Размер, отступы и центр ---
         size = 300
-        padding = 20 
+        padding = 30
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
         bbox = [padding, padding, size - padding, size - padding] # Bounding box
@@ -471,8 +490,8 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         angle_rad = math.radians(angle_deg)
         
         # Параметры стрелки (толстая и заметная)
-        hand_length = radius - 10 
-        hand_width = 3
+        hand_length = radius - 2
+        hand_width = 1
         arrowhead_size = 10
         
         # Координаты конца стрелки
@@ -564,29 +583,33 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                     image.paste(cropped2, (paste_x2, paste_y2), cropped2)
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
-        
-        # 8. Рисуем метки часов (от 0 до 23 для каждого дня)
-        label_radius = radius + (padding * 0.6) # Немного отодвигаем метки
-        
-        # Метки: 0, 1, ..., 23, 0, 1, ..., 23 (48 меток)
-        for h_total in range(48): 
-            text = str(h_total % 24) # Метка 0-23
+
+        # 8. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
+        label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
+
+        for h_total in range(49): # До 48 включительно
+            if h_total not in hours_to_display:
+                continue # Пропускаем все, кроме нужных
+
+            # Специальная обработка для часа 48 (00:00 второго дня, которое отображается как 0)
+            text_to_display = str(h_total % 24)
+            
+            # Угол для часа h_total (0-48)
             angle_deg = (h_total * deg_per_hour) - 90 
             angle_rad_label = math.radians(angle_deg) 
             
             x = center[0] + label_radius * math.cos(angle_rad_label)
             y = center[1] + label_radius * math.sin(angle_rad_label)
             
-            # Выделяем метку 24h/0h второго дня (на 90 градусах)
             label_color = "black" 
 
             try:
                 # anchor="mm" - центрирует текст
-                draw.text((x, y), text, fill=label_color, font=font, anchor="mm")
+                draw.text((x, y), text_to_display, fill=label_color, font=font, anchor="mm")
             except Exception:
                 # Резервный вариант, если anchor не поддерживается (старые PIL/Pillow)
-                text_width, text_height = draw.textsize(text, font=font)
-                draw.text((x - text_width / 2, y - text_height / 2), text, fill=label_color, font=font)
+                text_width, text_height = draw.textsize(text_to_display, font=font)
+                draw.text((x - text_width / 2, y - text_height / 2), text_to_display, fill=label_color, font=font)
 
         # 9. Сохранение в байты
         buf = io.BytesIO()
@@ -597,6 +620,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
     except Exception as e:
         logger.error(f"Failed to generate 48h schedule image with PIL: {e}", exc_info=True)
         return None
+
 # -----------------------------------------------
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
