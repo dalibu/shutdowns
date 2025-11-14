@@ -192,9 +192,9 @@ def format_shutdown_message(data: dict) -> str:
         slots = schedule[date]
         result_str = _process_single_day_schedule(date, slots)
         if "Відключення не заплановані" in result_str or "Помилка" in result_str:
-            line = f"✅ **{date}**: {result_str}"
+            line = f"🟢 **{date}**: {result_str}"
         else:
-            line = f"❌ **{date}**: {result_str}"
+            line = f"🔴 **{date}**: {result_str}"
         schedule_lines.append(line)
 
     final_schedule_output = "\n".join(schedule_lines)
@@ -300,9 +300,9 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             result_str = _process_single_day_schedule(date, slots)
             
             if "Відключення не заплановані" in result_str or "Помилка" in result_str:
-                line = f"✅ **{date}**: {result_str}"
+                line = f"🟢 **{date}**: {result_str}"
             else:
-                line = f"❌ **{date}**: {result_str}"
+                line = f"🔴 **{date}**: {result_str}"
             
             # Отправляем текст для этого дня
             await message.answer(line)
@@ -316,7 +316,7 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             image_data = _generate_48h_schedule_image(all_slots_48h)
             
             if image_data:
-                await message.answer("📊 **Загальний графік на 48 годин**:")
+                await message.answer("⏰ **Загальний графік на 48 годин**:")
                 image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
                 await message.answer_photo(photo=image_file)
 
@@ -855,7 +855,7 @@ async def subscription_checker_task(bot: Bot):
                     if days_slots_48h:
                         image_data = _generate_48h_schedule_image(days_slots_48h)
                         if image_data:
-                            await bot.send_message(chat_id=user_id, text="📊 **Загальний графік на 48 годин**:")
+                            await bot.send_message(chat_id=user_id, text="⏰ **Загальний графік на 48 годин**:")
                             image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
                             await bot.send_photo(chat_id=user_id, photo=image_file)
                     # ------------------------------------
