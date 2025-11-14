@@ -442,34 +442,38 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             logger.warning(f"Specified font at FONT_PATH ('{FONT_PATH}') not found. Using default PIL font.")
             font = ImageFont.load_default()
 
-        # 4. Рисуем большое белое кольцо (основа)
-        draw.ellipse(bbox, fill='#FFFFFF', outline='#000000', width=1) 
+        # 4. Рисуем большое кольцо (ИЗМЕНЕНИЕ: заливка темно-зеленая)
+        # Этот цвет будет там, где нет красных секторов
+        draw.ellipse(bbox, fill='#00ff00', outline='#000000', width=1) 
 
         # 5. Рисуем красные сектора (отключения)
         for group in total_outage_groups:
             start_min = group['start_min']
             end_min = group['end_min']
             
-            # Начало от 00:00 первого дня. 0 градусов = 0 часов. -90 = 24 часа.
-            start_angle = (start_min * deg_per_minute) - 90
-            end_angle = (end_min * deg_per_minute) - 90
+            # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+            start_angle = (start_min * deg_per_minute) + 180
+            end_angle = (end_min * deg_per_minute) + 180
             
             if abs(start_angle - end_angle) < 0.1:
                 end_angle += 360.0
             
-            draw.pieslice(bbox, start_angle, end_angle, fill='#FF0000', outline=None)
+            # Рисуем красный сектор ПОВЕРХ зеленого
+            draw.pieslice(bbox, start_angle, end_angle, fill="#ff3300", outline=None)
         
         # 6. Рисуем линии сетки (24-часовой разделитель + вертикальная линия)
         for h in range(48):
-            angle_deg = (h * deg_per_hour) - 90 # Угол для часа h (0-47)
+            # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+            angle_deg = (h * deg_per_hour) + 180 # Угол для часа h (0-47)
             angle_rad_line = math.radians(angle_deg) 
             
             line_width = 1
             line_color = "#000000"
             
-            if h == 0 or h == 24: # Разделительная линия между двумя днями
-                pass # Залишаємо чорну лінію
-            else: # Видаляємо всі інші лінії 
+            # ИЗМЕНЕНИЕ: Оставляем только линию 0h (левую), удаляем 24h (правую)
+            if h == 0: # Оставляем только линию 0/48 (левую горизонталь)
+                pass 
+            else: # Удаляем 24-й час (правая горизонталь) и все остальные.
                 continue
 
 
@@ -485,25 +489,55 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         # Нам нужно 24-часовое время первого дня (0-24h)
         current_minutes = now.hour * 60 + now.minute
         
-        # Угол в 48-часовом пространстве: 0 deg = 0 часов. -90 = 24 часа.
-        angle_deg = (current_minutes * deg_per_minute) - 90 
+        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+        angle_deg = (current_minutes * deg_per_minute) + 180
         angle_rad = math.radians(angle_deg)
         
         # Параметры стрелки (толстая и заметная)
         hand_length = radius - 2
-        hand_width = 1
-        arrowhead_size = 10
+        hand_width = 2
+        arrowhead_size = 12
         
         # Координаты конца стрелки
         x_end = center[0] + hand_length * math.cos(angle_rad)
         y_end = center[1] + hand_length * math.sin(angle_rad)
         
-        # 7.1 Рисуем основную линию стрелки (ЧЕРНАЯ)
-        HAND_COLOR = "#000000" # Изменено с красного на черный
+        # --- ИЗМЕНЕНИЕ: Добавление тени (рисуем сначала смещенную серую копию) ---
+        SHADOW_COLOR = "#888888" # Цвет тени
+        SHADOW_OFFSET = 2 # Смещение тени
+        
+        # 7.0. Рисуем тень (основная линия)
+        draw.line(
+            [(center[0] + SHADOW_OFFSET, center[1] + SHADOW_OFFSET), (x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET)], 
+            fill=SHADOW_COLOR, 
+            width=hand_width
+        )
+        
+        # 7.0. Рисуем тень (наконечник)
+        perp_angle_rad = angle_rad + math.pi / 2 # (Расчет perp_angle_rad нужен до 7.1)
+        
+        base_x_shadow = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) + SHADOW_OFFSET
+        base_y_shadow = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad) + SHADOW_OFFSET
+        
+        x2_shadow = base_x_shadow + (arrowhead_size / 2) * math.cos(perp_angle_rad)
+        y2_shadow = base_y_shadow + (arrowhead_size / 2) * math.sin(perp_angle_rad)
+        
+        x3_shadow = base_x_shadow - (arrowhead_size / 2) * math.cos(perp_angle_rad)
+        y3_shadow = base_y_shadow - (arrowhead_size / 2) * math.sin(perp_angle_rad)
+        
+        draw.polygon(
+            [(x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET), (x2_shadow, y2_shadow), (x3_shadow, y3_shadow)], 
+            fill=SHADOW_COLOR
+        )
+        # --- Конец добавления тени ---
+        
+        # 7.1 Рисуем основную линию стрелки 
+        # ИЗМЕНЕНИЕ: Сделали стрелку БЕЛОЙ
+        HAND_COLOR = "#FFFFFF" 
         draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
         
         # 7.2 Рисуем наконечник стрелки
-        perp_angle_rad = angle_rad + math.pi / 2
+        # perp_angle_rad = angle_rad + math.pi / 2 # (Уже рассчитан выше)
         
         base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) 
         base_y = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad)
@@ -524,11 +558,12 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             center[0] + inner_radius,
             center[1] + inner_radius
         ]
+        # Центральный круг остается БЕЛЫМ
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline='#000000', width=1)
         
-        # 7.4. Рисуємо вертикальну чорну лінію посередині білого круга
+        # 7.4. Рисуємо ГОРИЗОНТАЛЬНУ чорну лінію посередині білого круга
         draw.line(
-            [(center[0], center[1] - inner_radius), (center[0], center[1] + inner_radius)],
+            [(center[0] - inner_radius, center[1]), (center[0] + inner_radius, center[1])],
             fill='#000000',
             width=1
         )
@@ -542,19 +577,17 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             date_font = font
             
             if len(dates_list) >= 1:
-                # Перша дата (ПРАВА половина) - читається зверху вниз
+                # Перша дата (СЕГОДНЯ) - ВЕРХНЯЯ половина
                 date1 = dates_list[0]
-                # Позиція для першої дати (справа від центру)
-                date1_x = center[0] + inner_radius // 2
-                date1_y = center[1]
+                # Позиція для першої дати (вверху, близко к центру)
+                date1_x = center[0]
+                date1_y = center[1] - inner_radius // 4 # Ближе к центру
                 
-                # Створюємо тимчасове зображення для вертикального тексту
                 temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50, 10), date1, fill='#000000', font=date_font, anchor="mt")
-                # Повертаємо на -90 градусів (проти годинникової стрілки) для читання зверху вниз
-                rotated1 = temp_img.rotate(-90, expand=True)
-                # Вставляємо на основне зображення
+                temp_draw.text((50, 50), date1, fill='#000000', font=date_font, anchor="mm")
+                rotated1 = temp_img
+                
                 bbox1 = rotated1.getbbox()
                 if bbox1:
                     cropped1 = rotated1.crop(bbox1)
@@ -563,24 +596,24 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                     image.paste(cropped1, (paste_x1, paste_y1), cropped1)
             
             if len(dates_list) >= 2:
-                # Друга дата (ЛІВА половина) - змінено місцями
+                # Друга дата (ЗАВТРА) - НИЖНЯЯ половина
                 date2 = dates_list[1]
-                date2_x = center[0] - inner_radius // 2
-                date2_y = center[1]
+                date2_x = center[0]
+                date2_y = center[1] + inner_radius // 4 # Ближе к центру
                 
-                # Створюємо тимчасове зображення для вертикального тексту
                 temp_img2 = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
                 temp_draw2 = ImageDraw.Draw(temp_img2)
-                temp_draw2.text((50, 10), date2, fill='#000000', font=date_font, anchor="mt")
-                # Повертаємо на 90 градусів
-                rotated2 = temp_img2.rotate(90, expand=True)
-                # Вставляємо на основне зображення
+                temp_draw2.text((50, 50), date2, fill='#000000', font=date_font, anchor="mm")
+                # ИЗМЕНЕНИЕ: Поворот на 180 градусов
+                rotated2 = temp_img2.rotate(180, expand=True) 
+
                 bbox2 = rotated2.getbbox()
                 if bbox2:
                     cropped2 = rotated2.crop(bbox2)
                     paste_x2 = int(date2_x - cropped2.width // 2)
                     paste_y2 = int(date2_y - cropped2.height // 2)
                     image.paste(cropped2, (paste_x2, paste_y2), cropped2)
+
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
 
@@ -591,11 +624,14 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             if h_total not in hours_to_display:
                 continue # Пропускаем все, кроме нужных
 
-            # Специальная обработка для часа 48 (00:00 второго дня, которое отображается как 0)
-            text_to_display = str(h_total % 24)
+            # ИЗМЕНЕНИЕ: Специальная обработка для часа 24 (справа)
+            if h_total == 24:
+                text_to_display = "24"
+            else:
+                text_to_display = str(h_total % 24)
             
-            # Угол для часа h_total (0-48)
-            angle_deg = (h_total * deg_per_hour) - 90 
+            # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+            angle_deg = (h_total * deg_per_hour) + 180
             angle_rad_label = math.radians(angle_deg) 
             
             x = center[0] + label_radius * math.cos(angle_rad_label)
