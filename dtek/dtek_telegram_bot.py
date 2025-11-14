@@ -104,14 +104,24 @@ def format_minutes_to_hh_m(minutes: int) -> str:
     m = minutes % 60
     return f"{h:02d}:{m:02d}"
 
-def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
-    """Консолидирует слоты отключений в ГРУППЫ и возвращает строку со временем."""
+# --- ИЗМЕНЕНИЕ: Тип возвращаемого значения изменен на Tuple[str, str, str] (emoji, header, body) ---
+def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+    """
+    Консолидирует слоты отключений в ГРУППЫ и возвращает кортеж (emoji, header, body).
+    header - строка для шапки дня (дата | статус)
+    body - строка с таблицей слотов или пустая строка
+    """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
+    
+    # 1. Сценарий: Нет отключений
     if not outage_slots:
-        return "Відключення не заплановані" 
+        header = f"{date} | 🟢 Не заплановані"
+        return "🟢", header, "" 
 
     groups = []
     current_group = None
+    total_duration_hours = 0.0 # Новая переменная для общего времени
+    
     for slot in outage_slots:
         try:
             time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
@@ -123,20 +133,26 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
             slot_start_min = 0
             slot_end_min = 0
             disconection = slot.get('disconection')
+            
             if disconection == 'full':
-                slot_duration = 1.0
+                slot_duration = end_hour - start_hour # Длительность в часах
                 slot_start_min = start_hour * 60
                 slot_end_min = end_hour * 60
             elif disconection == 'half':
-                slot_duration = 0.5
+                slot_duration = 0.5 
+                # Если 02-03 (time), то отключение 0.5 год. (02:30-03:00).
+                # Начало всегда в .30, конец всегда в .00
                 slot_start_min = start_hour * 60 + 30
                 slot_end_min = end_hour * 60
 
+            total_duration_hours += slot_duration # Суммируем общую длительность
+            
+            # Логика объединения слотов
             if current_group is None:
                 current_group = {
                     "start_min": slot_start_min,
                     "end_min": slot_end_min,
-                    "duration_hours": slot_duration
+                    "duration_hours": slot_duration 
                 }
             elif slot_start_min == current_group["end_min"]: 
                 current_group["end_min"] = slot_end_min
@@ -156,49 +172,53 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> str:
         groups.append(current_group)
 
     if not groups:
-         return "Помилка парсингу слотів"
+         header = f"{date} | ❌ Помилка парсингу слотів"
+         return "❌", header, ""
+    
+    # 2. Сценарий: Есть отключения
     output_parts = []
+    
+    # 2.1. Формуємо рядки слотів (Body)
+    max_len_left_col = 0
+    temp_groups_formatted = []
+    
     for group in groups:
         start_time_final = format_minutes_to_hh_m(group["start_min"])
         end_time_final = format_minutes_to_hh_m(group["end_min"])
         duration_str = _get_shutdown_duration_str_by_hours(group["duration_hours"])
-        output_parts.append(f"{start_time_final} - {end_time_final} ({duration_str})")
+        
+        left_col = f"{start_time_final} - {end_time_final}"
+        right_col = f"{duration_str}"
+        
+        if len(left_col) > max_len_left_col:
+            max_len_left_col = len(left_col)
+            
+        temp_groups_formatted.append((left_col, right_col))
+    
+    # Теперь формируем body с учетом выравнивания
+    for left_col, right_col in temp_groups_formatted:
+        # Добавляем padding для выравнивания в pre-формате
+        padded_left_col = left_col.ljust(max_len_left_col)
+        output_parts.append(f"{padded_left_col} | {right_col}")
+        
+    body = "\n".join(output_parts)
 
-    return ", ".join(output_parts)
+    # 2.2. Формуємо шапку (Header)
+    total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
+    
+    # Формат шапки: [Дата] | 🔴 Відключення: [X год.]
+    # (Використовуємо Відключення: X год. для загальної інформації)
+    # Зображення має: "14.11.2025 | 🔴 Відключення: 10,5 год."
+    header = f"{date} | 🔴 Відключення: {total_duration_str}"
+    
+    # Повертаємо кортеж з прапором, шапкою і тілом
+    return "🔴", header, body
+    # --- КІНЕЦЬ ЗМІНИ ---
 
-def format_shutdown_message(data: dict) -> str:
-    """Форматирует агрегированный JSON-ответ в новый, компактный формат."""
-    city = data.get("city", "Н/Д")
-    street = data.get("street", "Н/Д")
-    house = data.get("house_num", "Н/Д")
-    group = data.get("group", "Н/Д")
-    schedule = data.get("schedule", {})
-
-    message = (
-        f"🏠 Адреса: `{city}, {street}, {house}`\n"
-        f"👥 Черга: `{group}`"
-    )
-
-    if not schedule:
-        return message + "\n❌ *Не вдалося отримати графік відключень.*"
-
-    try:
-        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-    except ValueError:
-        sorted_dates = sorted(schedule.keys())
-
-    schedule_lines = []
-    for date in sorted_dates:
-        slots = schedule[date]
-        result_str = _process_single_day_schedule(date, slots)
-        if "Відключення не заплановані" in result_str or "Помилка" in result_str:
-            line = f"🟢 **{date}**: {result_str}"
-        else:
-            line = f"🔴 **{date}**: {result_str}"
-        schedule_lines.append(line)
-
-    final_schedule_output = "\n".join(schedule_lines)
-    return message + "\n" + final_schedule_output
+# --- УДАЛЕНИЕ: Функция format_shutdown_message больше не используется и удаляется. ---
+# def format_shutdown_message(data: dict) -> str:
+#     """Форматирует агрегированный JSON-ответ в новый, компактный формат."""
+# ... (весь код удален)
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
@@ -213,29 +233,36 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
 
 def _pluralize_hours(value: float) -> str:
     """Определяет правильную форму слова 'година' для украинского языка."""
-    if value % 1 != 0:
-        return "години"
+    # --- ЗМІНА: Завжди повертаємо 'год.' згідно зі скріншотом ---
+    return "год."
+    # --- КІНЕЦЬ ЗМІНИ ---
+    
+    # (Стара логіка)
+    # if value % 1 != 0:
+    #     return "години"
 
-    h = int(value)
-    last_two_digits = h % 100
-    last_digit = h % 10
+    # h = int(value)
+    # last_two_digits = h % 100
+    # last_digit = h % 10
 
-    if 11 <= last_two_digits <= 14:
-        return "годин"
-    if last_digit == 1:
-        return "годину"
-    if 2 <= last_digit <= 4:
-        return "години"
-    return "годин"
+    # if 11 <= last_two_digits <= 14:
+    #     return "годин"
+    # if last_digit == 1:
+    #     return "годину"
+    # if 2 <= last_digit <= 4:
+    #     return "години"
+    # return "годин"
 
 def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
     """Принимает количество часов и возвращает форматированную строку с правильным склонением."""
     try:
         if duration_hours <= 0:
-             return "0 годин"
+             # ЗМІНА: Формат має бути "0 год."
+             return "0 год." 
         if duration_hours % 1 == 0:
             hours_str = str(int(duration_hours))
         else:
+            # Використовуємо :g для видалення зайвих нулів, і замінюємо . на ,
             hours_str = f"{duration_hours:g}".replace('.', ',')
         plural_form = _pluralize_hours(duration_hours)
         return f"{hours_str} {plural_form}"
@@ -256,8 +283,9 @@ def _get_schedule_hash(data: dict) -> str:
 
     for date in sorted_dates:
         slots = schedule[date]
-        result_str = _process_single_day_schedule(date, slots)
-        schedule_parts.append(f"{date}:{result_str}")
+        # ЗМІНА: Використовуємо тільки header (без body) для хеша
+        _, result_header, _ = _process_single_day_schedule(date, slots) 
+        schedule_parts.append(f"{date}:{result_header}")
 
     schedule_string = "|".join(schedule_parts)
     return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
@@ -297,16 +325,25 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         all_slots_48h = {}
         for idx, date in enumerate(sorted_dates):
             slots = schedule.get(date, [])
-            result_str = _process_single_day_schedule(date, slots)
             
-            if "Відключення не заплановані" in result_str or "Помилка" in result_str:
-                line = f"🟢 **{date}**: {result_str}"
-            else:
-                line = f"🔴 **{date}**: {result_str}"
+            # ЗМІНА: Виклик нової функції
+            emoji, header_line, body_lines = _process_single_day_schedule(date, slots)
             
-            # Отправляем текст для этого дня
-            await message.answer(line)
+            # --- ИЗМЕНЕНИЕ: Формирование ответа согласно требованиям пользователя ---
+            # 1. Шапка (дата и общее время) всегда вне блока ```
+            # Используем жирный шрифт для выделения
+            await message.answer(f"**{header_line}**")
             
+            # 2. Тело (список слотов) только если есть отключения, и ТОЛЬКО оно в блоке ```
+            if emoji == "🔴":
+                body_block = f"```\n{body_lines}\n```"
+                await message.answer(body_block)
+            elif emoji == "🟢" or emoji == "❌":
+                # Если "зеленый" или "ошибка парсинга", то тело не отправляем, 
+                # т.к. вся информация уже есть в жирной шапке.
+                pass
+            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
             # Собираем слоты для 48-часового графика, но только для первых двух дней
             if idx < 2:
                 all_slots_48h[date] = slots
@@ -471,7 +508,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             line_color = "#000000"
             
             # ИЗМЕНЕНИЕ: Оставляем только линию 0h (левую), удаляем 24h (правую)
-            if h == 0: # Оставляем только линию 0/48 (левую горизонталь)
+            if h == 0: # Оставляем только линию 0/48 (левая горизонталь)
                 pass 
             else: # Удаляем 24-й час (правая горизонталь) и все остальные.
                 continue
@@ -825,46 +862,78 @@ async def subscription_checker_task(bot: Bot):
             new_hash = ADDRESS_CACHE[address_key]['last_schedule_hash']
 
             if new_hash != last_hash:
-                response_text = format_shutdown_message(data)
-                interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
-                header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
-                final_message = (
-                    f"{header} для {address_str} (інтервал {interval_str}):\n"
-                    f"{response_text}"
+                
+                # ИСПРАВЛЕНИЕ: Определение 'group' из полученных данных.
+                group = data.get("group", "Н/Д") 
+                
+                # --- ИЗМЕНЕНИЕ: Форматирование уведомления с учетом нового формата ---
+                # Отправляем "шапку" (Адрес, Черга)
+                header_msg = (
+                    f"🏠 Адреса: `{city}, {street}, {house}`\n"
+                    f"👥 Черга: `{group}`"
                 )
+                interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
+                update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
+                
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"{update_header} для {address_str} (інтервал {interval_str}):\n{header_msg}",
+                    parse_mode="Markdown"
+                )
+                
+                schedule = data.get("schedule", {})
                 try:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=final_message,
-                        parse_mode="Markdown"
-                    )
+                    sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+                except ValueError:
+                    sorted_dates = sorted(schedule.keys())
+
+                days_slots_48h = {}
+                for idx, date in enumerate(sorted_dates):
+                    slots = schedule[date]
+                    # ЗМІНА: Виклик нової функції
+                    emoji, header_line, body_lines = _process_single_day_schedule(date, slots)
                     
-                    # --- ДОБАВЛЕНИЕ ОТПРАВКИ ГРАФИКА (48-часовой) ---
-                    schedule = data.get("schedule", {})
+                    # --- ИЗМЕНЕНИЕ: Формирование ответа согласно требованиям пользователя ---
+                    # 1. Шапка (дата и общее время) всегда вне блока ```
+                    # Используем жирный шрифт для выделения
                     try:
-                        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-                    except ValueError:
-                        sorted_dates = sorted(schedule.keys())
-
-                    days_slots_48h = {
-                        date: schedule[date] 
-                        for idx, date in enumerate(sorted_dates) 
-                        if idx < 2
-                    }
-
-                    if days_slots_48h:
-                        image_data = _generate_48h_schedule_image(days_slots_48h)
-                        if image_data:
-                            await bot.send_message(chat_id=user_id, text="⏰ **Загальний графік на 48 годин**:")
-                            image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
-                            await bot.send_photo(chat_id=user_id, photo=image_file)
-                    # ------------------------------------
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=f"**{header_line}**",
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send update header message to user {user_id}: {e}")
+                        
+                    # 2. Тело (список слотов) только если есть отключения, и ТОЛЬКО оно в блоке ```
+                    if emoji == "🔴":
+                        body_block = f"```\n{body_lines}\n```"
+                        try:
+                            await bot.send_message(
+                                chat_id=user_id,
+                                text=body_block,
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send update day body message to user {user_id}: {e}")
                     
-                    db_updates_success.append((next_check_time, new_hash, user_id))
-                    logger.info(f"Notification sent to user {user_id}. Hash updated to {new_hash[:8]}.")
-                except Exception as e:
-                    logger.error(f"Failed to send update to user {user_id}: {e}. Hash NOT updated.")
-                    db_updates_fail.append((next_check_time, user_id))
+                    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+                        
+                    # Собираем слоты для 48-часового графика, но только для первых двух дней
+                    if idx < 2:
+                        days_slots_48h[date] = slots
+                
+                # Отправка 48-часового графика
+                if days_slots_48h:
+                    image_data = _generate_48h_schedule_image(days_slots_48h)
+                    if image_data:
+                        await bot.send_message(chat_id=user_id, text="⏰ **Загальний графік на 48 годин**:")
+                        image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
+                        await bot.send_photo(chat_id=user_id, photo=image_file)
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+                db_updates_success.append((next_check_time, new_hash, user_id))
+                logger.info(f"Notification sent to user {user_id}. Hash updated to {new_hash[:8]}.")
             else:
                 logger.debug(f"User {user_id} check for {address_str}. No change in hash: {new_hash[:8]}.")
                 db_updates_fail.append((next_check_time, user_id))
