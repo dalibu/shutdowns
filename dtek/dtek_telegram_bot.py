@@ -507,72 +507,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         y_24 = center[1] + radius * math.sin(angle_24_rad)
         draw.line([center, (x_24, y_24)], fill="#000000", width=1)
 
-        # 8. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
-        kiev_tz = pytz.timezone('Europe/Kiev')
-        now = datetime.now(kiev_tz) # Берем текущее время в Киевском часовом поясе
-        
-        # Нам нужно 24-часовое время первого дня (0-24h)
-        current_minutes = now.hour * 60 + now.minute
-        
-        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
-        angle_deg = (current_minutes * deg_per_minute) + 180
-        angle_rad = math.radians(angle_deg)
-        hand_length = radius - 2
-        hand_width = 2
-        arrowhead_size = 12
-        
-        # Координаты конца стрелки
-        x_end = center[0] + hand_length * math.cos(angle_rad)
-        y_end = center[1] + hand_length * math.sin(angle_rad)
-        
-        # --- ИЗМЕНЕНИЕ: Добавление тени (рисуем сначала смещенную серую копию) ---
-        SHADOW_COLOR = "#888888" # Цвет тени
-        SHADOW_OFFSET = 2 # Смещение тени
-        
-        # 8.0. Рисуем тень (основная линия)
-        draw.line(
-            [(center[0] + SHADOW_OFFSET, center[1] + SHADOW_OFFSET), (x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET)], 
-            fill=SHADOW_COLOR, 
-            width=hand_width
-        )
-        
-        # 8.0. Рисуем тень (наконечник)
-        perp_angle_rad = angle_rad + math.pi / 2 # (Расчет perp_angle_rad нужен до 8.1)
-        
-        base_x_shadow = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) + SHADOW_OFFSET
-        base_y_shadow = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad) + SHADOW_OFFSET
-        
-        x2_shadow = base_x_shadow + (arrowhead_size / 2) * math.cos(perp_angle_rad)
-        y2_shadow = base_y_shadow + (arrowhead_size / 2) * math.sin(perp_angle_rad)
-        
-        x3_shadow = base_x_shadow - (arrowhead_size / 2) * math.cos(perp_angle_rad)
-        y3_shadow = base_y_shadow - (arrowhead_size * 2) * math.sin(perp_angle_rad)
-        
-        draw.polygon(
-            [(x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET), (x2_shadow, y2_shadow), (x3_shadow, y3_shadow)], 
-            fill=SHADOW_COLOR
-        )
-        # --- Конец добавления тени ---
-        
-        # 8.1 Рисуем основную линию стрелки 
-        # ИЗМЕНЕНИЕ: Сделали стрелку БЕЛОЙ
-        HAND_COLOR = "#FFFFFF" 
-        draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
-        
-        # 8.2 Рисуем наконечник стрелки
-        # perp_angle_rad = angle_rad + math.pi / 2 # (Уже рассчитан выше)
-        
-        base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) 
-        base_y = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad)
-        
-        x2 = base_x + (arrowhead_size / 2) * math.cos(perp_angle_rad)
-        y2 = base_y + (arrowhead_size / 2) * math.sin(perp_angle_rad)
-        
-        x3 = base_x - (arrowhead_size / 2) * math.cos(perp_angle_rad)
-        y3 = base_y - (arrowhead_size / 2) * math.sin(perp_angle_rad)
-        
-        draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR)
-
         # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
         inner_radius = int(radius * 0.50)
         inner_bbox = [
@@ -639,6 +573,49 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
+
+        # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
+        # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
+        # 8.1. Получаем текущее время Киева
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz)
+        current_minutes = now.hour * 60 + now.minute
+
+        # 8.2. Рассчитываем угол для текущего времени (в 48-часовом пространстве)
+        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+        angle_deg = (current_minutes * deg_per_minute) + 180
+        angle_rad = math.radians(angle_deg)
+
+        # 8.3. Рисуем белый треугольник СНАРУЖИ внутреннего круга с черным контуром
+        # Определяем радиус внутреннего круга (его внешнего края)
+        inner_r = inner_radius  # Радиус центра обводки
+
+        # Позиция центра основания треугольника — на внешней обводке внутреннего круга
+        base_center_r = inner_r  # Основание лежит ТОЧНО на обводке
+
+        # ПАРАМЕТРЫ ТРЕУГОЛЬНИКА (увеличенные в 1.5 раза по сравнению с предыдущими: 10*1.5=15, 15*1.5=22.5)
+        base_width = 15   # Ширина основания
+        height = 22.5     # Высота (направлена НАРУЖУ)
+
+        # Угол отклонения для краёв основания
+        delta_angle = base_width / (2 * base_center_r) if base_center_r != 0 else 0
+        angle1_rad = angle_rad - delta_angle
+        angle2_rad = angle_rad + delta_angle
+
+        # Точки основания (лежат на окружности радиусом base_center_r)
+        base_p1_x = center[0] + base_center_r * math.cos(angle1_rad)
+        base_p1_y = center[1] + base_center_r * math.sin(angle1_rad)
+        base_p2_x = center[0] + base_center_r * math.cos(angle2_rad)
+        base_p2_y = center[1] + base_center_r * math.sin(angle2_rad)
+
+        # Вершина треугольника — НАРУЖУ от центра
+        tip_r = base_center_r + height
+        tip_x = center[0] + tip_r * math.cos(angle_rad)
+        tip_y = center[1] + tip_r * math.sin(angle_rad)
+
+        # Рисуем треугольник (заливка - белая, обводка - черная)
+        draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
+
 
         # 9. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
         label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
