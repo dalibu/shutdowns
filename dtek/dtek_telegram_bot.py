@@ -124,7 +124,7 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tupl
     
     for slot in outage_slots:
         try:
-            time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
+            time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
             start_hour = int(time_parts[0])
             end_hour = int(time_parts[1])
             if end_hour == 0:
@@ -195,9 +195,9 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tupl
             
         temp_groups_formatted.append((left_col, right_col))
     
-    # Теперь формируем body с учетом выравнивания
+    # Тепер формируємо body з урахуванням вирівнювання
     for left_col, right_col in temp_groups_formatted:
-        # Добавляем padding для выравнивания в pre-формате
+        # Додаємо padding для вирівнювання в pre-форматі
         padded_left_col = left_col.ljust(max_len_left_col)
         output_parts.append(f"{padded_left_col} | {right_col}")
         
@@ -208,17 +208,12 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tupl
     
     # Формат шапки: [Дата] | 🔴 Відключення: [X год.]
     # (Використовуємо Відключення: X год. для загальної інформації)
-    # Зображення має: "14.11.2025 | 🔴 Відключення: 10,5 год."
+    # Зображення маємо: "14.11.2025 | 🔴 Відключення: 10,5 год."
     header = f"{date} | 🔴 Відключення: {total_duration_str}"
     
     # Повертаємо кортеж з прапором, шапкою і тілом
     return "🔴", header, body
     # --- КІНЕЦЬ ЗМІНИ ---
-
-# --- УДАЛЕНИЕ: Функция format_shutdown_message больше не используется и удаляется. ---
-# def format_shutdown_message(data: dict) -> str:
-#     """Форматирует агрегированный JSON-ответ в новый, компактный формат."""
-# ... (весь код удален)
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
@@ -236,22 +231,6 @@ def _pluralize_hours(value: float) -> str:
     # --- ЗМІНА: Завжди повертаємо 'год.' згідно зі скріншотом ---
     return "год."
     # --- КІНЕЦЬ ЗМІНИ ---
-    
-    # (Стара логіка)
-    # if value % 1 != 0:
-    #     return "години"
-
-    # h = int(value)
-    # last_two_digits = h % 100
-    # last_digit = h % 10
-
-    # if 11 <= last_two_digits <= 14:
-    #     return "годин"
-    # if last_digit == 1:
-    #     return "годину"
-    # if 2 <= last_digit <= 4:
-    #     return "години"
-    # return "годин"
 
 def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
     """Принимает количество часов и возвращает форматированную строку с правильным склонением."""
@@ -283,7 +262,7 @@ def _get_schedule_hash(data: dict) -> str:
 
     for date in sorted_dates:
         slots = schedule[date]
-        # ЗМІНА: Використовуємо тільки header (без body) для хеша
+        # ЗМІНА: Використовуємо тільки header (без body) для хешу
         _, result_header, _ = _process_single_day_schedule(date, slots) 
         schedule_parts.append(f"{date}:{result_header}")
 
@@ -329,7 +308,7 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             # ЗМІНА: Виклик нової функції
             emoji, header_line, body_lines = _process_single_day_schedule(date, slots)
             
-            # --- ИЗМЕНЕНИЕ: Формирование ответа согласно требованиям пользователя ---
+            # --- ИЗМЕНЕНИЕ: Форматирование ответа согласно требованиям пользователя ---
             # 1. Шапка (дата и общее время) всегда вне блока ```
             # Используем жирный шрифт для выделения
             await message.answer(f"**{header_line}**")
@@ -398,7 +377,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             current_group = None
             for slot in outage_slots:
                 try:
-                    time_parts = re.split(r'\s*[-\bi\—]\s*', slot.get('time', '0-0'))
+                    time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
                     start_hour_raw = int(time_parts[0])
                     end_hour_raw = int(time_parts[1])
                     
@@ -479,11 +458,10 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             logger.warning(f"Specified font at FONT_PATH ('{FONT_PATH}') not found. Using default PIL font.")
             font = ImageFont.load_default()
 
-        # 4. Рисуем большое кольцо (ИЗМЕНЕНИЕ: заливка темно-зеленая)
-        # Этот цвет будет там, где нет красных секторов
-        draw.ellipse(bbox, fill='#00ff00', outline='#000000', width=1) 
+        # 4. Рисуем большое кольцо (заливка зеленая, БЕЗ обводки - обводку добавим в конце)
+        draw.ellipse(bbox, fill='#00ff00', outline=None) 
 
-        # 5. Рисуем красные сектора (отключения)
+        # 5. Рисуем красные секторы (отключения) БЕЗ обводки
         for group in total_outage_groups:
             start_min = group['start_min']
             end_min = group['end_min']
@@ -495,31 +473,42 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             if abs(start_angle - end_angle) < 0.1:
                 end_angle += 360.0
             
-            # Рисуем красный сектор ПОВЕРХ зеленого
+            # Рисуем красный сектор ПОВЕРХ зеленого, БЕЗ обводки
             draw.pieslice(bbox, start_angle, end_angle, fill="#ff3300", outline=None)
         
-        # 6. Рисуем линии сетки (24-часовой разделитель + вертикальная линия)
-        for h in range(48):
-            # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
-            angle_deg = (h * deg_per_hour) + 180 # Угол для часа h (0-47)
-            angle_rad_line = math.radians(angle_deg) 
+        # 6. Рисуем черные разделительные линии между секторами
+        for group in total_outage_groups:
+            start_min = group['start_min']
+            end_min = group['end_min']
             
-            line_width = 1
-            line_color = "#000000"
+            # Линия в начале красного сектора
+            start_angle_deg = (start_min * deg_per_minute) + 180
+            start_angle_rad = math.radians(start_angle_deg)
+            x_start = center[0] + radius * math.cos(start_angle_rad)
+            y_start = center[1] + radius * math.sin(start_angle_rad)
+            draw.line([center, (x_start, y_start)], fill="#000000", width=1)
             
-            # ИЗМЕНЕНИЕ: Оставляем только линию 0h (левую), удаляем 24h (правую)
-            if h == 0: # Оставляем только линию 0/48 (левая горизонталь)
-                pass 
-            else: # Удаляем 24-й час (правая горизонталь) и все остальные.
-                continue
-
-
-            x_end = center[0] + radius * math.cos(angle_rad_line)
-            y_end = center[1] + radius * math.sin(angle_rad_line)
-            
-            draw.line([center, (x_end, y_end)], fill=line_color, width=line_width)
+            # Линия в конце красного сектора
+            end_angle_deg = (end_min * deg_per_minute) + 180
+            end_angle_rad = math.radians(end_angle_deg)
+            x_end = center[0] + radius * math.cos(end_angle_rad)
+            y_end = center[1] + radius * math.sin(end_angle_rad)
+            draw.line([center, (x_end, y_end)], fill="#000000", width=1)
         
-        # 7. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
+        # 7. Рисуем центральную горизонтальную линию (от 0 до 24)
+        # Линия слева (0 часов) - угол 180°
+        angle_0_rad = math.radians(180)
+        x_0 = center[0] + radius * math.cos(angle_0_rad)
+        y_0 = center[1] + radius * math.sin(angle_0_rad)
+        draw.line([center, (x_0, y_0)], fill="#000000", width=1)
+        
+        # Линия справа (24 часа) - угол 0° (или 360°)
+        angle_24_rad = math.radians(0)
+        x_24 = center[0] + radius * math.cos(angle_24_rad)
+        y_24 = center[1] + radius * math.sin(angle_24_rad)
+        draw.line([center, (x_24, y_24)], fill="#000000", width=1)
+
+        # 8. Рисуем часовую стрелку (текущее время) с учетом Киевского времени
         kiev_tz = pytz.timezone('Europe/Kiev')
         now = datetime.now(kiev_tz) # Берем текущее время в Киевском часовом поясе
         
@@ -543,15 +532,15 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         SHADOW_COLOR = "#888888" # Цвет тени
         SHADOW_OFFSET = 2 # Смещение тени
         
-        # 7.0. Рисуем тень (основная линия)
+        # 8.0. Рисуем тень (основная линия)
         draw.line(
             [(center[0] + SHADOW_OFFSET, center[1] + SHADOW_OFFSET), (x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET)], 
             fill=SHADOW_COLOR, 
             width=hand_width
         )
         
-        # 7.0. Рисуем тень (наконечник)
-        perp_angle_rad = angle_rad + math.pi / 2 # (Расчет perp_angle_rad нужен до 7.1)
+        # 8.0. Рисуем тень (наконечник)
+        perp_angle_rad = angle_rad + math.pi / 2 # (Расчет perp_angle_rad нужен до 8.1)
         
         base_x_shadow = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) + SHADOW_OFFSET
         base_y_shadow = y_end - (arrowhead_size * 0.8) * math.sin(angle_rad) + SHADOW_OFFSET
@@ -568,12 +557,12 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         )
         # --- Конец добавления тени ---
         
-        # 7.1 Рисуем основную линию стрелки 
+        # 8.1 Рисуем основную линию стрелки 
         # ИЗМЕНЕНИЕ: Сделали стрелку БЕЛОЙ
         HAND_COLOR = "#FFFFFF" 
         draw.line([center, (x_end, y_end)], fill=HAND_COLOR, width=hand_width) 
         
-        # 7.2 Рисуем наконечник стрелки
+        # 8.2 Рисуем наконечник стрелки
         # perp_angle_rad = angle_rad + math.pi / 2 # (Уже рассчитан выше)
         
         base_x = x_end - (arrowhead_size * 0.8) * math.cos(angle_rad) 
@@ -587,7 +576,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         
         draw.polygon([(x_end, y_end), (x2, y2), (x3, y3)], fill=HAND_COLOR)
 
-        # 7.3. Рисуємо білий круг в центрі (50% від радіусу)
+        # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
         inner_radius = int(radius * 0.50)
         inner_bbox = [
             center[0] - inner_radius,
@@ -598,14 +587,14 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         # Центральный круг остается БЕЛЫМ
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline='#000000', width=1)
         
-        # 7.4. Рисуємо ГОРИЗОНТАЛЬНУ чорну лінію посередині білого круга
+        # 8.4. Рисуємо ГОРИЗОНТАЛЬНУ чорну лінію посередині білого круга
         draw.line(
             [(center[0] - inner_radius, center[1]), (center[0] + inner_radius, center[1])],
             fill='#000000',
             width=1
         )
         
-        # 7.5. Додаємо дати у центральний круг
+        # 8.5. Додаємо дати у центральний круг
         try:
             # Отримуємо дати з days_slots (перші 2 дні)
             dates_list = list(days_slots.keys())[:2]
@@ -654,7 +643,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
 
-        # 8. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
+        # 9. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
         label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
 
         for h_total in range(49): # До 48 включительно
@@ -684,7 +673,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                 text_width, text_height = draw.textsize(text_to_display, font=font)
                 draw.text((x - text_width / 2, y - text_height / 2), text_to_display, fill=label_color, font=font)
 
-        # 9. Сохранение в байты
+        # 10. Сохранение в байты
         buf = io.BytesIO()
         image.save(buf, format='PNG')
         buf.seek(0)
