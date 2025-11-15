@@ -442,7 +442,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
         bbox = [padding, padding, size - padding, size - padding] # Bounding box
-        
         image = Image.new('RGB', (size, size), (255, 255, 255))
         draw = ImageDraw.Draw(image)
         # 48 часов = 2880 минут. 360 / 2880 = 0.125 градуса на минуту
@@ -518,8 +517,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
         angle_deg = (current_minutes * deg_per_minute) + 180
         angle_rad = math.radians(angle_deg)
-        
-        # Параметры стрелки (толстая и заметная)
         hand_length = radius - 2
         hand_width = 2
         arrowhead_size = 12
@@ -549,7 +546,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         y2_shadow = base_y_shadow + (arrowhead_size / 2) * math.sin(perp_angle_rad)
         
         x3_shadow = base_x_shadow - (arrowhead_size / 2) * math.cos(perp_angle_rad)
-        y3_shadow = base_y_shadow - (arrowhead_size / 2) * math.sin(perp_angle_rad)
+        y3_shadow = base_y_shadow - (arrowhead_size * 2) * math.sin(perp_angle_rad)
         
         draw.polygon(
             [(x_end + SHADOW_OFFSET, y_end + SHADOW_OFFSET), (x2_shadow, y2_shadow), (x3_shadow, y3_shadow)], 
@@ -672,7 +669,10 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                 # Резервный вариант, если anchor не поддерживается (старые PIL/Pillow)
                 text_width, text_height = draw.textsize(text_to_display, font=font)
                 draw.text((x - text_width / 2, y - text_height / 2), text_to_display, fill=label_color, font=font)
-
+        
+        # --- ДОБАВЛЕНО: Рисуем черную обводку для основного кольца ---
+        draw.ellipse(bbox, outline="#000000", width=1, fill=None) 
+        
         # 10. Сохранение в байты
         buf = io.BytesIO()
         image.save(buf, format='PNG')
