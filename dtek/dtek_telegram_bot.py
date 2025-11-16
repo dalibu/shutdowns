@@ -588,47 +588,77 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
 
-        # 9. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
-        label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
-        # --- ИЗМЕНЕНИЕ: Рисуем метки напротив разделительных линий ---
-        # Проходим по каждому слоту и рисуем метки на его границах
-        for group in total_outage_groups:
-            start_min = group['start_min']
-            end_min = group['end_min']
-            # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
-            start_angle_deg = (start_min * deg_per_minute) + 180
-            end_angle_deg = (end_min * deg_per_minute) + 180
-            # Рассчитываем координаты для меток
-            start_angle_rad_label = math.radians(start_angle_deg)
-            end_angle_rad_label = math.radians(end_angle_deg)
-            x_start = center[0] + label_radius * math.cos(start_angle_rad_label)
-            y_start = center[1] + label_radius * math.sin(start_angle_rad_label)
-            x_end = center[0] + label_radius * math.cos(end_angle_rad_label)
-            y_end = center[1] + label_radius * math.sin(end_angle_rad_label)
-            # Формируем текст меток
-            start_hour_display = int(start_min / 60) % 24
-            start_min_display = int(start_min % 60)
-            end_hour_display = int(end_min / 60) % 24
-            end_min_display = int(end_min % 60)
-            if start_hour_display == 0 and start_min > 0:
-                start_hour_display = 24
-            if end_hour_display == 0 and end_min > 0:
-                end_hour_display = 24
-            text_to_display_start = f"{start_hour_display:02d}:{start_min_display:02d}" if start_min_display != 0 else f"{start_hour_display:02d}"
-            text_to_display_end = f"{end_hour_display:02d}:{end_min_display:02d}" if end_min_display != 0 else f"{end_hour_display:02d}"
-            label_color = "black"
-            # Рисуем метку в начале слота
+        # --- ИЗМЕНЕНИЕ: Рисуем ТОЛЬКО метки, которые есть в JSON-ответе ---
+        # Собираем все уникальные временные метки из слотов
+        label_radius = radius + (padding * 0.4) # Відодвигаємо мітки назовні
+        
+        # Створюємо словник для зберігання міток з їх позиціями в минутах (48-годинний простір)
+        labels_dict = {}
+        
+        for idx, date in enumerate(sorted_dates[:2]):  # Ðільки перші 2 дні
+            slots = days_slots.get(date, [])
+            day_offset_minutes = idx * 1440  # 0 для першого дня, 1440 для другого
+            
+            for slot in slots:
+                time_str = slot.get('time', '00:00–00:00')
+                times = time_str.split('–')
+                if len(times) != 2:
+                    continue
+                
+                start_time = times[0].strip()
+                end_time = times[1].strip()
+                
+                try:
+                    # Парсим початкову мітку
+                    h_start, m_start = map(int, start_time.split(':'))
+                    min_start = h_start * 60 + m_start
+                    # Додаємо зсув для другого дня
+                    min_start_48h = min_start + day_offset_minutes
+                    
+                    # Ðе додаємо мітки, що співпадають з 0 або 1440 (вони будуть додані вручну)
+                    if min_start_48h not in [0, 1440]:
+                        labels_dict[min_start_48h] = start_time
+                    
+                    # Парсим кінцеву мітку
+                    h_end, m_end = map(int, end_time.split(':'))
+                    min_end = h_end * 60 + m_end
+                    # Обробка переходу через полночь
+                    if min_end < min_start:
+                        min_end += 1440
+                    # Додаємо зсув для другого дня
+                    min_end_48h = min_end + day_offset_minutes
+                    
+                    # Ðе додаємо мітки, що співпадають з 0, 1440 або 2880 (кінець 48 год)
+                    if min_end_48h not in [0, 1440, 2880]:
+                        labels_dict[min_end_48h] = end_time
+                    
+                except Exception as e:
+                    logger.error(f"Error parsing time label '{time_str}': {e}")
+                    continue
+        
+        # Явно додамо 00:00 зліва (0 хвилин) і 24:00 справа (1440 хвилин)
+        labels_dict[0] = "00:00"
+        labels_dict[1440] = "24:00"
+        
+        # Рисуємо всі мітки
+        for min_val, time_label in labels_dict.items():
             try:
-                draw.text((x_start, y_start), text_to_display_start, fill=label_color, font=font, anchor="mm")
-            except Exception:
-                text_width, text_height = draw.textsize(text_to_display_start, font=font)
-                draw.text((x_start - text_width / 2, y_start - text_height / 2), text_to_display_start, fill=label_color, font=font)
-            # Рисуем метку в конце слота
-            try:
-                draw.text((x_end, y_end), text_to_display_end, fill=label_color, font=font, anchor="mm")
-            except Exception:
-                text_width, text_height = draw.textsize(text_to_display_end, font=font)
-                draw.text((x_end - text_width / 2, y_end - text_height / 2), text_to_display_end, fill=label_color, font=font)
+                # ЗМIÐЕÐÐ: Сміщення на 180 градусів (поворот на 90 CCW)
+                angle_deg = (min_val * deg_per_minute) + 180
+                angle_rad_label = math.radians(angle_deg)
+                x_pos = center[0] + label_radius * math.cos(angle_rad_label)
+                y_pos = center[1] + label_radius * math.sin(angle_rad_label)
+
+                label_color = "black"
+                # Рисуємо мітку
+                try:
+                    draw.text((x_pos, y_pos), time_label, fill=label_color, font=font, anchor="mm")
+                except Exception:
+                    text_width, text_height = draw.textsize(time_label, font=font)
+                    draw.text((x_pos - text_width / 2, y_pos - text_height / 2), time_label, fill=label_color, font=font)
+            except Exception as e:
+                logger.error(f"Error drawing label '{time_label}': {e}")
+                continue
         # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # --- ДОБАВЛЕНО: Рисуем черную обводку для основного кольца ---
