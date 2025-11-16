@@ -454,37 +454,31 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             # Рисуем красный сектор ПОВЕРХ зеленого, БЕЗ обводки
             draw.pieslice(bbox, start_angle, end_angle, fill="#ff3300", outline=None)
         
-        # 6. Рисуем черные разделительные линии между секторами
+        # --- ИЗМЕНЕНИЕ: Секции 6 и 7 объединены для
+        # ---            гарантированной отрисовки линий только один раз
+        
+        # 6. Собираем все уникальные разделительные линии
+        lines_to_draw_min = {0, 1440} # Всегда рисуем 0 (слева) и 24 (справа)
+        
         for group in total_outage_groups:
-            start_min = group['start_min']
-            end_min = group['end_min']
+            lines_to_draw_min.add(group['start_min'])
+            lines_to_draw_min.add(group['end_min'])
+
+        # 7. Рисуем все уникальные линии
+        for min_val in lines_to_draw_min:
+            # 2880 минут (48 часов) имеют тот же угол (180), что и 0,
+            # но если слот заканчивается ровно в 2880, мы его все равно добавляем,
+            # и он просто нарисуется поверх линии 0.
+            # (2880 * 0.125) + 180 = 360 + 180 = 540. 540 % 360 = 180.
+            # (0 * 0.125) + 180 = 180.
             
-            # Линия в начале красного сектора
-            start_angle_deg = (start_min * deg_per_minute) + 180
-            start_angle_rad = math.radians(start_angle_deg)
-            x_start = center[0] + radius * math.cos(start_angle_rad)
-            y_start = center[1] + radius * math.sin(start_angle_rad)
-            draw.line([center, (x_start, y_start)], fill="#000000", width=1)
-            
-            # Линия в конце красного сектора
-            end_angle_deg = (end_min * deg_per_minute) + 180
-            end_angle_rad = math.radians(end_angle_deg)
-            x_end = center[0] + radius * math.cos(end_angle_rad)
-            y_end = center[1] + radius * math.sin(end_angle_rad)
-            draw.line([center, (x_end, y_end)], fill="#000000", width=1)
+            angle_deg = (min_val * deg_per_minute) + 180
+            angle_rad = math.radians(angle_deg)
+            x_pos = center[0] + radius * math.cos(angle_rad)
+            y_pos = center[1] + radius * math.sin(angle_rad)
+            draw.line([center, (x_pos, y_pos)], fill="#000000", width=1)
         
-        # 7. Рисуем центральную горизонтальную линию (от 0 до 24)
-        # Линия слева (0 часов) - угол 180°
-        angle_0_rad = math.radians(180)
-        x_0 = center[0] + radius * math.cos(angle_0_rad)
-        y_0 = center[1] + radius * math.sin(angle_0_rad)
-        draw.line([center, (x_0, y_0)], fill="#000000", width=1)
-        
-        # Линия справа (24 часа) - угол 0° (или 360°)
-        angle_24_rad = math.radians(0)
-        x_24 = center[0] + radius * math.cos(angle_24_rad)
-        y_24 = center[1] + radius * math.sin(angle_24_rad)
-        draw.line([center, (x_24, y_24)], fill="#000000", width=1)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ (Секции 6 и 7 заменены) ---
 
         # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
         # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
