@@ -98,6 +98,25 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     return conn
 
 # --- 2. Вспомогательные функции ---
+
+def parse_time_range(time_str: str) -> tuple:
+    """
+    Парсит строку формата 'HH:MM–HH:MM' и возвращает (start_minutes, end_minutes) с начала дня.
+    """
+    try:
+        start_str, end_str = time_str.split('–')
+        start_h, start_m = map(int, start_str.split(':'))
+        end_h, end_m = map(int, end_str.split(':'))
+        start_min = start_h * 60 + start_m
+        end_min = end_h * 60 + end_m
+        # Обработка перехода через полночь: HH:MM -> HH+24:MM
+        if end_min < start_min:
+             end_min += 24 * 60
+        return start_min, end_min
+    except (ValueError, AttributeError):
+        logger.error(f"Error parsing time range: {time_str}")
+        return 0, 0 # Возвращаем 0,0 как ошибку
+
 def format_minutes_to_hh_m(minutes: int) -> str:
     """Форматирует общее количество минут в HH:MM."""
     h = minutes // 60
@@ -108,57 +127,52 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
     """
     Генерирует компактное текстовое представление расписания для одного дня.
     Возвращает строку в формате:
-    "🔴 14.11.2025: 10,5 год. відключень\n 00:00 - 02:00 (2 год.)\n ..."
+    "🔴 14.11.2025: 10,5 год. відключень 00:00 - 02:00 (2 год.)..."
     """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
     # Сценарий: Нет отключений
     if not outage_slots:
         return f"🟢 {date}: Не заплановані\n"
-    
+
     groups = []
     current_group = None
-    total_duration_hours = 0.0
+    total_duration_minutes = 0.0 # Суммируем в минутах для точности
 
     for slot in outage_slots:
         try:
-            time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
-            start_hour = int(time_parts[0])
-            end_hour = int(time_parts[1])
-            if end_hour == 0:
-                end_hour = 24
-            slot_duration = 0.0
-            slot_start_min = 0
-            slot_end_min = 0
+            time_str = slot.get('time', '00:00–00:00')
+            slot_start_min, slot_end_min = parse_time_range(time_str)
+            if slot_start_min == 0 and slot_end_min == 0:
+                 continue # Ошибка парсинга, пропускаем
+
             disconection = slot.get('disconection')
-            
-            if disconection == 'full':
-                slot_duration = end_hour - start_hour
-                slot_start_min = start_hour * 60
-                slot_end_min = end_hour * 60
-            elif disconection == 'half':
-                slot_duration = 0.5 
-                slot_start_min = start_hour * 60 + 30
-                slot_end_min = end_hour * 60
-            
-            total_duration_hours += slot_duration
-            
+            # Для 'full' - весь интервал отключен
+            # Для 'half' - нужно определить, какая половина 30-минутная отключена
+            # Если интервал 30 минут (30), это half. Если 60 минут (60), это full.
+            # Это определяется парсером, но для логики объединения важно время.
+            slot_duration_min = slot_end_min - slot_start_min
+
+            total_duration_minutes += slot_duration_min
+
             # Логика объединения слотов
             if current_group is None:
                 current_group = {
                     "start_min": slot_start_min,
                     "end_min": slot_end_min,
-                    "duration_hours": slot_duration 
+                    "duration_minutes": slot_duration_min 
                 }
-            elif slot_start_min == current_group["end_min"]: 
-                current_group["end_min"] = slot_end_min
-                current_group["duration_hours"] += slot_duration
+            elif slot_start_min <= current_group["end_min"]: # Проверяем пересечение или стыковку
+                # Объединяем: расширяем конец и суммируем длительность
+                current_group["end_min"] = max(current_group["end_min"], slot_end_min)
+                current_group["duration_minutes"] += slot_duration_min
             else:
+                # Слот не пересекается, сохраняем текущую группу и начинаем новую
                 groups.append(current_group)
                 current_group = {
                     "start_min": slot_start_min,
                     "end_min": slot_end_min,
-                    "duration_hours": slot_duration
+                    "duration_minutes": slot_duration_min
                 }
         except Exception as e:
             logger.error(f"Error processing slot {slot}: {e}")
@@ -171,13 +185,15 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
          return f"❌ {date}: Помилка парсингу слотів\n"
     
     # Формируем выходную строку
+    total_duration_hours = total_duration_minutes / 60.0
     total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
     output_parts = [f"🔴 {date}: {total_duration_str} відключень\n"]
     
     for group in groups:
         start_time_final = format_minutes_to_hh_m(group["start_min"])
         end_time_final = format_minutes_to_hh_m(group["end_min"])
-        duration_str = _get_shutdown_duration_str_by_hours(group["duration_hours"])
+        group_duration_hours = group["duration_minutes"] / 60.0
+        duration_str = _get_shutdown_duration_str_by_hours(group_duration_hours)
         # Формат: " 00:00 - 02:00 (2 год.)\n"
         output_parts.append(f" {start_time_final} - {end_time_final} ({duration_str})\n")
     
@@ -235,7 +251,7 @@ def _get_schedule_hash_compact(data: dict) -> str:
         slots = schedule[date]
         # Используем новую функцию для генерации строки для хеширования
         day_text = _process_single_day_schedule_compact(date, slots)
-        # Берём только часть до первого \n, чтобы хеш зависел от общей структуры, а не от деталей форматирования
+        # Берём только часть до первого, чтобы хеш зависел от общей структуры, а не от деталей форматирования
         first_line = day_text.split('\n')[0]
         schedule_parts.append(f"{date}:{first_line}")
 
@@ -336,33 +352,20 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             current_group = None
             for slot in outage_slots:
                 try:
-                    time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
-                    start_hour_raw = int(time_parts[0])
-                    end_hour_raw = int(time_parts[1])
-                    
-                    if end_hour_raw == 0:
-                        end_hour_raw = 24
-                    
-                    slot_start_min = 0
-                    slot_end_min = 0
-                    disconection = slot.get('disconection')
-                    
-                    if disconection == 'full':
-                        slot_start_min = start_hour_raw * 60
-                        slot_end_min = end_hour_raw * 60
-                    elif disconection == 'half':
-                        # Включение/отключение на полчаса
-                        slot_start_min = start_hour_raw * 60 + (30 if start_hour_raw != end_hour_raw else 0)
-                        slot_end_min = end_hour_raw * 60
-                        
+                    time_str = slot.get('time', '00:00–00:00')
+                    slot_start_min, slot_end_min = parse_time_range(time_str)
+                    if slot_start_min == 0 and slot_end_min == 0:
+                         continue # Ошибка парсинга, пропускаем
+
                     # Сдвиг на 24 часа для второго дня
                     slot_start_min += day_offset_minutes
                     slot_end_min += day_offset_minutes
 
                     if current_group is None:
                         current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
-                    elif slot_start_min == current_group["end_min"]: 
-                        current_group["end_min"] = slot_end_min
+                    elif slot_start_min <= current_group["end_min"]: # Проверяем пересечение или стыковку
+                        # Объединяем: расширяем конец
+                        current_group["end_min"] = max(current_group["end_min"], slot_end_min)
                     else:
                         groups.append(current_group)
                         current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
@@ -507,7 +510,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # Рисуем треугольник (заливка - белая, обводка - черная)
         draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
-
 
         # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
         inner_radius = int(radius * 0.50)
@@ -818,7 +820,6 @@ async def subscription_checker_task(bot: Bot):
                     slots = schedule[date]
                     days_slots_48h[date] = slots
 
-
                 # Отправка 48-часового графика
                 if days_slots_48h:
                     image_data = _generate_48h_schedule_image(days_slots_48h)
@@ -884,7 +885,7 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "**Наприклад:**\n"
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n"
         "**Команди:**\n"
-        "/start або /help - показати цю довідку.\n" 
+        "/start або /help - показати цю довідку.\n"
         "/check - перевірити графік за адресою.\n"
         "/repeat - повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
