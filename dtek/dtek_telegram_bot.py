@@ -104,24 +104,22 @@ def format_minutes_to_hh_m(minutes: int) -> str:
     m = minutes % 60
     return f"{h:02d}:{m:02d}"
 
-# --- ИЗМЕНЕНИЕ: Тип возвращаемого значения изменен на Tuple[str, str, str] (emoji, header, body) ---
-def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tuple[str, str, str]:
+def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]]) -> str:
     """
-    Консолидирует слоты отключений в ГРУППЫ и возвращает кортеж (emoji, header, body).
-    header - строка для шапки дня (дата | статус)
-    body - строка с таблицей слотов или пустая строка
+    Генерирует компактное текстовое представление расписания для одного дня.
+    Возвращает строку в формате:
+    "🔴 14.11.2025: 10,5 год. відключень\n 00:00 - 02:00 (2 год.)\n ..."
     """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
-    # 1. Сценарий: Нет отключений
+    # Сценарий: Нет отключений
     if not outage_slots:
-        header = f"{date} | 🟢 Не заплановані"
-        return "🟢", header, "" 
-
+        return f"🟢 {date}: Не заплановані\n"
+    
     groups = []
     current_group = None
-    total_duration_hours = 0.0 # Новая переменная для общего времени
-    
+    total_duration_hours = 0.0
+
     for slot in outage_slots:
         try:
             time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
@@ -135,17 +133,15 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tupl
             disconection = slot.get('disconection')
             
             if disconection == 'full':
-                slot_duration = end_hour - start_hour # Длительность в часах
+                slot_duration = end_hour - start_hour
                 slot_start_min = start_hour * 60
                 slot_end_min = end_hour * 60
             elif disconection == 'half':
                 slot_duration = 0.5 
-                # Если 02-03 (time), то отключение 0.5 год. (02:30-03:00).
-                # Начало всегда в .30, конец всегда в .00
                 slot_start_min = start_hour * 60 + 30
                 slot_end_min = end_hour * 60
-
-            total_duration_hours += slot_duration # Суммируем общую длительность
+            
+            total_duration_hours += slot_duration
             
             # Логика объединения слотов
             if current_group is None:
@@ -172,48 +168,20 @@ def _process_single_day_schedule(date: str, slots: List[Dict[str, Any]]) -> Tupl
         groups.append(current_group)
 
     if not groups:
-         header = f"{date} | ❌ Помилка парсингу слотів"
-         return "❌", header, ""
+         return f"❌ {date}: Помилка парсингу слотів\n"
     
-    # 2. Сценарий: Есть отключения
-    output_parts = []
-    
-    # 2.1. Формуємо рядки слотів (Body)
-    max_len_left_col = 0
-    temp_groups_formatted = []
+    # Формируем выходную строку
+    total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
+    output_parts = [f"🔴 {date}: {total_duration_str} відключень\n"]
     
     for group in groups:
         start_time_final = format_minutes_to_hh_m(group["start_min"])
         end_time_final = format_minutes_to_hh_m(group["end_min"])
         duration_str = _get_shutdown_duration_str_by_hours(group["duration_hours"])
-        
-        left_col = f"{start_time_final} - {end_time_final}"
-        right_col = f"{duration_str}"
-        
-        if len(left_col) > max_len_left_col:
-            max_len_left_col = len(left_col)
-            
-        temp_groups_formatted.append((left_col, right_col))
+        # Формат: " 00:00 - 02:00 (2 год.)\n"
+        output_parts.append(f" {start_time_final} - {end_time_final} ({duration_str})\n")
     
-    # Тепер формируємо body з урахуванням вирівнювання
-    for left_col, right_col in temp_groups_formatted:
-        # Додаємо padding для вирівнювання в pre-форматі
-        padded_left_col = left_col.ljust(max_len_left_col)
-        output_parts.append(f"{padded_left_col} | {right_col}")
-        
-    body = "\n".join(output_parts)
-
-    # 2.2. Формуємо шапку (Header)
-    total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
-    
-    # Формат шапки: [Дата] | 🔴 Відключення: [X год.]
-    # (Використовуємо Відключення: X год. для загальної інформації)
-    # Зображення маємо: "14.11.2025 | 🔴 Відключення: 10,5 год."
-    header = f"{date} | 🔴 Відключення: {total_duration_str}"
-    
-    # Повертаємо кортеж з прапором, шапкою і тілом
-    return "🔴", header, body
-    # --- КІНЕЦЬ ЗМІНИ ---
+    return "".join(output_parts)
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
     """Извлекает город, улицу и дом из строки, разделенной запятыми."""
@@ -248,8 +216,11 @@ def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
     except Exception:
         return "?"
 
-def _get_schedule_hash(data: dict) -> str:
-    """Генерирует хеш только из данных графика (schedule) для сравнения изменений."""
+def _get_schedule_hash_compact(data: dict) -> str:
+    """
+    Генерирует хеш только из данных графика (schedule) для сравнения изменений.
+    Использует компактное текстовое представление для хеширования.
+    """
     schedule = data.get("schedule", {})
     if not schedule:
         return "NO_SCHEDULE_FOUND"
@@ -262,9 +233,11 @@ def _get_schedule_hash(data: dict) -> str:
 
     for date in sorted_dates:
         slots = schedule[date]
-        # ЗМІНА: Використовуємо тільки header (без body) для хешу
-        _, result_header, _ = _process_single_day_schedule(date, slots) 
-        schedule_parts.append(f"{date}:{result_header}")
+        # Используем новую функцию для генерации строки для хеширования
+        day_text = _process_single_day_schedule_compact(date, slots)
+        # Берём только часть до первого \n, чтобы хеш зависел от общей структуры, а не от деталей форматирования
+        first_line = day_text.split('\n')[0]
+        schedule_parts.append(f"{date}:{first_line}")
 
     schedule_string = "|".join(schedule_parts)
     return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
@@ -300,43 +273,29 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Цикл по дням (Только текст)
+        # 3. Собираем слоты для 48-часового графика, но только для первых двух дней
         all_slots_48h = {}
-        for idx, date in enumerate(sorted_dates):
+        for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
             slots = schedule.get(date, [])
-            
-            # ЗМІНА: Виклик нової функції
-            emoji, header_line, body_lines = _process_single_day_schedule(date, slots)
-            
-            # --- ИЗМЕНЕНИЕ: Форматирование ответа согласно требованиям пользователя ---
-            # 1. Шапка (дата и общее время) всегда вне блока ```
-            # Используем жирный шрифт для выделения
-            await message.answer(f"**{header_line}**")
-            
-            # 2. Тело (список слотов) только если есть отключения, и ТОЛЬКО оно в блоке ```
-            if emoji == "🔴":
-                body_block = f"```\n{body_lines}\n```"
-                await message.answer(body_block)
-            elif emoji == "🟢" or emoji == "❌":
-                # Если "зеленый" или "ошибка парсинга", то тело не отправляем, 
-                # т.к. вся информация уже есть в жирной шапке.
-                pass
-            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+            all_slots_48h[date] = slots
 
-            # Собираем слоты для 48-часового графика, но только для первых двух дней
-            if idx < 2:
-                all_slots_48h[date] = slots
-        
         # 4. Генерируем и отправляем общий 48-часовой график (если есть данные хотя бы за 1 день)
         if all_slots_48h:
             image_data = _generate_48h_schedule_image(all_slots_48h)
             
             if image_data:
-                await message.answer("⏰ **Загальний графік на 48 годин**:")
+                await message.answer("🕙 **Загальний графік на 48 годин**:")
                 image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
                 await message.answer_photo(photo=image_file)
 
-        # 5. Отправляем "подвал" (приглашение к подписке)
+        # 5. Цикл по дням (Только текст) - теперь после графика
+        for date in sorted_dates:
+            slots = schedule.get(date, [])
+            day_text = _process_single_day_schedule_compact(date, slots)
+            # Отправляем весь день одной сообщением
+            await message.answer(day_text.strip())
+
+        # 6. Отправляем "подвал" (приглашение к подписке)
         if not is_subscribed:
             await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
     
@@ -507,6 +466,49 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         y_24 = center[1] + radius * math.sin(angle_24_rad)
         draw.line([center, (x_24, y_24)], fill="#000000", width=1)
 
+        # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
+        # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
+        # 8.1. Получаем текущее время Киева
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz)
+        current_minutes = now.hour * 60 + now.minute
+
+        # 8.2. Рассчитываем угол для текущего времени (в 48-часовом пространстве)
+        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+        angle_deg = (current_minutes * deg_per_minute) + 180
+        angle_rad = math.radians(angle_deg)
+
+        # 8.3. Рисуем белый треугольник СНАРУЖИ внутреннего круга с черным контуром
+        # Определяем радиус внутреннего круга (его внешнего края)
+        inner_r = radius * 0.50  # Радиус центра обводки
+
+        # Позиция центра основания треугольника — на внешней обводке внутреннего круга
+        base_center_r = inner_r  # Основание лежит ТОЧНО на обводке
+
+        # ПАРАМЕТРЫ ТРЕУГОЛЬНИКА (увеличенные в 1.5 раза по сравнению с предыдущими: 10*1.5=15, 15*1.5=22.5)
+        base_width = 15   # Ширина основания
+        height = 22.5     # Высота (направлена НАРУЖУ)
+
+        # Угол отклонения для краёв основания
+        delta_angle = base_width / (2 * base_center_r) if base_center_r != 0 else 0
+        angle1_rad = angle_rad - delta_angle
+        angle2_rad = angle_rad + delta_angle
+
+        # Точки основания (лежат на окружности радиусом base_center_r)
+        base_p1_x = center[0] + base_center_r * math.cos(angle1_rad)
+        base_p1_y = center[1] + base_center_r * math.sin(angle1_rad)
+        base_p2_x = center[0] + base_center_r * math.cos(angle2_rad)
+        base_p2_y = center[1] + base_center_r * math.sin(angle2_rad)
+
+        # Вершина треугольника — НАРУЖУ от центра
+        tip_r = base_center_r + height
+        tip_x = center[0] + tip_r * math.cos(angle_rad)
+        tip_y = center[1] + tip_r * math.sin(angle_rad)
+
+        # Рисуем треугольник (заливка - белая, обводка - черная)
+        draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
+
+
         # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
         inner_radius = int(radius * 0.50)
         inner_bbox = [
@@ -573,49 +575,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         except Exception as e:
             logger.error(f"Failed to add dates to center circle: {e}")
-
-        # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
-        # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
-        # 8.1. Получаем текущее время Киева
-        kiev_tz = pytz.timezone('Europe/Kiev')
-        now = datetime.now(kiev_tz)
-        current_minutes = now.hour * 60 + now.minute
-
-        # 8.2. Рассчитываем угол для текущего времени (в 48-часовом пространстве)
-        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
-        angle_deg = (current_minutes * deg_per_minute) + 180
-        angle_rad = math.radians(angle_deg)
-
-        # 8.3. Рисуем белый треугольник СНАРУЖИ внутреннего круга с черным контуром
-        # Определяем радиус внутреннего круга (его внешнего края)
-        inner_r = inner_radius  # Радиус центра обводки
-
-        # Позиция центра основания треугольника — на внешней обводке внутреннего круга
-        base_center_r = inner_r  # Основание лежит ТОЧНО на обводке
-
-        # ПАРАМЕТРЫ ТРЕУГОЛЬНИКА (увеличенные в 1.5 раза по сравнению с предыдущими: 10*1.5=15, 15*1.5=22.5)
-        base_width = 15   # Ширина основания
-        height = 22.5     # Высота (направлена НАРУЖУ)
-
-        # Угол отклонения для краёв основания
-        delta_angle = base_width / (2 * base_center_r) if base_center_r != 0 else 0
-        angle1_rad = angle_rad - delta_angle
-        angle2_rad = angle_rad + delta_angle
-
-        # Точки основания (лежат на окружности радиусом base_center_r)
-        base_p1_x = center[0] + base_center_r * math.cos(angle1_rad)
-        base_p1_y = center[1] + base_center_r * math.sin(angle1_rad)
-        base_p2_x = center[0] + base_center_r * math.cos(angle2_rad)
-        base_p2_y = center[1] + base_center_r * math.sin(angle2_rad)
-
-        # Вершина треугольника — НАРУЖУ от центра
-        tip_r = base_center_r + height
-        tip_x = center[0] + tip_r * math.cos(angle_rad)
-        tip_y = center[1] + tip_r * math.sin(angle_rad)
-
-        # Рисуем треугольник (заливка - белая, обводка - черная)
-        draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
-
 
         # 9. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
         label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
@@ -686,7 +645,7 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
     question, correct_answer = _get_captcha_data()
     await state.update_data(captcha_answer=correct_answer)
     await message.answer(
-        "🚨 **Увага! Для захисту від ботів, пройдіть просту перевірку.**\n"
+        "⚠️ **Увага! Для захисту від ботів, пройдіть просту перевірку.**\n"
         f"**{question}**\n"
         "Введіть лише число-відповідь."
     )
@@ -782,7 +741,7 @@ async def subscription_checker_task(bot: Bot):
             try:
                 logger.debug(f"Calling API for address {address_str}")
                 data = await get_shutdowns_data(city, street, house)
-                current_hash = _get_schedule_hash(data)
+                current_hash = _get_schedule_hash_compact(data) # ИСПРАВЛЕНО: используем новую функцию
                 ADDRESS_CACHE[address_key] = {
                     'last_schedule_hash': current_hash,
                     'last_checked': now 
@@ -843,10 +802,11 @@ async def subscription_checker_task(bot: Bot):
                 
                 await bot.send_message(
                     chat_id=user_id,
-                    text=f"{update_header} для {address_str} (інтервал {interval_str}):\n{header_msg}",
+                    text=f"{update_header}\nдля {address_str} (інтервал {interval_str}):\n{header_msg}",
                     parse_mode="Markdown"
                 )
-                
+
+                # --- ИЗМЕНЕНИЕ: Сначала отправляем диаграмму ---
                 schedule = data.get("schedule", {})
                 try:
                     sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
@@ -854,48 +814,34 @@ async def subscription_checker_task(bot: Bot):
                     sorted_dates = sorted(schedule.keys())
 
                 days_slots_48h = {}
-                for idx, date in enumerate(sorted_dates):
+                for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
                     slots = schedule[date]
-                    # ЗМІНА: Виклик нової функції
-                    emoji, header_line, body_lines = _process_single_day_schedule(date, slots)
-                    
-                    # --- ИЗМЕНЕНИЕ: Формирование ответа согласно требованиям пользователя ---
-                    # 1. Шапка (дата и общее время) всегда вне блока ```
-                    # Используем жирный шрифт для выделения
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=f"**{header_line}**",
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to send update header message to user {user_id}: {e}")
-                        
-                    # 2. Тело (список слотов) только если есть отключения, и ТОЛЬКО оно в блоке ```
-                    if emoji == "🔴":
-                        body_block = f"```\n{body_lines}\n```"
-                        try:
-                            await bot.send_message(
-                                chat_id=user_id,
-                                text=body_block,
-                                parse_mode="Markdown"
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to send update day body message to user {user_id}: {e}")
-                    
-                    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-                        
-                    # Собираем слоты для 48-часового графика, но только для первых двух дней
-                    if idx < 2:
-                        days_slots_48h[date] = slots
-                
+                    days_slots_48h[date] = slots
+
+
                 # Отправка 48-часового графика
                 if days_slots_48h:
                     image_data = _generate_48h_schedule_image(days_slots_48h)
                     if image_data:
-                        await bot.send_message(chat_id=user_id, text="⏰ **Загальний графік на 48 годин**:")
+                        await bot.send_message(chat_id=user_id, text="🕙 **Загальний графік на 48 годин**:")
                         image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
                         await bot.send_photo(chat_id=user_id, photo=image_file)
+
+                # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+                # --- ИЗМЕНЕНИЕ: Затем отправляем текстовые данные по дням ---
+                for date in sorted_dates:
+                    slots = schedule[date]
+                    day_text = _process_single_day_schedule_compact(date, slots)
+                    # Отправляем весь день одной сообщением
+                    try:
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=day_text.strip(),
+                            parse_mode="Markdown" # Используем Markdown, но без моноширинного форматирования
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to send update message to user {user_id}: {e}")
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                 db_updates_success.append((next_check_time, new_hash, user_id))
@@ -1007,11 +953,11 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
     city = data.get('city', '')
     street = data.get('street', '')
     address_str = f"`{city}, {street}, {house}`"
-    await message.answer(f"✅ **Перевіряю графік** для адреси: {address_str}\n⏳ Очікуйте...")
+    await message.answer(f"✅ **Перевіряю графік** для адреси: {address_str}\n\n⏳ Очікуйте...")
 
     try:
         api_data = await get_shutdowns_data(city, street, house)
-        current_hash = _get_schedule_hash(api_data)
+        current_hash = _get_schedule_hash_compact(api_data) # ИСПРАВЛЕНО: используем новую функцию
         await db_conn.execute(
             "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash) VALUES (?, ?, ?, ?, ?)",
             (user_id, city, street, house, current_hash)
@@ -1062,7 +1008,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     try:
         city, street, house = parse_address_from_text(text_args)
         api_data = await get_shutdowns_data(city, street, house)
-        current_hash = _get_schedule_hash(api_data)
+        current_hash = _get_schedule_hash_compact(api_data) # ИСПРАВЛЕНО: используем новую функцию
         await db_conn.execute(
             "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash) VALUES (?, ?, ?, ?, ?)",
             (user_id, city, street, house, current_hash)
@@ -1110,10 +1056,11 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         return
 
     address_str = f"`{city}, {street}, {house}`"
-    await message.answer(f"🔄 **Повторюю перевірку** для адреси: {address_str}\n⏳ Очікуйте...")
+    await message.answer(f"🔄 **Повторюю перевірку** для адреси:\n{address_str}\n⏳ Очікуйте...")
+    
     try:
         data = await get_shutdowns_data(city, street, house)
-        current_hash = _get_schedule_hash(data)
+        current_hash = _get_schedule_hash_compact(data) # ИСПРАВЛЕНО: используем новую функцию
         await db_conn.execute(
             "UPDATE user_last_check SET last_hash = ? WHERE user_id = ?", 
             (current_hash, user_id)
