@@ -98,6 +98,25 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     return conn
 
 # --- 2. Вспомогательные функции ---
+
+def parse_time_range(time_str: str) -> tuple:
+    """
+    Парсит строку формата 'HH:MM–HH:MM' и возвращает (start_minutes, end_minutes) с начала дня.
+    """
+    try:
+        start_str, end_str = time_str.split('–')
+        start_h, start_m = map(int, start_str.split(':'))
+        end_h, end_m = map(int, end_str.split(':'))
+        start_min = start_h * 60 + start_m
+        end_min = end_h * 60 + end_m
+        # Обработка перехода через полночь: HH:MM -> HH+24:MM
+        if end_min < start_min:
+             end_min += 24 * 60
+        return start_min, end_min
+    except (ValueError, AttributeError):
+        logger.error(f"Error parsing time range: {time_str}")
+        return 0, 0 # Возвращаем 0,0 как ошибку
+
 def format_minutes_to_hh_m(minutes: int) -> str:
     """Форматирует общее количество минут в HH:MM."""
     h = minutes // 60
@@ -108,57 +127,52 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
     """
     Генерирует компактное текстовое представление расписания для одного дня.
     Возвращает строку в формате:
-    "🔴 14.11.2025: 10,5 год. відключень\n 00:00 - 02:00 (2 год.)\n ..."
+    "🔴 14.11.2025: 10,5 год. відключень 00:00 - 02:00 (2 год.)..."
     """
     outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
     
     # Сценарий: Нет отключений
     if not outage_slots:
         return f"🟢 {date}: Не заплановані\n"
-    
+
     groups = []
     current_group = None
-    total_duration_hours = 0.0
+    total_duration_minutes = 0.0 # Суммируем в минутах для точности
 
     for slot in outage_slots:
         try:
-            time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
-            start_hour = int(time_parts[0])
-            end_hour = int(time_parts[1])
-            if end_hour == 0:
-                end_hour = 24
-            slot_duration = 0.0
-            slot_start_min = 0
-            slot_end_min = 0
+            time_str = slot.get('time', '00:00–00:00')
+            slot_start_min, slot_end_min = parse_time_range(time_str)
+            if slot_start_min == 0 and slot_end_min == 0:
+                 continue # Ошибка парсинга, пропускаем
+
             disconection = slot.get('disconection')
-            
-            if disconection == 'full':
-                slot_duration = end_hour - start_hour
-                slot_start_min = start_hour * 60
-                slot_end_min = end_hour * 60
-            elif disconection == 'half':
-                slot_duration = 0.5 
-                slot_start_min = start_hour * 60 + 30
-                slot_end_min = end_hour * 60
-            
-            total_duration_hours += slot_duration
-            
+            # Для 'full' - весь интервал отключен
+            # Для 'half' - нужно определить, какая половина 30-минутная отключена
+            # Если интервал 30 минут (30), это half. Если 60 минут (60), это full.
+            # Это определяется парсером, но для логики объединения важно время.
+            slot_duration_min = slot_end_min - slot_start_min
+
+            total_duration_minutes += slot_duration_min
+
             # Логика объединения слотов
             if current_group is None:
                 current_group = {
                     "start_min": slot_start_min,
                     "end_min": slot_end_min,
-                    "duration_hours": slot_duration 
+                    "duration_minutes": slot_duration_min 
                 }
-            elif slot_start_min == current_group["end_min"]: 
-                current_group["end_min"] = slot_end_min
-                current_group["duration_hours"] += slot_duration
+            elif slot_start_min <= current_group["end_min"]: # Проверяем пересечение или стыковку
+                # Объединяем: расширяем конец и суммируем длительность
+                current_group["end_min"] = max(current_group["end_min"], slot_end_min)
+                current_group["duration_minutes"] += slot_duration_min
             else:
+                # Слот не пересекается, сохраняем текущую группу и начинаем новую
                 groups.append(current_group)
                 current_group = {
                     "start_min": slot_start_min,
                     "end_min": slot_end_min,
-                    "duration_hours": slot_duration
+                    "duration_minutes": slot_duration_min
                 }
         except Exception as e:
             logger.error(f"Error processing slot {slot}: {e}")
@@ -171,13 +185,15 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
          return f"❌ {date}: Помилка парсингу слотів\n"
     
     # Формируем выходную строку
+    total_duration_hours = total_duration_minutes / 60.0
     total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
     output_parts = [f"🔴 {date}: {total_duration_str} відключень\n"]
     
     for group in groups:
         start_time_final = format_minutes_to_hh_m(group["start_min"])
         end_time_final = format_minutes_to_hh_m(group["end_min"])
-        duration_str = _get_shutdown_duration_str_by_hours(group["duration_hours"])
+        group_duration_hours = group["duration_minutes"] / 60.0
+        duration_str = _get_shutdown_duration_str_by_hours(group_duration_hours)
         # Формат: " 00:00 - 02:00 (2 год.)\n"
         output_parts.append(f" {start_time_final} - {end_time_final} ({duration_str})\n")
     
@@ -235,7 +251,7 @@ def _get_schedule_hash_compact(data: dict) -> str:
         slots = schedule[date]
         # Используем новую функцию для генерации строки для хеширования
         day_text = _process_single_day_schedule_compact(date, slots)
-        # Берём только часть до первого \n, чтобы хеш зависел от общей структуры, а не от деталей форматирования
+        # Берём только часть до первого, чтобы хеш зависел от общей структуры, а не от деталей форматирования
         first_line = day_text.split('\n')[0]
         schedule_parts.append(f"{date}:{first_line}")
 
@@ -336,33 +352,27 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             current_group = None
             for slot in outage_slots:
                 try:
-                    time_parts = re.split(r'\s*[-\bi\–]\s*', slot.get('time', '0-0'))
-                    start_hour_raw = int(time_parts[0])
-                    end_hour_raw = int(time_parts[1])
-                    
-                    if end_hour_raw == 0:
-                        end_hour_raw = 24
-                    
-                    slot_start_min = 0
-                    slot_end_min = 0
-                    disconection = slot.get('disconection')
-                    
-                    if disconection == 'full':
-                        slot_start_min = start_hour_raw * 60
-                        slot_end_min = end_hour_raw * 60
-                    elif disconection == 'half':
-                        # Включение/отключение на полчаса
-                        slot_start_min = start_hour_raw * 60 + (30 if start_hour_raw != end_hour_raw else 0)
-                        slot_end_min = end_hour_raw * 60
-                        
+                    time_str = slot.get('time', '00:00–00:00')
+                    time_parts = time_str.split('–')
+                    if len(time_parts) != 2:
+                        continue
+                    start_h, start_m = map(int, time_parts[0].split(':'))
+                    end_h, end_m = map(int, time_parts[1].split(':'))
+                    slot_start_min = start_h * 60 + start_m
+                    slot_end_min = end_h * 60 + end_m
+                    # Обработка перехода через полночь: HH:MM -> HH+24:MM
+                    if slot_end_min < slot_start_min:
+                         slot_end_min += 24 * 60
+
                     # Сдвиг на 24 часа для второго дня
                     slot_start_min += day_offset_minutes
                     slot_end_min += day_offset_minutes
 
                     if current_group is None:
                         current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
-                    elif slot_start_min == current_group["end_min"]: 
-                        current_group["end_min"] = slot_end_min
+                    elif slot_start_min <= current_group["end_min"]: # Проверяем пересечение или стыковку
+                        # Объединяем: расширяем конец
+                        current_group["end_min"] = max(current_group["end_min"], slot_end_min)
                     else:
                         groups.append(current_group)
                         current_group = {"start_min": slot_start_min, "end_min": slot_end_min}
@@ -379,20 +389,30 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # --- НОВЫЙ НАБОР: Часы, которые нужно показать ---
         # ИЗМЕНЕНИЕ: Логика перенесена ПОСЛЕ формирования total_outage_groups
-        hours_to_display = {0, 24, 48} # Всегда показываем 0, 24, 48
-
+        # hours_to_display = {0, 24, 48} # Всегда показываем 0, 24, 48
+        unique_labels = set()
+        # Добавляем начальные и конечные метки времени всех слотов
         for group in total_outage_groups:
             start_min_48h = group['start_min']
             end_min_48h = group['end_min']
-
-            # Конвертируем минуты в 48-часовом пространстве в часы
-            # Начальный час: округляем ВНИЗ (e.g., 09:30 -> 9)
-            start_hour_48h = math.floor(start_min_48h / 60)
-            # Конечный час: округляем ВВЕРХ (e.g., 16:30 -> 17)
-            end_hour_48h = math.ceil(end_min_48h / 60)
-
-            hours_to_display.add(start_hour_48h)
-            hours_to_display.add(end_hour_48h)
+            # Форматируем как HH:MM
+            start_hour_display = int(start_min_48h / 60) % 24
+            start_min_display = int(start_min_48h % 60)
+            end_hour_display = int(end_min_48h / 60) % 24
+            end_min_display = int(end_min_48h % 60)
+            if start_hour_display == 0 and start_min_48h > 0:
+                start_hour_display = 24
+            if end_hour_display == 0 and end_min_48h > 0:
+                end_hour_display = 24
+            start_label = f"{start_hour_display:02d}:{start_min_display:02d}" if start_min_display != 0 else f"{start_hour_display:02d}"
+            end_label = f"{end_hour_display:02d}:{end_min_display:02d}" if end_min_display != 0 else f"{end_hour_display:02d}"
+            # Добавляем в множество
+            unique_labels.add(start_label)
+            unique_labels.add(end_label)
+        # Также добавим 00:00 (0) и 24:00 (24) для ясности, если нужно
+        # unique_labels.add("00:00") # или "0"
+        # unique_labels.add("24:00") # или "24"
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # 2. Настройка рисования (Pillow)
         # --- Размер, отступы и центр ---
@@ -434,37 +454,31 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             # Рисуем красный сектор ПОВЕРХ зеленого, БЕЗ обводки
             draw.pieslice(bbox, start_angle, end_angle, fill="#ff3300", outline=None)
         
-        # 6. Рисуем черные разделительные линии между секторами
+        # --- ИЗМЕНЕНИЕ: Секции 6 и 7 объединены для
+        # ---            гарантированной отрисовки линий только один раз
+        
+        # 6. Собираем все уникальные разделительные линии
+        lines_to_draw_min = {0, 1440} # Всегда рисуем 0 (слева) и 24 (справа)
+        
         for group in total_outage_groups:
-            start_min = group['start_min']
-            end_min = group['end_min']
+            lines_to_draw_min.add(group['start_min'])
+            lines_to_draw_min.add(group['end_min'])
+
+        # 7. Рисуем все уникальные линии
+        for min_val in lines_to_draw_min:
+            # 2880 минут (48 часов) имеют тот же угол (180), что и 0,
+            # но если слот заканчивается ровно в 2880, мы его все равно добавляем,
+            # и он просто нарисуется поверх линии 0.
+            # (2880 * 0.125) + 180 = 360 + 180 = 540. 540 % 360 = 180.
+            # (0 * 0.125) + 180 = 180.
             
-            # Линия в начале красного сектора
-            start_angle_deg = (start_min * deg_per_minute) + 180
-            start_angle_rad = math.radians(start_angle_deg)
-            x_start = center[0] + radius * math.cos(start_angle_rad)
-            y_start = center[1] + radius * math.sin(start_angle_rad)
-            draw.line([center, (x_start, y_start)], fill="#000000", width=1)
-            
-            # Линия в конце красного сектора
-            end_angle_deg = (end_min * deg_per_minute) + 180
-            end_angle_rad = math.radians(end_angle_deg)
-            x_end = center[0] + radius * math.cos(end_angle_rad)
-            y_end = center[1] + radius * math.sin(end_angle_rad)
-            draw.line([center, (x_end, y_end)], fill="#000000", width=1)
+            angle_deg = (min_val * deg_per_minute) + 180
+            angle_rad = math.radians(angle_deg)
+            x_pos = center[0] + radius * math.cos(angle_rad)
+            y_pos = center[1] + radius * math.sin(angle_rad)
+            draw.line([center, (x_pos, y_pos)], fill="#000000", width=1)
         
-        # 7. Рисуем центральную горизонтальную линию (от 0 до 24)
-        # Линия слева (0 часов) - угол 180°
-        angle_0_rad = math.radians(180)
-        x_0 = center[0] + radius * math.cos(angle_0_rad)
-        y_0 = center[1] + radius * math.sin(angle_0_rad)
-        draw.line([center, (x_0, y_0)], fill="#000000", width=1)
-        
-        # Линия справа (24 часа) - угол 0° (или 360°)
-        angle_24_rad = math.radians(0)
-        x_24 = center[0] + radius * math.cos(angle_24_rad)
-        y_24 = center[1] + radius * math.sin(angle_24_rad)
-        draw.line([center, (x_24, y_24)], fill="#000000", width=1)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ (Секции 6 и 7 заменены) ---
 
         # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
         # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
@@ -507,7 +521,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # Рисуем треугольник (заливка - белая, обводка - черная)
         draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
-
 
         # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
         inner_radius = int(radius * 0.50)
@@ -565,7 +578,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                 temp_draw2.text((50, 50), date2, fill='#000000', font=date_font, anchor="mm")
                 # ИЗМЕНЕНИЕ: Поворот на 180 градусов
                 rotated2 = temp_img2.rotate(180, expand=True) 
-
                 bbox2 = rotated2.getbbox()
                 if bbox2:
                     cropped2 = rotated2.crop(bbox2)
@@ -578,37 +590,50 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # 9. Рисуем ТОЛЬКО граничные метки часов (начало/конец отключений и 0/24)
         label_radius = radius + (padding * 0.4) # Отодвигаем метки наружу
-
-        for h_total in range(49): # До 48 включительно
-            if h_total not in hours_to_display:
-                continue # Пропускаем все, кроме нужных
-
-            # ИЗМЕНЕНИЕ: Специальная обработка для часа 24 (справа)
-            if h_total == 24:
-                text_to_display = "24"
-            else:
-                text_to_display = str(h_total % 24)
-            
+        # --- ИЗМЕНЕНИЕ: Рисуем метки напротив разделительных линий ---
+        # Проходим по каждому слоту и рисуем метки на его границах
+        for group in total_outage_groups:
+            start_min = group['start_min']
+            end_min = group['end_min']
             # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
-            angle_deg = (h_total * deg_per_hour) + 180
-            angle_rad_label = math.radians(angle_deg) 
-            
-            x = center[0] + label_radius * math.cos(angle_rad_label)
-            y = center[1] + label_radius * math.sin(angle_rad_label)
-            
-            label_color = "black" 
-
+            start_angle_deg = (start_min * deg_per_minute) + 180
+            end_angle_deg = (end_min * deg_per_minute) + 180
+            # Рассчитываем координаты для меток
+            start_angle_rad_label = math.radians(start_angle_deg)
+            end_angle_rad_label = math.radians(end_angle_deg)
+            x_start = center[0] + label_radius * math.cos(start_angle_rad_label)
+            y_start = center[1] + label_radius * math.sin(start_angle_rad_label)
+            x_end = center[0] + label_radius * math.cos(end_angle_rad_label)
+            y_end = center[1] + label_radius * math.sin(end_angle_rad_label)
+            # Формируем текст меток
+            start_hour_display = int(start_min / 60) % 24
+            start_min_display = int(start_min % 60)
+            end_hour_display = int(end_min / 60) % 24
+            end_min_display = int(end_min % 60)
+            if start_hour_display == 0 and start_min > 0:
+                start_hour_display = 24
+            if end_hour_display == 0 and end_min > 0:
+                end_hour_display = 24
+            text_to_display_start = f"{start_hour_display:02d}:{start_min_display:02d}" if start_min_display != 0 else f"{start_hour_display:02d}"
+            text_to_display_end = f"{end_hour_display:02d}:{end_min_display:02d}" if end_min_display != 0 else f"{end_hour_display:02d}"
+            label_color = "black"
+            # Рисуем метку в начале слота
             try:
-                # anchor="mm" - центрирует текст
-                draw.text((x, y), text_to_display, fill=label_color, font=font, anchor="mm")
+                draw.text((x_start, y_start), text_to_display_start, fill=label_color, font=font, anchor="mm")
             except Exception:
-                # Резервный вариант, если anchor не поддерживается (старые PIL/Pillow)
-                text_width, text_height = draw.textsize(text_to_display, font=font)
-                draw.text((x - text_width / 2, y - text_height / 2), text_to_display, fill=label_color, font=font)
-        
+                text_width, text_height = draw.textsize(text_to_display_start, font=font)
+                draw.text((x_start - text_width / 2, y_start - text_height / 2), text_to_display_start, fill=label_color, font=font)
+            # Рисуем метку в конце слота
+            try:
+                draw.text((x_end, y_end), text_to_display_end, fill=label_color, font=font, anchor="mm")
+            except Exception:
+                text_width, text_height = draw.textsize(text_to_display_end, font=font)
+                draw.text((x_end - text_width / 2, y_end - text_height / 2), text_to_display_end, fill=label_color, font=font)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         # --- ДОБАВЛЕНО: Рисуем черную обводку для основного кольца ---
         draw.ellipse(bbox, outline="#000000", width=1, fill=None) 
-        
+
         # 10. Сохранение в байты
         buf = io.BytesIO()
         image.save(buf, format='PNG')
@@ -818,7 +843,6 @@ async def subscription_checker_task(bot: Bot):
                     slots = schedule[date]
                     days_slots_48h[date] = slots
 
-
                 # Отправка 48-часового графика
                 if days_slots_48h:
                     image_data = _generate_48h_schedule_image(days_slots_48h)
@@ -884,7 +908,7 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "**Наприклад:**\n"
         "`/check м. Дніпро, вул. Сонячна набережна, 6`\n"
         "**Команди:**\n"
-        "/start або /help - показати цю довідку.\n" 
+        "/start або /help - показати цю довідку.\n"
         "/check - перевірити графік за адресою.\n"
         "/repeat - повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
