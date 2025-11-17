@@ -77,8 +77,11 @@ def parse_short_time_slot(slot_str: str) -> tuple:
     return start_hour, end_hour
 
 def format_time(t: time) -> str:
-    """Форматирует datetime.time в строку HH:MM."""
-    return t.strftime("%H:%M")
+    """Форматирует datetime.time в строку HH:MM, используя 24:00 вместо 00:00 для конца суток."""
+    if t.hour == 0 and t.minute == 0:
+        return "24:00"
+    else:
+        return t.strftime("%H:%M")
 
 def expand_short_slot(slot_str: str, status: str) -> List[Dict[str, str]]:
     """
@@ -86,10 +89,16 @@ def expand_short_slot(slot_str: str, status: str) -> List[Dict[str, str]]:
     """
     try:
         start_hour, end_hour = parse_short_time_slot(slot_str)
-        # Проверяем, что это действительно соседние часы (например, 03-04)
-        if end_hour != (start_hour + 1) % 24:
-            logger.warning(f"Непредвиденный формат слота {slot_str}, ожидается HH-HH+1. Пропускаем.")
+        # --- ИЗМЕНЕНИЕ: Проверка формата ---
+        if end_hour == (start_hour + 1) % 24:
+            pass # Формат корректен
+        elif start_hour == 23 and end_hour == 24:
+            # Специальный случай: 23-24, означает 23:00 - 24:00
+            pass # Формат корректен
+        else:
+            logger.warning(f"Непредвиденный формат слота {slot_str}, ожидается HH-HH+1 или 23-24. Пропускаем.")
             return []
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
     except ValueError as e:
         logger.error(f"Ошибка парсинга сокращённого слота {slot_str}: {e}")
         return []
@@ -133,13 +142,36 @@ def merge_slots(slot_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Объединяет идущие подряд слоты отключений (full, half) в один сплошной промежуток.
     Возвращает новый список объединенных слотов.
+    Учитывает переход через полночь: 23:30-24:00 идет после 23:00-23:30.
     """
     if not slot_list:
         return []
 
+    # --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
+    def time_to_minutes(t: time) -> int:
+        """Преобразует time в количество минут от начала условных 48 часов (00:00 второго дня = 24*60)."""
+        # Это позволяет корректно сравнивать 23:30 и 00:00 (24:00) как 23*60+30 и 24*60
+        # Это НЕ изменяет исходные объекты time, а только для сравнения внутри merge_slots.
+        if t.hour == 0 and t.minute == 0:
+            return 24 * 60 # 24:00
+        else:
+            return t.hour * 60 + t.minute
+    # --- КОНЕЦ ВСПОМОГАТЕЛЬНОЙ ФУНКЦИИ ---
+
     try:
-        # Сортируем слоты по времени начала, чтобы они шли по порядку
+        # Сортируем слоты по времени начала, используя минуты
         sorted_slots = sorted(slot_list, key=lambda x: parse_time_slot(x['time'])[0])
+        # Но для сортировки нужно вызвать parse_time_slot, которая конвертирует 24:00 в 00:00
+        # Это всё равно будет работать корректно, потому что 00:00 в начале дня идёт после 23:XX.
+        # НО если есть слот, заканчивающийся на 00:00 (24:00), и следующий начинается на 00:30,
+        # то сортировка может быть неправильной.
+        # Лучше сортировать с учётом "виртуальных" минут.
+        def sort_key(x):
+            start_t, _ = parse_time_slot(x['time'])
+            return time_to_minutes(start_t)
+
+        sorted_slots = sorted(slot_list, key=sort_key)
+
     except (ValueError, IndexError) as e:
         logger.error(f"Ошибка сортировки слотов: {e}. Слоты: {slot_list}")
         # Если не удалось отсортировать, возвращаем исходный список
@@ -148,12 +180,11 @@ def merge_slots(slot_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
     merged = []
     try:
         current_start_time, current_end_time = parse_time_slot(sorted_slots[0]['time'])
+        current_status = sorted_slots[0]['disconection']
     except (ValueError, IndexError) as e:
         logger.error(f"Ошибка парсинга первого слота: {e}. Слот: {sorted_slots[0]}")
         # Если не удалось распарсить первый слот, возвращаем исходный список
         return slot_list
-
-    current_status = sorted_slots[0]['disconection']
 
     for slot in sorted_slots[1:]:
         try:
@@ -170,12 +201,16 @@ def merge_slots(slot_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
         is_slot_discon = slot_status in ['full', 'half']
 
         if is_current_discon and is_slot_discon:
+            # --- ИЗМЕНЕНИЕ: Используем вспомогательную функцию для сравнения ---
             # Если статусы совпадают и слоты идут подряд (или пересекаются), объединяем
-            if slot_start_time <= current_end_time:
+            current_end_min = time_to_minutes(current_end_time)
+            slot_start_min = time_to_minutes(slot_start_time)
+
+            if slot_start_min <= current_end_min:
                 # Слот пересекается или идет сразу за текущим, объединяем
-                # Выбираем максимальное время окончания
-                current_end_time = max(current_end_time, slot_end_time)
-            elif slot_start_time > current_end_time:
+                # Выбираем максимальное время окончания (тоже по виртуальным минутам)
+                current_end_time = max(current_end_time, slot_end_time, key=time_to_minutes)
+            elif slot_start_min > current_end_min:
                 # Слот идет позже, текущий блок закончен
                 merged.append({
                     "time": f"{format_time(current_start_time)}–{format_time(current_end_time)}",
@@ -210,14 +245,25 @@ def merge_slots(slot_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
 def parse_time_slot(slot_str: str) -> tuple:
     """
     Парсит строку формата 'HH:MM–HH:MM' и возвращает (start_time, end_time) как datetime.time.
+    Поддерживает '24:00' как синоним '00:00' следующего дня для целей сортировки.
     """
     times = slot_str.split('–')
     if len(times) != 2:
         raise ValueError(f"Неверный формат временного слота: {slot_str}")
     start_str, end_str = times
+
+    # Вспомогательная функция для парсинга времени с поддержкой 24:00
+    def _parse_time_with_24(time_str):
+        time_str = time_str.strip()
+        if time_str == "24:00":
+            # Возвращаем 00:00, но помечаем, что это на самом деле 24:00 (для сортировки это не важно, так как 00:00 < 01:00)
+            return time(hour=0, minute=0)
+        else:
+            return datetime.strptime(time_str, "%H:%M").time()
+
     try:
-        start_time = datetime.strptime(start_str.strip(), "%H:%M").time()
-        end_time = datetime.strptime(end_str.strip(), "%H:%M").time()
+        start_time = _parse_time_with_24(start_str)
+        end_time = _parse_time_with_24(end_str)
     except ValueError as e:
         raise ValueError(f"Неверный формат времени в слоте {slot_str}: {e}")
     return start_time, end_time
@@ -402,9 +448,16 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                         # Для full, интервал HH-HH означает оба 30-мин интервала
                         try:
                             start_hour, end_hour = parse_short_time_slot(short_time_slot)
-                            if end_hour != (start_hour + 1) % 24:
-                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1. Пропускаем ячейку.")
+                            # --- ИЗМЕНЕНИЕ: Проверка формата ---
+                            if end_hour == (start_hour + 1) % 24:
+                                pass # Формат корректен
+                            elif start_hour == 23 and end_hour == 24:
+                                # Специальный случай: 23-24, означает 23:00 - 24:00
+                                pass # Формат корректен
+                            else:
+                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1 или 23-24. Пропускаем ячейку.")
                                 continue
+                            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         except ValueError as e:
                             logger.error(f"Ошибка парсинга сокращённого слота {short_time_slot} для full: {e}")
                             continue
@@ -421,9 +474,16 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                         # Для first-half, отключение в HH:00-HH:30
                         try:
                             start_hour, end_hour = parse_short_time_slot(short_time_slot)
-                            if end_hour != (start_hour + 1) % 24:
-                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1. Пропускаем ячейку.")
+                            # --- ИЗМЕНЕНИЕ: Проверка формата ---
+                            if end_hour == (start_hour + 1) % 24:
+                                pass # Формат корректен
+                            elif start_hour == 23 and end_hour == 24:
+                                # Специальный случай: 23-24, означает 23:00 - 24:00
+                                pass # Формат корректен
+                            else:
+                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1 или 23-24. Пропускаем ячейку.")
                                 continue
+                            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         except ValueError as e:
                             logger.error(f"Ошибка парсинга сокращённого слота {short_time_slot} для first-half: {e}")
                             continue
@@ -435,14 +495,23 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                         # Для second-half, отключение в HH:30-HH+1:00
                         try:
                             start_hour, end_hour = parse_short_time_slot(short_time_slot)
-                            if end_hour != (start_hour + 1) % 24:
-                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1. Пропускаем ячейку.")
+                            # --- ИЗМЕНЕНИЕ: Проверка формата ---
+                            if end_hour == (start_hour + 1) % 24:
+                                pass # Формат корректен
+                            elif start_hour == 23 and end_hour == 24:
+                                # Специальный случай: 23-24, означает 23:00 - 24:00
+                                pass # Формат корректен
+                            else:
+                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1 или 23-24. Пропускаем ячейку.")
                                 continue
+                            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         except ValueError as e:
                             logger.error(f"Ошибка парсинга сокращённого слота {short_time_slot} для second-half: {e}")
                             continue
                         start_time = time(hour=start_hour, minute=30)
-                        end_time_hour = (start_hour + 1) % 24
+                        # --- ИЗМЕНЕНИЕ: Для слота 23-24 end_time_hour должен быть 0 ---
+                        end_time_hour = (start_hour + 1) % 24 # Для 23 это даст 0
+                        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         end_time = time(hour=end_time_hour, minute=0)
                         slots.append({"time": f"{format_time(start_time)}–{format_time(end_time)}", "disconection": "half"})
                     else:
@@ -450,9 +519,16 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                         # Формируем временной слот для "false" аналогично
                         try:
                             start_hour, end_hour = parse_short_time_slot(short_time_slot)
-                            if end_hour != (start_hour + 1) % 24:
-                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1. Пропускаем ячейку.")
+                            # --- ИЗМЕНЕНИЕ: Проверка формата ---
+                            if end_hour == (start_hour + 1) % 24:
+                                pass # Формат корректен
+                            elif start_hour == 23 and end_hour == 24:
+                                # Специальный случай: 23-24, означает 23:00 - 24:00
+                                pass # Формат корректен
+                            else:
+                                logger.warning(f"Непредвиденный формат слота {short_time_slot}, ожидается HH-HH+1 или 23-24. Пропускаем ячейку.")
                                 continue
+                            # --- КОНЕЦ ИЗМЕНЕНИЯ ---
                         except ValueError as e:
                             logger.error(f"Ошибка парсинга сокращённого слота {short_time_slot} для false: {e}")
                             continue
