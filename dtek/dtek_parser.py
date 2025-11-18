@@ -8,14 +8,12 @@ from pathlib import Path
 import logging
 from logging import DEBUG, INFO, WARNING, ERROR
 from typing import List, Dict, Any
-# ДОБАВЛЕНО: Для работы с часовыми поясами
-from datetime import datetime
+from datetime import datetime, timedelta, time
 import pytz
-# ДОБАВЛЕНО: Для объединения слотов
-from datetime import timedelta, time
 from PIL import Image
 import io
-
+import time as time_module  # ← алиас для модуля
+import uuid
 
 # --- 1. Конфигурация Логирования ---
 LOGGING_LEVEL = INFO
@@ -50,10 +48,6 @@ DEFAULT_HOUSE = "6"
 # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (1/3): Добавляем директорию OUT_DIR ===
 OUT_DIR = "out"
 # =================================================================
-
-OUTPUT_FILENAME = "discon-fact.json"
-SCREENSHOT_FILENAME = "discon-fact.png"
-# ------------------------------------
 
 # Вспомогательная функция (оставлена для возможности будущих правок)
 def _clean_address_part(part: str, prefixes: list[str]) -> str:
@@ -271,6 +265,32 @@ def parse_time_slot(slot_str: str) -> tuple:
         raise ValueError(f"Неверный формат времени в слоте {slot_str}: {e}")
     return start_time, end_time
 
+def cleanup_old_files(directory: Path, max_age_hours: int = 1):
+    """
+    Удаляет файлы старше max_age_hours часов из директории.
+    
+    Args:
+        directory: Путь к директории
+        max_age_hours: Максимальный возраст файлов в часах
+    """
+    try:
+        current_time = time_module.time()
+        max_age_seconds = max_age_hours * 3600
+        
+        deleted_count = 0
+        for item in directory.iterdir():
+            if item.is_file() and item.suffix in ['.json', '.png']:
+                file_age = current_time - item.stat().st_mtime
+                if file_age > max_age_seconds:
+                    item.unlink()
+                    deleted_count += 1
+                    logger.debug(f"Удален старый файл: {item.name}")
+        
+        if deleted_count > 0:
+            logger.info(f"Очищено старых файлов: {deleted_count}")
+    except Exception as e:
+        logger.warning(f"Ошибка при очистке старых файлов: {e}")
+
 async def create_combined_screenshot(page, output_path, spacing: int = 20):
     """
     Создает объединенный скриншот обеих таблиц отключений (сегодня и завтра).
@@ -331,8 +351,6 @@ async def create_combined_screenshot(page, output_path, spacing: int = 20):
         except Exception as fallback_error:
             logger.error(f"❌ Не удалось создать даже резервный скриншот: {fallback_error}")
 
-# --------------------------------------------------------------------------
-
 async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False, skip_input_on_debug: bool = False) -> Dict[str, Any]:
     """
     Основная логика парсинга.
@@ -348,25 +366,29 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
         {"selector": "input#house_num", "value": house, "autocomplete": "div#house_numautocomplete-list"},
     ]
 
-    # === МИНИМАЛЬНОЕ ИЗМЕНЕНИЕ (2/3): Изменяем пути к файлам ===
-    # 2a. Создаем директорию 'out', если она не существует
+    # === Создание уникальных имен файлов ===
     out_path = Path(OUT_DIR)
     out_path.mkdir(exist_ok=True)
-
-    # УДАЛЯЕМ все содержимое директории 'out' при каждом запуске
-    for item in out_path.iterdir():
-        try:
-            if item.is_file():
-                item.unlink()  # Удаляем файл
-            elif item.is_dir():
-                item.rmdir()  # Удаляем пустую директорию (или используйте shutil.rmtree(item) для рекурсивного удаления)
-        except OSError as e:
-            logger.warning(f"Не удалось удалить {item}: {e}")
-
-    # 2b. Определяем пути внутри OUT_DIR
-    json_path = out_path / OUTPUT_FILENAME
-    png_path = out_path / SCREENSHOT_FILENAME
-    # ==========================================================
+    
+    # Очищаем файлы старше 24 часов
+    cleanup_old_files(out_path, max_age_hours=24)
+    
+    # Генерируем уникальный идентификатор для этой сессии
+    session_id = uuid.uuid4().hex[:8]  # Первые 8 символов UUID
+    
+    # Генерируем timestamp в формате yyyymmdd-hhmmss
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    
+    # Создаем уникальные имена файлов: dtek-disconnections-yyyymmdd-hhmmss-sessionid
+    json_filename = f"dtek-disconnections-{timestamp}-{session_id}.json"
+    png_filename = f"dtek-disconnections-{timestamp}-{session_id}.png"
+    
+    json_path = out_path / json_filename
+    png_path = out_path / png_filename
+    
+    logger.info(f"Session ID: {session_id}")
+    logger.info(f"Файлы: {json_filename}, {png_filename}")
+    # ==========================================
 
     logger.info(f"--- 1. Запуск Playwright для адреса: {city}, {street}, {house} ---")
 
@@ -441,7 +463,6 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                 except TimeoutError as e:
                     raise TimeoutError(f"Ошибка активации следующего шага или загрузки результатов. Проверьте правильность введенного адреса.") from e
 
-
             # --- 4. Извлечение общей информации и скриншот ---
 
             city_final = await page.locator("#discon_form input#city").input_value()
@@ -452,11 +473,6 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
             await page.wait_for_selector(group_selector, state="visible", timeout=5000)
             group_text = await page.locator(group_selector).inner_text()
             group_final = group_text.replace("Черга", "").strip()
-
-            if is_debug:
-                screenshot_selector = "div.discon-fact.active"
-                await page.locator(screenshot_selector).screenshot(path=png_path)
-                logger.info(f"Скриншот сохранен: {png_path}")
 
             # 📌 Инициализируем агрегированный словарь
             aggregated_result = {
@@ -628,8 +644,12 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
                  if not skip_input_on_debug:
                      input("Нажмите Enter, чтобы закрыть браузер...")
 
-            # 📌 Возвращаем ЕДИНЫЙ агрегированный словарь
-            return aggregated_result
+            # 📌 Возвращаем данные вместе с путями к файлам
+            return {
+                "data": aggregated_result,
+                "json_path": json_path,
+                "png_path": png_path
+            }
 
         except Exception as e:
             logger.error(f"Произошла ошибка в Playwright: {type(e).__name__}: {e}")
@@ -693,7 +713,7 @@ async def cli_entry_point():
 
     final_data = None
     try:
-        final_data = await run_parser_service(
+        result = await run_parser_service(
             city=args.city,
             street=args.street,
             house=args.house,
@@ -705,11 +725,11 @@ async def cli_entry_point():
         exit(1)
 
 
-    if final_data and args.debug:
+    if result and args.debug:
+        final_data = result["data"]
+        json_path = result["json_path"]
+        
         json_output = json.dumps(final_data, indent=4, ensure_ascii=False)
-
-        # 📌 Используем новый путь
-        json_path = Path(OUT_DIR) / OUTPUT_FILENAME
 
         # Создаем директорию перед сохранением на всякий случай, если run_parser_service не был вызван
         Path(OUT_DIR).mkdir(exist_ok=True)
