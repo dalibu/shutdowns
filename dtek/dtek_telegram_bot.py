@@ -129,11 +129,11 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
     Возвращает строку в формате:
     "🔴 14.11.2025: 10,5 год. відключень 00:00 - 02:00 (2 год.)..."
     """
-    outage_slots = [s for s in slots if s.get('disconection') in ('full', 'half')]
-    
+    outage_slots = slots
+
     # Сценарий: Нет отключений
     if not outage_slots:
-        return f"🟢 {date}: Не заплановані\n"
+        return f"🟢 {date}: Не заплановані"
 
     groups = []
     current_group = None
@@ -141,16 +141,12 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
 
     for slot in outage_slots:
         try:
-            time_str = slot.get('time', '00:00–00:00')
+            # --- ИЗМЕНЕНИЕ: Читаем ключ 'shutdown' вместо 'time' ---
+            time_str = slot.get('shutdown', '00:00–00:00')
             slot_start_min, slot_end_min = parse_time_range(time_str)
             if slot_start_min == 0 and slot_end_min == 0:
                  continue # Ошибка парсинга, пропускаем
-
-            disconection = slot.get('disconection')
-            # Для 'full' - весь интервал отключен
-            # Для 'half' - нужно определить, какая половина 30-минутная отключена
-            # Если интервал 30 минут (30), это half. Если 60 минут (60), это full.
-            # Это определяется парсером, но для логики объединения важно время.
+            # Учитываем длительность слота для подсчёта итога
             slot_duration_min = slot_end_min - slot_start_min
 
             total_duration_minutes += slot_duration_min
@@ -182,7 +178,7 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
         groups.append(current_group)
 
     if not groups:
-         return f"❌ {date}: Помилка парсингу слотів\n"
+         return f"❌ {date}: Помилка парсингу слотів"
     
     # Формируем выходную строку
     total_duration_hours = total_duration_minutes / 60.0
@@ -194,9 +190,10 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
         end_time_final = format_minutes_to_hh_m(group["end_min"])
         group_duration_hours = group["duration_minutes"] / 60.0
         duration_str = _get_shutdown_duration_str_by_hours(group_duration_hours)
-        # Формат: " 00:00 - 02:00 (2 год.)\n"
+        
+        # Формат: " 00:00 - 02:00 (2 год.)"
         output_parts.append(f" {start_time_final} - {end_time_final} ({duration_str})\n")
-    
+
     return "".join(output_parts)
 
 def parse_address_from_text(text: str) -> tuple[str, str, str]:
@@ -346,13 +343,14 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             day_slots = days_slots[date]
             day_offset_minutes = idx * minutes_in_day # 0 для первого дня, 1440 для второго
             
-            outage_slots = [s for s in day_slots if s.get('disconection') in ('full', 'half')]
+            outage_slots = day_slots
             
             groups = []
             current_group = None
             for slot in outage_slots:
                 try:
-                    time_str = slot.get('time', '00:00–00:00')
+                    # --- ИЗМЕНЕНИЕ: Читаем ключ 'shutdown' вместо 'time' ---
+                    time_str = slot.get('shutdown', '00:00–00:00')
                     time_parts = time_str.split('–')
                     if len(time_parts) != 2:
                         continue
@@ -388,8 +386,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             return None # Нет отключений - нет картинки
 
         # --- НОВЫЙ НАБОР: Часы, которые нужно показать ---
-        # ИЗМЕНЕНИЕ: Логика перенесена ПОСЛЕ формирования total_outage_groups
-        # hours_to_display = {0, 24, 48} # Всегда показываем 0, 24, 48
         unique_labels = set()
         # Добавляем начальные и конечные метки времени всех слотов
         for group in total_outage_groups:
@@ -409,11 +405,7 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             # Добавляем в множество
             unique_labels.add(start_label)
             unique_labels.add(end_label)
-        # Также добавим 00:00 (0) и 24:00 (24) для ясности, если нужно
-        # unique_labels.add("00:00") # или "0"
-        # unique_labels.add("24:00") # или "24"
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
+        
         # 2. Настройка рисования (Pillow)
         # --- Размер, отступы и центр ---
         size = 300
@@ -454,9 +446,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             # Рисуем красный сектор ПОВЕРХ зеленого, БЕЗ обводки
             draw.pieslice(bbox, start_angle, end_angle, fill="#ff3300", outline=None)
         
-        # --- ИЗМЕНЕНИЕ: Секции 6 и 7 объединены для
-        # ---            гарантированной отрисовки линий только один раз
-        
         # 6. Собираем все уникальные разделительные линии
         lines_to_draw_min = {0, 1440} # Всегда рисуем 0 (слева) и 24 (справа)
         
@@ -466,63 +455,42 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
 
         # 7. Рисуем все уникальные линии
         for min_val in lines_to_draw_min:
-            # 2880 минут (48 часов) имеют тот же угол (180), что и 0,
-            # но если слот заканчивается ровно в 2880, мы его все равно добавляем,
-            # и он просто нарисуется поверх линии 0.
-            # (2880 * 0.125) + 180 = 360 + 180 = 540. 540 % 360 = 180.
-            # (0 * 0.125) + 180 = 180.
-            
             angle_deg = (min_val * deg_per_minute) + 180
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
             draw.line([center, (x_pos, y_pos)], fill="#000000", width=1)
         
-        # --- КОНЕЦ ИЗМЕНЕНИЯ (Секции 6 и 7 заменены) ---
-
-        # --- 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ СНАРУЖИ ВНУТРЕННЕГО КРУГА ---
-        # ПЕРЕМЕЩЕНО СЮДА: ПОСЛЕ внутреннего круга, НО ПЕРЕД общей обводкой.
-        # 8.1. Получаем текущее время Киева
+        # 8. НОВАЯ СТРЕЛКА: БЕЛАЯ СТРЕЛКА С ЧЕРНЫМ КОНТУРОМ
         kiev_tz = pytz.timezone('Europe/Kiev')
         now = datetime.now(kiev_tz)
         current_minutes = now.hour * 60 + now.minute
 
-        # 8.2. Рассчитываем угол для текущего времени (в 48-часовом пространстве)
-        # ИЗМЕНЕНИЕ: Смещение на 180 градусов (поворот на 90 CCW)
+        # 8.2. Рассчитываем угол для текущего времени
         angle_deg = (current_minutes * deg_per_minute) + 180
         angle_rad = math.radians(angle_deg)
 
         # 8.3. Рисуем белый треугольник СНАРУЖИ внутреннего круга с черным контуром
-        # Определяем радиус внутреннего круга (его внешнего края)
-        inner_r = radius * 0.50  # Радиус центра обводки
-
-        # Позиция центра основания треугольника — на внешней обводке внутреннего круга
-        base_center_r = inner_r  # Основание лежит ТОЧНО на обводке
-
-        # ПАРАМЕТРЫ ТРЕУГОЛЬНИКА (увеличенные в 1.5 раза по сравнению с предыдущими: 10*1.5=15, 15*1.5=22.5)
-        base_width = 15   # Ширина основания
-        height = 22.5     # Высота (направлена НАРУЖУ)
-
-        # Угол отклонения для краёв основания
+        inner_r = radius * 0.50
+        base_center_r = inner_r
+        base_width = 15
+        height = 22.5
         delta_angle = base_width / (2 * base_center_r) if base_center_r != 0 else 0
         angle1_rad = angle_rad - delta_angle
         angle2_rad = angle_rad + delta_angle
 
-        # Точки основания (лежат на окружности радиусом base_center_r)
         base_p1_x = center[0] + base_center_r * math.cos(angle1_rad)
         base_p1_y = center[1] + base_center_r * math.sin(angle1_rad)
         base_p2_x = center[0] + base_center_r * math.cos(angle2_rad)
         base_p2_y = center[1] + base_center_r * math.sin(angle2_rad)
 
-        # Вершина треугольника — НАРУЖУ от центра
         tip_r = base_center_r + height
         tip_x = center[0] + tip_r * math.cos(angle_rad)
         tip_y = center[1] + tip_r * math.sin(angle_rad)
 
-        # Рисуем треугольник (заливка - белая, обводка - черная)
         draw.polygon([(base_p1_x, base_p1_y), (base_p2_x, base_p2_y), (tip_x, tip_y)], fill="#FFFFFF", outline="#000000", width=1)
 
-        # 8.3. Рисуємо білий круг в центрі (50% від радіусу)
+        # 8.3. Рисуємо білий круг в центрі
         inner_radius = int(radius * 0.50)
         inner_bbox = [
             center[0] - inner_radius,
@@ -530,10 +498,9 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             center[0] + inner_radius,
             center[1] + inner_radius
         ]
-        # Центральный круг остается БЕЛЫМ
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline='#000000', width=1)
         
-        # 8.4. Рисуємо ГОРИЗОНТАЛЬНУ чорну лінію посередині білого круга
+        # 8.4. Рисуємо ГОРИЗОНТАЛЬНУ чорну лінію
         draw.line(
             [(center[0] - inner_radius, center[1]), (center[0] + inner_radius, center[1])],
             fill='#000000',
@@ -542,18 +509,13 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         
         # 8.5. Додаємо дати у центральний круг
         try:
-            # Отримуємо дати з days_slots (перші 2 дні)
             dates_list = list(days_slots.keys())[:2]
-            
-            # Використовуємо той самий шрифт, що і для міток годин
             date_font = font
             
             if len(dates_list) >= 1:
-                # Перша дата (СЕГОДНЯ) - ВЕРХНЯЯ половина
                 date1 = dates_list[0]
-                # Позиція для першої дати (вверху, близко к центру)
                 date1_x = center[0]
-                date1_y = center[1] - inner_radius // 4 # Ближе к центру
+                date1_y = center[1] - inner_radius // 4
                 
                 temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
@@ -568,15 +530,13 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                     image.paste(cropped1, (paste_x1, paste_y1), cropped1)
             
             if len(dates_list) >= 2:
-                # Друга дата (ЗАВТРА) - НИЖНЯЯ половина
                 date2 = dates_list[1]
                 date2_x = center[0]
-                date2_y = center[1] + inner_radius // 4 # Ближе к центру
+                date2_y = center[1] + inner_radius // 4
                 
                 temp_img2 = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
                 temp_draw2 = ImageDraw.Draw(temp_img2)
                 temp_draw2.text((50, 50), date2, fill='#000000', font=date_font, anchor="mm")
-                # ИЗМЕНЕНИЕ: Поворот на 180 градусов
                 rotated2 = temp_img2.rotate(180, expand=True) 
                 bbox2 = rotated2.getbbox()
                 if bbox2:
@@ -589,18 +549,16 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             logger.error(f"Failed to add dates to center circle: {e}")
 
         # --- ИЗМЕНЕНИЕ: Рисуем ТОЛЬКО метки, которые есть в JSON-ответе ---
-        # Собираем все уникальные временные метки из слотов
-        label_radius = radius + (padding * 0.4) # Відодвигаємо мітки назовні
-        
-        # Створюємо словник для зберігання міток з їх позиціями в минутах (48-годинний простір)
+        label_radius = radius + (padding * 0.4)
         labels_dict = {}
         
-        for idx, date in enumerate(sorted_dates[:2]):  # Ðільки перші 2 дні
+        for idx, date in enumerate(sorted_dates[:2]):
             slots = days_slots.get(date, [])
-            day_offset_minutes = idx * 1440  # 0 для першого дня, 1440 для другого
+            day_offset_minutes = idx * 1440
             
             for slot in slots:
-                time_str = slot.get('time', '00:00–00:00')
+                # --- ИЗМЕНЕНИЕ: Читаем ключ 'shutdown' вместо 'time' ---
+                time_str = slot.get('shutdown', '00:00–00:00')
                 times = time_str.split('–')
                 if len(times) != 2:
                     continue
@@ -609,26 +567,19 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                 end_time = times[1].strip()
                 
                 try:
-                    # Парсим початкову мітку
                     h_start, m_start = map(int, start_time.split(':'))
                     min_start = h_start * 60 + m_start
-                    # Додаємо зсув для другого дня
                     min_start_48h = min_start + day_offset_minutes
                     
-                    # Ðе додаємо мітки, що співпадають з 0 або 1440 (вони будуть додані вручну)
                     if min_start_48h not in [0, 1440]:
                         labels_dict[min_start_48h] = start_time
                     
-                    # Парсим кінцеву мітку
                     h_end, m_end = map(int, end_time.split(':'))
                     min_end = h_end * 60 + m_end
-                    # Обробка переходу через полночь
                     if min_end < min_start:
                         min_end += 1440
-                    # Додаємо зсув для другого дня
                     min_end_48h = min_end + day_offset_minutes
                     
-                    # Ðе додаємо мітки, що співпадають з 0, 1440 або 2880 (кінець 48 год)
                     if min_end_48h not in [0, 1440, 2880]:
                         labels_dict[min_end_48h] = end_time
                     
@@ -636,21 +587,18 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
                     logger.error(f"Error parsing time label '{time_str}': {e}")
                     continue
         
-        # Явно додамо 00:00 зліва (0 хвилин) і 24:00 справа (1440 хвилин)
         labels_dict[0] = "00:00"
         labels_dict[1440] = "24:00"
         
         # Рисуємо всі мітки
         for min_val, time_label in labels_dict.items():
             try:
-                # ЗМIÐЕÐÐ: Сміщення на 180 градусів (поворот на 90 CCW)
                 angle_deg = (min_val * deg_per_minute) + 180
                 angle_rad_label = math.radians(angle_deg)
                 x_pos = center[0] + label_radius * math.cos(angle_rad_label)
                 y_pos = center[1] + label_radius * math.sin(angle_rad_label)
 
                 label_color = "black"
-                # Рисуємо мітку
                 try:
                     draw.text((x_pos, y_pos), time_label, fill=label_color, font=font, anchor="mm")
                 except Exception:
@@ -659,7 +607,6 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
             except Exception as e:
                 logger.error(f"Error drawing label '{time_label}': {e}")
                 continue
-        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
         # --- ДОБАВЛЕНО: Рисуем черную обводку для основного кольца ---
         draw.ellipse(bbox, outline="#000000", width=1, fill=None) 
