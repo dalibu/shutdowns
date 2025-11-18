@@ -40,10 +40,7 @@ coverage.xml
 ms-playwright/
 
 # Local output files produced by the scripts
-discon-fact.json
-*.png
-full_debug.png
-discon-fact_*.png
+out/
 
 # Logs
 *.log
