@@ -129,22 +129,34 @@ class TestHelperFunctions:
         assert format_minutes_to_hh_m(180) == "03:00"
         assert format_minutes_to_hh_m(300) == "05:00"
     
-    def test_pluralize_special_cases(self):
-        """Особые случаи плюрализации"""
-        from dtek_telegram_bot import _pluralize_hours
+    def test_get_hours_str(self):
+        """Тест функции _get_hours_str (упрощенной версии)"""
+        from dtek_telegram_bot import _get_hours_str
         
-        # Числа на -11, -12, -13, -14
-        assert _pluralize_hours(11.0) == "годин"
-        assert _pluralize_hours(111.0) == "годин"
-        assert _pluralize_hours(211.0) == "годин"
+        # Функция всегда возвращает "год."
+        assert _get_hours_str(0.5) == "год."
+        assert _get_hours_str(1.0) == "год."
+        assert _get_hours_str(5.0) == "год."
+        assert _get_hours_str(100.0) == "год."
+    
+    def test_shutdown_duration_str(self):
+        """Тест форматирования длительности отключений"""
+        from dtek_telegram_bot import _get_shutdown_duration_str_by_hours
         
-        # Большие числа
-        assert _pluralize_hours(21.0) == "годину"
-        assert _pluralize_hours(101.0) == "годину"
+        # Целые часы
+        assert _get_shutdown_duration_str_by_hours(1.0) == "1 год."
+        assert _get_shutdown_duration_str_by_hours(2.0) == "2 год."
         
-        # Дробные
-        assert _pluralize_hours(0.1) == "години"
-        assert _pluralize_hours(100.5) == "години"
+        # Дробные часы
+        result = _get_shutdown_duration_str_by_hours(0.5)
+        assert "0,5" in result and "год." in result
+        
+        result = _get_shutdown_duration_str_by_hours(2.5)
+        assert "2,5" in result and "год." in result
+        
+        # Ноль и отрицательные
+        assert _get_shutdown_duration_str_by_hours(0) == "0 год."
+        assert _get_shutdown_duration_str_by_hours(-1) == "0 год."
 
 
 @pytest.mark.integration
@@ -172,12 +184,13 @@ class TestDataValidation:
     
     def test_schedule_hash_consistency(self):
         """Хеш расписания должен быть консистентным"""
-        from dtek_telegram_bot import _get_schedule_hash
+        from dtek_telegram_bot import _get_schedule_hash_compact
         
+        # Новый формат с shutdown
         schedule1 = {
             "schedule": {
                 "12.11.24": [
-                    {"time": "10-11", "disconection": "full"}
+                    {"shutdown": "10:00–11:00"}
                 ]
             }
         }
@@ -185,60 +198,104 @@ class TestDataValidation:
         schedule2 = {
             "schedule": {
                 "12.11.24": [
-                    {"time": "10-11", "disconection": "full"}
+                    {"shutdown": "10:00–11:00"}
                 ]
             }
         }
         
-        hash1 = _get_schedule_hash(schedule1)
-        hash2 = _get_schedule_hash(schedule2)
+        hash1 = _get_schedule_hash_compact(schedule1)
+        hash2 = _get_schedule_hash_compact(schedule2)
         
         assert hash1 == hash2
         assert len(hash1) == 64  # SHA256 hash length
     
+    def test_schedule_hash_different_for_different_data(self):
+        """Разные расписания дают разные хеши"""
+        from dtek_telegram_bot import _get_schedule_hash_compact
+        
+        schedule1 = {
+            "schedule": {
+                "12.11.24": [
+                    {"shutdown": "10:00–11:00"}
+                ]
+            }
+        }
+        
+        schedule2 = {
+            "schedule": {
+                "12.11.24": [
+                    {"shutdown": "14:00–15:00"}  # Другое время
+                ]
+            }
+        }
+        
+        hash1 = _get_schedule_hash_compact(schedule1)
+        hash2 = _get_schedule_hash_compact(schedule2)
+        
+        assert hash1 != hash2
+    
+    def test_schedule_hash_different_slots_same_duration(self):
+        """Разные слоты с одинаковой суммарной длительностью должны давать разные хеши."""
+        from dtek_telegram_bot import _get_schedule_hash_compact
+        
+        # 3 часа отключений, двумя слотами
+        schedule_A = {
+            "schedule": {
+                "13.11.24": [
+                    {"shutdown": "08:00–09:00"}, # 1 hour
+                    {"shutdown": "14:00–16:00"}  # 2 hours
+                ]
+            }
+        }
+        
+        # 3 часа отключений, другими двумя слотами
+        schedule_B = {
+            "schedule": {
+                "13.11.24": [
+                    {"shutdown": "00:00–02:00"}, # 2 hours
+                    {"shutdown": "20:00–21:00"}  # 1 hour
+                ]
+            }
+        }
+        
+        hash_A = _get_schedule_hash_compact(schedule_A)
+        hash_B = _get_schedule_hash_compact(schedule_B)
+        
+        # Благодаря исправлению, эти хеши должны быть разными
+        assert hash_A != hash_B
+
     def test_empty_schedule_handling(self):
         """Обработка пустого расписания"""
         from dtek_telegram_bot import (
-            _get_schedule_hash,
-            format_shutdown_message,
-            _process_single_day_schedule
+            _get_schedule_hash_compact,
+            _process_single_day_schedule_compact
         )
         
         # Пустой словарь
-        assert _get_schedule_hash({"schedule": {}}) == "NO_SCHEDULE_FOUND"
+        assert _get_schedule_hash_compact({"schedule": {}}) == "NO_SCHEDULE_FOUND"
         
         # Пустой список слотов
-        result = _process_single_day_schedule("12.11.24", [])
+        result = _process_single_day_schedule_compact("12.11.24", [])
         assert "не заплановані" in result.lower()
+    
+    def test_parse_time_range(self):
+        """Тест парсинга временного диапазона"""
+        from dtek_telegram_bot import parse_time_range
         
-        # Форматирование без расписания
-        data = {
-            "city": "Test",
-            "street": "Test",
-            "house_num": "1",
-            "group": "1.1",
-            "schedule": {}
-        }
-        result = format_shutdown_message(data)
-        assert "не вдалося" in result.lower() or "не знайдено" in result.lower()
-
-
-@pytest.mark.parametrize("hours,expected_word", [
-    (0.5, "години"),
-    (1.0, "годину"),
-    (2.0, "години"),
-    (3.0, "години"),
-    (4.0, "години"),
-    (5.0, "годин"),
-    (11.0, "годин"),
-    (21.0, "годину"),
-    (22.0, "години"),
-    (100.0, "годин"),
-])
-def test_pluralize_hours_parametrized(hours, expected_word):
-    """Параметризованный тест плюрализации"""
-    from dtek_telegram_bot import _pluralize_hours
-    assert _pluralize_hours(hours) == expected_word
+        # Нормальные случаи
+        start, end = parse_time_range("10:00–11:00")
+        assert start == 600  # 10 * 60
+        assert end == 660    # 11 * 60
+        
+        # Переход через полночь
+        start, end = parse_time_range("23:00–01:00")
+        assert start == 1380  # 23 * 60
+        assert end == 1500    # 01 * 60 + 1440 (24 часа)
+        
+        # Ошибочный формат возвращает (0, 0)
+        start, end = parse_time_range("invalid")
+        assert start == 0
+        assert end == 0
 
 
 @pytest.mark.parametrize("minutes,expected", [
@@ -247,11 +304,63 @@ def test_pluralize_hours_parametrized(hours, expected_word):
     (60, "01:00"),
     (90, "01:30"),
     (1440, "24:00"),
+    (720, "12:00"),
+    (1380, "23:00"),
 ])
 def test_format_minutes_parametrized(minutes, expected):
     """Параметризованный тест форматирования минут"""
     from dtek_telegram_bot import format_minutes_to_hh_m
     assert format_minutes_to_hh_m(minutes) == expected
+
+
+@pytest.mark.parametrize("hours,expected_contains", [
+    (0, "0 год."),
+    (0.5, "0,5 год."),
+    (1.0, "1 год."),
+    (2.5, "2,5 год."),
+    (10, "10 год."),
+])
+def test_shutdown_duration_str_parametrized(hours, expected_contains):
+    """Параметризованный тест форматирования длительности"""
+    from dtek_telegram_bot import _get_shutdown_duration_str_by_hours
+    result = _get_shutdown_duration_str_by_hours(hours)
+    assert expected_contains in result
+
+
+@pytest.mark.unit
+class TestProcessSingleDayScheduleCompact:
+    """Дополнительные тесты для _process_single_day_schedule_compact"""
+    
+    def test_multiple_gaps(self):
+        """Несколько разрывов в расписании"""
+        from dtek_telegram_bot import _process_single_day_schedule_compact
+        
+        slots = [
+            {"shutdown": "08:00–09:00"},
+            {"shutdown": "11:00–12:00"},  # Разрыв 09:00-11:00
+            {"shutdown": "14:00–15:00"},  # Разрыв 12:00-14:00
+        ]
+        result = _process_single_day_schedule_compact("15.11.24", slots)
+        
+        # Должно быть 3 отдельных слота
+        assert "08:00 - 09:00" in result
+        assert "11:00 - 12:00" in result
+        assert "14:00 - 15:00" in result
+    
+    def test_very_long_outage(self):
+        """Очень длинное отключение"""
+        from dtek_telegram_bot import _process_single_day_schedule_compact
+        
+        slots = [
+            {"shutdown": "00:00–08:00"},
+            {"shutdown": "08:00–16:00"},
+            {"shutdown": "16:00–24:00"},
+        ]
+        result = _process_single_day_schedule_compact("15.11.24", slots)
+        
+        # Все должно объединиться в один 24-часовой слот
+        assert "00:00 - 24:00" in result
+        assert "24 год." in result
 
 
 if __name__ == "__main__":

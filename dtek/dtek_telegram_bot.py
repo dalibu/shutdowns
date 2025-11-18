@@ -207,11 +207,8 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
     house = parts[2]
     return city, street, house
 
-def _pluralize_hours(value: float) -> str:
-    """Определяет правильную форму слова 'година' для украинского языка."""
-    # --- ЗМІНА: Завжди повертаємо 'год.' згідно зі скріншотом ---
+def _get_hours_str(value: float) -> str:
     return "год."
-    # --- КІНЕЦЬ ЗМІНИ ---
 
 def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
     """Принимает количество часов и возвращает форматированную строку с правильным склонением."""
@@ -224,7 +221,7 @@ def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
         else:
             # Використовуємо :g для видалення зайвих нулів, і замінюємо . на ,
             hours_str = f"{duration_hours:g}".replace('.', ',')
-        plural_form = _pluralize_hours(duration_hours)
+        plural_form = _get_hours_str(duration_hours)
         return f"{hours_str} {plural_form}"
     except Exception:
         return "?"
@@ -240,19 +237,24 @@ def _get_schedule_hash_compact(data: dict) -> str:
 
     schedule_parts = []
     try:
+        # Сортировка по дате, чтобы хеш был консистентным
         sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
     except ValueError:
+        # Если формат даты не '%d.%m.%y', сортируем просто по строке
         sorted_dates = sorted(schedule.keys())
 
     for date in sorted_dates:
         slots = schedule[date]
-        # Используем новую функцию для генерации строки для хеширования
+        # Используем вспомогательную функцию для генерации строки расписания
         day_text = _process_single_day_schedule_compact(date, slots)
-        # Берём только часть до первого, чтобы хеш зависел от общей структуры, а не от деталей форматирования
-        first_line = day_text.split('\n')[0]
-        schedule_parts.append(f"{date}:{first_line}")
+        
+        # --- ИСПРАВЛЕНИЕ: Используем весь текст расписания (без переносов) для хеширования, 
+        #    чтобы учесть временные слоты, а не только общую длительность ---
+        full_day_info = day_text.replace('\n', ' ').strip()
+        schedule_parts.append(f"{date}:{full_day_info}")
 
     schedule_string = "|".join(schedule_parts)
+    # Хешируем полученную строку
     return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
 
 # --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОТВЕТА ---
@@ -775,7 +777,7 @@ async def subscription_checker_task(bot: Bot):
 
             if "error" in data_or_error:
                 error_message = data_or_error['error']
-                final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {_pluralize_hours(interval_hours)}.*"
+                final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {_get_hours_str(interval_hours)}.*"
                 try:
                     await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
                 except Exception as e:
@@ -1123,7 +1125,7 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
             return
 
     hours_str = f'{interval_hours:g}'.replace('.', ',')
-    interval_display = f"{hours_str} {_pluralize_hours(interval_hours)}"
+    interval_display = f"{hours_str} {_get_hours_str(interval_hours)}"
 
     hash_to_use = hash_from_check
     try:

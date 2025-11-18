@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import json
 from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
 import os
@@ -26,166 +27,268 @@ except ImportError:
 
 logging.getLogger("dtek_parser").setLevel(logging.CRITICAL) 
 
-# --- 🛠️ Фикстуры и Моки для Юнит-Тестов (Изолированная логика) ---
+# --- 🛠️ Фикстуры для тестов ---
 
 @pytest.fixture
-def mock_playwright_components():
+def mock_browser_and_page():
     """
-    Мок-объекты для имитации Playwright API для юнит-тестов.
+    Фикстура для создания мок-объектов browser и page.
     """
-    
-    # 1. Мок-объект, возвращаемый после page.locator(...)
-    final_locator_mock = MagicMock()
-    
-    # --- АСИНХРОННЫЕ МЕТОДЫ (для самого локатора) ---
-    final_locator_mock.wait_for = AsyncMock() 
-    final_locator_mock.click = AsyncMock()  
-    final_locator_mock.screenshot = AsyncMock()
-    
-    final_locator_mock.inner_text = AsyncMock(side_effect=[
-        "Черга 3", # Группа
-        "08.11",   # Дата 1
-        "09.11"    # Дата 2
-    ])
-    
-    # 📌 6 вызовов для input_value (3 в цикле + 3 для финального извлечения адреса)
-    final_locator_mock.input_value = AsyncMock(side_effect=[
-        DEFAULT_CITY,   
-        DEFAULT_STREET, 
-        DEFAULT_HOUSE,  
-        DEFAULT_CITY,   
-        DEFAULT_STREET, 
-        DEFAULT_HOUSE   
-    ])
-    
-    # --- МОК-ОБЪЕКТЫ ДЛЯ ЯЧЕЕК ТАБЛИЦЫ ---
-
-    # Список ожидаемых атрибутов класса
-    cell_class_attributes = [
-        "cell-scheduled", "", "cell-first-half",  
-        "cell-scheduled", "cell-second-half", "" 
-    ]
-    
-    # Создаем итератор для последовательной выдачи классов
-    class_attr_iterator = iter(cell_class_attributes)
-    
-    # Функция-конструктор мока для ячейки данных
-    def create_data_cell_mock(iterator):
-        mock = MagicMock()
-        try:
-            class_attr = next(iterator)
-        except StopIteration:
-            class_attr = "" 
-            
-        # 🌟 ИСПРАВЛЕНИЕ: td_element.get_attribute должен быть AsyncMock
-        mock.get_attribute = AsyncMock(return_value=class_attr) 
-        return mock
-    
-    # Создаем моки для ячеек
-    data_cells_mocks = [create_data_cell_mock(class_attr_iterator) for _ in range(6)]
-    data_cells_day1 = data_cells_mocks[0:3]
-    data_cells_day2 = data_cells_mocks[3:6]
-    
-    # Настройка заголовков времени
-    mock_time_headers = [MagicMock() for _ in range(3)]
-    for i, header in enumerate(mock_time_headers):
-        # 🌟 th_element.inner_text должен быть AsyncMock
-        header.inner_text = AsyncMock(return_value=f"08:00–12:00\n{i}")
-
-    # final_locator_mock.all возвращает списки заголовков и ячеек данных
-    final_locator_mock.all = AsyncMock(side_effect=[
-        mock_time_headers, 
-        data_cells_day1, 
-        mock_time_headers, 
-        data_cells_day2, 
-    ])
-    
-    # --- ДРУГИЕ МЕТОДЫ/СВОЙСТВА (синхронные) ---
-    async def count_tables(): return 2 
-    final_locator_mock.count = count_tables
-    
-    # Мокирование свойства .first для чейнинга (для await locator.first.click())
-    chain_member_mock = MagicMock()
-    chain_member_mock.click = AsyncMock() 
-    final_locator_mock.first = chain_member_mock 
-    
-    # .locator() и .nth() - методы, которые вызываются и возвращают наш основной мок
-    final_locator_mock.locator.return_value = final_locator_mock 
-    final_locator_mock.nth.return_value = final_locator_mock 
-
-
-    # 2. Мок-объект для Page
+    # Создаем мок для page
     mock_page = AsyncMock()
     mock_page.goto = AsyncMock()
     mock_page.click = AsyncMock()
     mock_page.fill = AsyncMock()
     mock_page.type = AsyncMock()
     mock_page.wait_for_selector = AsyncMock()
+    mock_page.wait_for_timeout = AsyncMock()
     mock_page.screenshot = AsyncMock()
+    mock_page.close = AsyncMock()
     
-    # page.locator() - синхронный метод, возвращает MagicMock
-    mock_page.locator = MagicMock(return_value=final_locator_mock) 
-    
-    # 3. Мок-объект для Browser
+    # Создаем мок для browser
     mock_browser = AsyncMock()
-    mock_browser.new_page.return_value = mock_page
+    mock_browser.new_page = AsyncMock(return_value=mock_page)
     mock_browser.close = AsyncMock()
     
-    # 4. Мок-объект для Chromium 
-    mock_chromium = MagicMock()
-    mock_chromium.launch = AsyncMock(return_value=mock_browser)
-    
-    # 5. Мок-объект для Playwright
-    mock_p = MagicMock()
-    mock_p.chromium = mock_chromium 
-
-    return mock_p, mock_page
+    return mock_browser, mock_page
 
 
-# --- 🧪 Юнит-Тесты (Mocking Only) ---
+# --- 🧪 Тесты ---
 
 @pytest.mark.asyncio
+@patch('dtek_parser.create_combined_screenshot', new_callable=AsyncMock)
 @patch('dtek_parser.async_playwright')
-async def test_parser_success(mock_async_playwright, mock_playwright_components):
-    """
-    Тест успешного выполнения run_parser_service с мокированием Playwright.
-    """
+async def test_parser_success(mock_async_playwright, mock_create_combined_screenshot, mock_browser_and_page):
+    """Тест успешного выполнения парсера с корректными данными."""
     
-    mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_components[0]
+    # Распаковываем моки
+    mock_browser, mock_page = mock_browser_and_page
     
-    result = await run_parser_service(DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE, is_debug=True, skip_input_on_debug=True)
+    # Настраиваем async_playwright для возврата наших моков
+    mock_playwright_instance = AsyncMock()
+    mock_playwright_instance.chromium.launch = AsyncMock(return_value=mock_browser)
+    mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_instance
     
-    assert isinstance(result, dict)
-    assert result["group"] == "3" 
-    
-    date_1 = "08.11"
-    assert len(result["schedule"]) == 2
-    assert date_1 in result["schedule"]
-    
-    mock_playwright_components[1].locator().screenshot.assert_called_once()
-
-
-@pytest.mark.asyncio
-@patch('dtek_parser.async_playwright')
-async def test_parser_timeout_handling(mock_async_playwright, mock_playwright_components):
-    """
-    Тест на обработку ошибки TimeoutError.
-    """
-    
-    mock_page = mock_playwright_components[1]
-    
-    mock_page.wait_for_selector.side_effect = [
-        AsyncMock(), # Город - Успешно
-        AsyncMock(), # Улица - Успешно
-        TimeoutError("Test Timeout: Results did not load."), # Дом - Ошибка
+    # --- Подготовка данных для таблиц ---
+    time_headers_text = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
+    data_cells_classes_day0 = [
+        "cell-scheduled discon-status", 
+        "clear discon-status", 
+        "cell-scheduled discon-status", 
+        "clear discon-status",
+        "cell-first-half discon-status",
+        "clear discon-status",
+        "cell-scheduled discon-status",
+        "clear discon-status"
     ]
+    data_cells_classes_day1 = ["clear discon-status"] * 8
+    
+    # --- Настройка моков для таблиц ---
+    
+    # День 0 - таблица
+    mock_table_day0 = MagicMock()
+    mock_headers_locator_day0 = MagicMock()
+    mock_cells_locator_day0 = MagicMock()
+    mock_headers_locator_day0.all = AsyncMock(return_value=[
+        MagicMock(inner_text=AsyncMock(return_value=h)) for h in time_headers_text
+    ])
+    mock_cells_locator_day0.all = AsyncMock(return_value=[
+        MagicMock(get_attribute=AsyncMock(return_value=c)) for c in data_cells_classes_day0
+    ])
+    
+    def table_locator_day0(selector):
+        if "thead" in selector:
+            return mock_headers_locator_day0
+        elif "tbody" in selector:
+            return mock_cells_locator_day0
+        return MagicMock()
+    
+    mock_table_day0.locator = MagicMock(side_effect=table_locator_day0)
+    
+    # День 1 - таблица
+    mock_table_day1 = MagicMock()
+    mock_headers_locator_day1 = MagicMock()
+    mock_cells_locator_day1 = MagicMock()
+    mock_headers_locator_day1.all = AsyncMock(return_value=[
+        MagicMock(inner_text=AsyncMock(return_value=h)) for h in time_headers_text
+    ])
+    mock_cells_locator_day1.all = AsyncMock(return_value=[
+        MagicMock(get_attribute=AsyncMock(return_value=c)) for c in data_cells_classes_day1
+    ])
+    
+    def table_locator_day1(selector):
+        if "thead" in selector:
+            return mock_headers_locator_day1
+        elif "tbody" in selector:
+            return mock_cells_locator_day1
+        return MagicMock()
+    
+    mock_table_day1.locator = MagicMock(side_effect=table_locator_day1)
+    
+    # --- Настройка моков для table_locators ---
+    mock_table_locators = MagicMock()
+    
+    async def mock_table_count():
+        return 2
+    mock_table_locators.count = mock_table_count
+    
+    def mock_table_nth(index):
+        result = MagicMock()
+        if index == 0:
+            result.locator = MagicMock(return_value=mock_table_day0)
+        elif index == 1:
+            result.locator = MagicMock(return_value=mock_table_day1)
+        return result
+    
+    mock_table_locators.nth = MagicMock(side_effect=mock_table_nth)
+    
+    # --- Настройка моков для date_locators ---
+    mock_date_locators = MagicMock()
+    
+    def mock_date_nth(index):
+        result = MagicMock()
+        span_mock = MagicMock()
+        if index == 0:
+            span_mock.inner_text = AsyncMock(return_value="08.11")
+        elif index == 1:
+            span_mock.inner_text = AsyncMock(return_value="09.11")
+        result.locator = MagicMock(return_value=span_mock)
+        return result
+    
+    mock_date_locators.nth = MagicMock(side_effect=mock_date_nth)
+    
+    # --- Настройка page.locator() ---
+    def page_locator(selector):
+        # Для группы
+        if "#group-name" in selector:
+            mock = MagicMock()
+            mock.inner_text = AsyncMock(return_value="3")
+            return mock
+        # Для адреса
+        elif "input#city" in selector:
+            mock = MagicMock()
+            mock.input_value = AsyncMock(return_value="м. Дніпро")
+            return mock
+        elif "input#street" in selector:
+            mock = MagicMock()
+            mock.input_value = AsyncMock(return_value="вул. Сонячна набережна")
+            return mock
+        elif "input#house_num" in selector:
+            mock = MagicMock()
+            mock.input_value = AsyncMock(return_value="6")
+            return mock
+        # Для таблиц
+        elif "discon-fact-table" in selector:
+            return mock_table_locators
+        # Для дат
+        elif "div.date" in selector:
+            return mock_date_locators
+        # Для автокомплита с has-text
+        elif "has-text" in selector:
+            mock = MagicMock()
+            mock.first = MagicMock(click=AsyncMock())
+            return mock
+        # По умолчанию
+        return MagicMock()
+    
+    mock_page.locator = MagicMock(side_effect=page_locator)
+    
+    # --- Запуск парсера ---
+    result = await run_parser_service(
+        city="м. Дніпро", 
+        street="вул. Сонячна набережна", 
+        house="6"
+    )
 
-    mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_components[0]
+    # --- Проверки ---
     
-    # Важно: тест вызывает функцию без is_debug, так что input не должен вызываться и в случае ошибки
+    # Проверяем структуру результата
+    assert "data" in result
+    assert "json_path" in result
+    assert "png_path" in result
+    
+    data = result["data"]
+    
+    # Проверяем адрес
+    assert data["city"] == "м. Дніпро"
+    assert data["street"] == "вул. Сонячна набережна"
+    assert data["house_num"] == "6"
+    assert data["group"] == "3"
+
+    # Проверка первого дня (08.11)
+    assert "08.11" in data["schedule"]
+    day1_slots = data["schedule"]["08.11"]
+    assert len(day1_slots) == 4  # Ожидаем 4 объединенных слота
+    assert day1_slots[0]["shutdown"] == "00:00–03:00"
+    assert day1_slots[1]["shutdown"] == "06:00–09:00"
+    assert day1_slots[2]["shutdown"] == "12:00–12:30" 
+    assert day1_slots[3]["shutdown"] == "18:00–21:00"
+
+    # Проверка второго дня (09.11)
+    assert "09.11" in data["schedule"]
+    day2_slots = data["schedule"]["09.11"]
+    assert len(day2_slots) == 0
+    
+    # Проверка сохранения JSON
+    json_output = json.dumps(data, indent=4, ensure_ascii=False)
+    assert "м. Дніпро" in json_output
+    assert "\"group\": \"3\"" in json_output
+    assert "06:00–09:00" in json_output
+
+
+@pytest.mark.asyncio
+@patch('dtek_parser.cleanup_old_files')
+@patch('dtek_parser.async_playwright')
+async def test_parser_timeout_handling(mock_async_playwright, mock_cleanup_old_files, mock_browser_and_page):
+    """Тест обработки таймаута при загрузке страницы."""
+    
+    # Распаковываем моки
+    mock_browser, mock_page = mock_browser_and_page
+    
+    # Настраиваем async_playwright для возврата наших моков
+    mock_playwright_instance = AsyncMock()
+    mock_playwright_instance.chromium.launch = AsyncMock(return_value=mock_browser)
+    mock_async_playwright.return_value.__aenter__.return_value = mock_playwright_instance
+    
+    # --- Настройка мока для page.locator() ---
+    mock_locator_result = MagicMock()
+    mock_locator_result.wait_for = AsyncMock()
+    mock_locator_result.input_value = AsyncMock(side_effect=["м. Дніпро", "вул. Сонячна набережна", "6"])
+    mock_locator_result.first = MagicMock(click=AsyncMock())
+    mock_locator_result.click = AsyncMock()
+
+    mock_page.locator = MagicMock(return_value=mock_locator_result)
+    
+    # Мокируем поведение для имитации таймаута
+    def mock_wait_for_selector(selector, **kwargs):
+        # Пропускаем успешные вызовы для автокомплита
+        if "autocomplete-list" in selector and kwargs.get('state') == 'visible':
+            return AsyncMock()
+        if "autocomplete-list" in selector and kwargs.get('state') == 'hidden':
+            return AsyncMock()
+            
+        # Имитируем таймаут на ожидании активации поля house_num
+        if selector == "input#house_num:not([disabled])":
+            raise TimeoutError("Не удалось перейти к следующему шагу. Проверьте адрес.")
+             
+        # Для всех остальных вызовов возвращаем успешный мок
+        return AsyncMock() 
+
+    mock_page.wait_for_selector.side_effect = mock_wait_for_selector
+    
+    # Проверяем, что run_parser_service пробрасывает TimeoutError
     with pytest.raises(TimeoutError) as excinfo:
-        await run_parser_service(DEFAULT_CITY, DEFAULT_STREET, DEFAULT_HOUSE)
+        await run_parser_service(
+            city="м. Дніпро", 
+            street="вул. Сонячна набережна", 
+            house="6"
+        )
+
+    # Убеждаемся, что в сообщении есть ожидаемый текст
+    assert "Не удалось перейти к следующему шагу" in str(excinfo.value)
     
-    assert "Ошибка активации следующего шага или загрузки результатов" in str(excinfo.value)
+    # Проверяем, что cleanup_old_files был вызван
+    mock_cleanup_old_files.assert_called_once()
     
-    mock_playwright_components[0].chromium.launch.return_value.close.assert_called_once()
+    # Проверяем, что браузер был закрыт
+    mock_browser.close.assert_called_once()

@@ -14,12 +14,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 try:
     from dtek_telegram_bot import (
         format_minutes_to_hh_m,
-        _process_single_day_schedule,
-        format_shutdown_message,
+        _process_single_day_schedule_compact,
         parse_address_from_text,
-        _pluralize_hours,
         _get_shutdown_duration_str_by_hours,
-        _get_schedule_hash,
         _get_captcha_data,
         get_shutdowns_data,
         init_db,
@@ -27,15 +24,11 @@ try:
         ADDRESS_CACHE,
     )
 except ImportError:
-    # Альтернативный путь импорта, если модуль в той же директории
     import dtek_telegram_bot
     format_minutes_to_hh_m = dtek_telegram_bot.format_minutes_to_hh_m
-    _process_single_day_schedule = dtek_telegram_bot._process_single_day_schedule
-    format_shutdown_message = dtek_telegram_bot.format_shutdown_message
+    _process_single_day_schedule_compact = dtek_telegram_bot._process_single_day_schedule_compact
     parse_address_from_text = dtek_telegram_bot.parse_address_from_text
-    _pluralize_hours = dtek_telegram_bot._pluralize_hours
     _get_shutdown_duration_str_by_hours = dtek_telegram_bot._get_shutdown_duration_str_by_hours
-    _get_schedule_hash = dtek_telegram_bot._get_schedule_hash
     _get_captcha_data = dtek_telegram_bot._get_captcha_data
     get_shutdowns_data = dtek_telegram_bot.get_shutdowns_data
     init_db = dtek_telegram_bot.init_db
@@ -64,50 +57,7 @@ class TestFormatMinutesToHHMM:
         assert format_minutes_to_hh_m(125) == "02:05"
     
     def test_large_values(self):
-        assert format_minutes_to_hh_m(1440) == "24:00"  # Целый день
-
-
-# ============================================================
-# ТЕСТЫ ПЛЮРАЛИЗАЦИИ УКРАИНСКОГО ЯЗЫКА
-# ============================================================
-
-@pytest.mark.unit
-@pytest.mark.format
-class TestPluralizeHours:
-    """Тесты для функции _pluralize_hours"""
-    
-    def test_decimal_values(self):
-        """Дробные числа всегда 'години'"""
-        assert _pluralize_hours(0.5) == "години"
-        assert _pluralize_hours(1.5) == "години"
-        assert _pluralize_hours(2.5) == "години"
-    
-    def test_one(self):
-        """1, 21, 31... - 'годину'"""
-        assert _pluralize_hours(1.0) == "годину"
-        assert _pluralize_hours(21.0) == "годину"
-        assert _pluralize_hours(101.0) == "годину"
-    
-    def test_two_to_four(self):
-        """2-4, 22-24... - 'години'"""
-        assert _pluralize_hours(2.0) == "години"
-        assert _pluralize_hours(3.0) == "години"
-        assert _pluralize_hours(4.0) == "години"
-        assert _pluralize_hours(22.0) == "години"
-    
-    def test_eleven_to_fourteen_exception(self):
-        """11-14 - исключение, всегда 'годин'"""
-        assert _pluralize_hours(11.0) == "годин"
-        assert _pluralize_hours(12.0) == "годин"
-        assert _pluralize_hours(14.0) == "годин"
-        assert _pluralize_hours(111.0) == "годин"
-    
-    def test_zero_and_five_plus(self):
-        """0, 5-10, 15-20... - 'годин'"""
-        assert _pluralize_hours(0.0) == "годин"
-        assert _pluralize_hours(5.0) == "годин"
-        assert _pluralize_hours(10.0) == "годин"
-        assert _pluralize_hours(100.0) == "годин"
+        assert format_minutes_to_hh_m(1440) == "24:00"
 
 
 # ============================================================
@@ -120,164 +70,110 @@ class TestGetShutdownDurationStr:
     """Тесты для функции _get_shutdown_duration_str_by_hours"""
     
     def test_zero_hours(self):
-        assert _get_shutdown_duration_str_by_hours(0) == "0 годин"
+        assert _get_shutdown_duration_str_by_hours(0) == "0 год."
     
     def test_negative_hours(self):
-        assert _get_shutdown_duration_str_by_hours(-1) == "0 годин"
+        assert _get_shutdown_duration_str_by_hours(-1) == "0 год."
     
     def test_whole_hours(self):
-        assert _get_shutdown_duration_str_by_hours(1.0) == "1 годину"
-        assert _get_shutdown_duration_str_by_hours(2.0) == "2 години"
-        assert _get_shutdown_duration_str_by_hours(5.0) == "5 годин"
+        assert _get_shutdown_duration_str_by_hours(1.0) == "1 год."
+        assert _get_shutdown_duration_str_by_hours(2.0) == "2 год."
+        assert _get_shutdown_duration_str_by_hours(5.0) == "5 год."
     
     def test_fractional_hours(self):
         result = _get_shutdown_duration_str_by_hours(0.5)
         assert "0,5" in result
-        assert "години" in result
+        assert "год." in result
         
         result = _get_shutdown_duration_str_by_hours(2.5)
         assert "2,5" in result
 
 
 # ============================================================
-# ТЕСТЫ ОБРАБОТКИ РАСПИСАНИЯ
+# ТЕСТЫ ОБРАБОТКИ РАСПИСАНИЯ (ОБНОВЛЕНО ПОД НОВЫЙ ФОРМАТ)
 # ============================================================
 
 @pytest.mark.unit
 class TestProcessSingleDaySchedule:
-    """Тесты для функции _process_single_day_schedule"""
+    """Тесты для функции _process_single_day_schedule_compact с новым форматом данных"""
     
     def test_no_outages(self):
-        """Нет отключений"""
-        slots = [
-            {"time": "0-1", "disconection": "no"},
-            {"time": "1-2", "disconection": "no"}
-        ]
-        result = _process_single_day_schedule("12.11.24", slots)
-        assert "Відключення не заплановані" in result
+        """Нет отключений - пустой список слотов"""
+        slots = []
+        result = _process_single_day_schedule_compact("12.11.24", slots)
+        assert "Не заплановані" in result
     
     def test_empty_slots(self):
         """Пустой список слотов"""
-        result = _process_single_day_schedule("12.11.24", [])
-        assert "Відключення не заплановані" in result
+        result = _process_single_day_schedule_compact("12.11.24", [])
+        assert "Не заплановані" in result
     
     def test_single_full_slot(self):
         """Один полный слот отключения"""
-        slots = [{"time": "10-11", "disconection": "full"}]
-        result = _process_single_day_schedule("12.11.24", slots)
+        slots = [{"shutdown": "10:00–11:00"}]
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         assert "10:00 - 11:00" in result
-        assert "1 годину" in result
+        assert "1 год." in result
     
     def test_consecutive_full_slots(self):
         """Несколько последовательных полных слотов"""
         slots = [
-            {"time": "10-11", "disconection": "full"},
-            {"time": "11-12", "disconection": "full"},
-            {"time": "12-13", "disconection": "full"}
+            {"shutdown": "10:00–11:00"},
+            {"shutdown": "11:00–12:00"},
+            {"shutdown": "12:00–13:00"}
         ]
-        result = _process_single_day_schedule("12.11.24", slots)
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         assert "10:00 - 13:00" in result
-        assert "3 години" in result
+        assert "3 год." in result
     
     def test_half_slot(self):
         """Половинный слот (вторая половина часа)"""
-        slots = [{"time": "10-11", "disconection": "half"}]
-        result = _process_single_day_schedule("12.11.24", slots)
+        slots = [{"shutdown": "10:30–11:00"}]
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         assert "10:30 - 11:00" in result
-        assert "0,5 години" in result
+        assert "0,5 год." in result
     
     def test_mixed_slots_with_gap(self):
         """Слоты с разрывом"""
         slots = [
-            {"time": "10-11", "disconection": "full"},
-            {"time": "11-12", "disconection": "full"},
-            {"time": "14-15", "disconection": "full"}  # Разрыв после 12
+            {"shutdown": "10:00–11:00"},
+            {"shutdown": "11:00–12:00"},
+            {"shutdown": "14:00–15:00"}  # Разрыв после 12
         ]
-        result = _process_single_day_schedule("12.11.24", slots)
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         # Должно быть 2 группы
         assert "10:00 - 12:00" in result
         assert "14:00 - 15:00" in result
     
     def test_end_hour_zero_means_24(self):
-        """Обработка 23-00 (00 = 24)"""
-        slots = [{"time": "23-0", "disconection": "full"}]
-        result = _process_single_day_schedule("12.11.24", slots)
+        """Обработка 23-24 (переход через полночь)"""
+        slots = [{"shutdown": "23:00–24:00"}]
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         assert "23:00" in result
-        # 24:00 или 00:00 в зависимости от реализации
-        assert ("24:00" in result or "00:00" in result)
+        assert "24:00" in result
     
     def test_mixed_full_and_half_consecutive(self):
         """Последовательные full и half слоты"""
         slots = [
-            {"time": "10-11", "disconection": "full"},  # 10:00-11:00
-            {"time": "11-12", "disconection": "half"}   # 11:30-12:00 (должны объединиться)
+            {"shutdown": "10:00–11:00"},
+            {"shutdown": "11:30–12:00"}  # Разрыв 11:00-11:30
         ]
-        result = _process_single_day_schedule("12.11.24", slots)
+        result = _process_single_day_schedule_compact("12.11.24", slots)
         # Проверяем что есть время и длительность
-        assert "10:00" in result or "10:30" in result
+        assert "10:00" in result
         assert "12:00" in result
     
-    def test_invalid_slot_time_format(self):
-        """Обработка невалидного формата времени"""
+    def test_continuous_merge(self):
+        """Тест объединения смежных слотов"""
         slots = [
-            {"time": "invalid", "disconection": "full"}
+            {"shutdown": "10:00–11:00"},
+            {"shutdown": "11:00–12:00"},
+            {"shutdown": "12:00–12:30"}
         ]
-        result = _process_single_day_schedule("12.11.24", slots)
-        # Должен обработать ошибку gracefully
-        assert isinstance(result, str)
-
-
-# ============================================================
-# ТЕСТЫ ФОРМАТИРОВАНИЯ СООБЩЕНИЯ
-# ============================================================
-
-@pytest.mark.unit
-@pytest.mark.format
-class TestFormatShutdownMessage:
-    """Тесты для функции format_shutdown_message"""
-    
-    def test_no_schedule(self, sample_empty_schedule):
-        """Нет расписания"""
-        result = format_shutdown_message(sample_empty_schedule)
-        assert "Дніпро" in result
-        assert "3.1" in result
-        assert "Не вдалося отримати графік" in result
-    
-    def test_with_schedule(self, sample_schedule_data):
-        """С расписанием"""
-        result = format_shutdown_message(sample_schedule_data)
-        assert "Дніпро" in result
-        assert "Сонячна набережна" in result
-        assert "6" in result
-        assert "3.1" in result
-        assert "12.11.24" in result
-        assert "13.11.24" in result
-    
-    def test_message_contains_markdown(self, sample_schedule_data):
-        """Сообщение содержит Markdown форматирование"""
-        result = format_shutdown_message(sample_schedule_data)
-        assert "`" in result  # Backticks для моноширинного текста
-        assert "**" in result or "*" in result  # Жирный или курсив
-    
-    def test_dates_are_sorted(self):
-        """Даты отображаются в правильном порядке"""
-        data = {
-            "city": "Дніпро",
-            "street": "Сонячна",
-            "house_num": "6",
-            "group": "3.1",
-            "schedule": {
-                "15.11.24": [{"time": "10-11", "disconection": "full"}],
-                "12.11.24": [{"time": "14-15", "disconection": "full"}],
-                "13.11.24": [{"time": "16-17", "disconection": "full"}]
-            }
-        }
-        result = format_shutdown_message(data)
-        
-        # Проверяем что 12.11 идет раньше чем 15.11 в тексте
-        pos_12 = result.find("12.11.24")
-        pos_15 = result.find("15.11.24")
-        assert pos_12 < pos_15, "Dates should be in chronological order"
+        result = _process_single_day_schedule_compact("12.11.24", slots)
+        # Все должно объединиться в один слот
+        assert "10:00 - 12:30" in result
+        assert "2,5 год." in result
 
 
 # ============================================================
@@ -324,8 +220,6 @@ class TestParseAddressFromText:
         """Несколько команд в тексте (должны удалиться все)"""
         city, street, house = parse_address_from_text("/check Дніпро, /subscribe Сонячна, 6")
         assert city == "Дніпро"
-        # После удаления /check и /subscribe строка: "Дніпро,  Сонячна, 6"
-        # Парсинг: city = "Дніпро", street = "Сонячна", house = "6"
         assert street == "Сонячна"
         assert house == "6"
             
@@ -342,60 +236,6 @@ class TestParseAddressFromText:
         assert city == "Дніпро"
         assert street == "Сонячна"
         assert house == "6А"
-
-
-# ============================================================
-# ТЕСТЫ ГЕНЕРАЦИИ ХЕША РАСПИСАНИЯ
-# ============================================================
-
-@pytest.mark.unit
-class TestGetScheduleHash:
-    """Тесты для функции _get_schedule_hash"""
-    
-    def test_no_schedule(self):
-        """Нет расписания"""
-        data = {"schedule": {}}
-        result = _get_schedule_hash(data)
-        assert result == "NO_SCHEDULE_FOUND"
-    
-    def test_same_schedule_same_hash(self):
-        """Одинаковое расписание дает одинаковый хеш"""
-        data1 = {
-            "schedule": {
-                "12.11.24": [{"time": "10-11", "disconection": "full"}]
-            }
-        }
-        data2 = {
-            "schedule": {
-                "12.11.24": [{"time": "10-11", "disconection": "full"}]
-            }
-        }
-        assert _get_schedule_hash(data1) == _get_schedule_hash(data2)
-    
-    def test_different_schedule_different_hash(self):
-        """Разное расписание дает разный хеш"""
-        data1 = {
-            "schedule": {
-                "12.11.24": [{"time": "10-11", "disconection": "full"}]
-            }
-        }
-        data2 = {
-            "schedule": {
-                "12.11.24": [{"time": "11-12", "disconection": "full"}]
-            }
-        }
-        assert _get_schedule_hash(data1) != _get_schedule_hash(data2)
-    
-    def test_hash_is_stable(self):
-        """Хеш стабилен при повторных вызовах"""
-        data = {
-            "schedule": {
-                "12.11.24": [{"time": "10-11", "disconection": "full"}]
-            }
-        }
-        hash1 = _get_schedule_hash(data)
-        hash2 = _get_schedule_hash(data)
-        assert hash1 == hash2
 
 
 # ============================================================
@@ -558,7 +398,7 @@ class TestInitDB:
 
 
 # ============================================================
-# ТЕСТЫ ГЛОБАЛЬНЫХ ПЕРЕМЕННЫХ И КЕША
+# ТЕСТЫ ГЛОБАЛЬНЫХ ПЕРЕМЕННЫХ И КЕШЕЙ
 # ============================================================
 
 class TestGlobalCache:
@@ -588,7 +428,7 @@ class TestGlobalCache:
 
 
 # ============================================================
-# ИНТЕГРАЦИОННЫЕ ТЕСТЫ
+# ИНТЕГРАЦИОННЫЕ ТЕСТЫ (СКОРРЕКТИРОВАНО)
 # ============================================================
 
 @pytest.mark.integration
@@ -598,7 +438,7 @@ class TestIntegration:
     @pytest.mark.asyncio
     async def test_full_schedule_processing_pipeline(self):
         """Полный пайплайн обработки расписания"""
-        # 1. Данные от API
+        # 1. Данные от API с новым форматом
         api_data = {
             "city": "Дніпро",
             "street": "Сонячна",
@@ -606,44 +446,27 @@ class TestIntegration:
             "group": "3.1",
             "schedule": {
                 "12.11.24": [
-                    {"time": "10-11", "disconection": "full"},
-                    {"time": "11-12", "disconection": "full"}
+                    {"shutdown": "10:00–11:00"},
+                    {"shutdown": "11:00–12:00"}
                 ],
-                "13.11.24": [
-                    {"time": "0-1", "disconection": "no"}
-                ]
+                "13.11.24": []
             }
         }
         
-        # 2. Генерация хеша
-        hash1 = _get_schedule_hash(api_data)
-        assert hash1 != "NO_SCHEDULE_FOUND"
-        
-        # 3. Форматирование сообщения
-        message = format_shutdown_message(api_data)
-        assert "Дніпро" in message
-        assert "12.11.24" in message
-        assert "10:00 - 12:00" in message
-        
-        # 4. Проверка стабильности хеша
-        hash2 = _get_schedule_hash(api_data)
-        assert hash1 == hash2
-        
-        # 5. Изменение расписания меняет хеш
-        api_data["schedule"]["12.11.24"].append(
-            {"time": "12-13", "disconection": "full"}
-        )
-        hash3 = _get_schedule_hash(api_data)
-        assert hash3 != hash1
+        # 2. Проверяем обработку первого дня
+        day1_slots = api_data["schedule"]["12.11.24"]
+        result = _process_single_day_schedule_compact("12.11.24", day1_slots)
+        assert "10:00 - 12:00" in result
+        assert "2 год." in result
 
 
 # ============================================================
-# ДОПОЛНИТЕЛЬНЫЕ ФИКСТУРЫ (Основные в conftest.py)
+# ДОПОЛНИТЕЛЬНЫЕ ФИКСТУРЫ
 # ============================================================
 
 @pytest.fixture
 def sample_schedule_data():
-    """Пример данных расписания для тестов"""
+    """Пример данных расписания для тестов (новый формат)"""
     return {
         "city": "Дніпро",
         "street": "Сонячна набережна",
@@ -651,11 +474,11 @@ def sample_schedule_data():
         "group": "3.1",
         "schedule": {
             "12.11.24": [
-                {"time": "10-11", "disconection": "full"},
-                {"time": "11-12", "disconection": "full"}
+                {"shutdown": "10:00–11:00"},
+                {"shutdown": "11:00–12:00"}
             ],
             "13.11.24": [
-                {"time": "14-15", "disconection": "half"}
+                {"shutdown": "14:30–15:00"}
             ]
         }
     }
