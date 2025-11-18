@@ -13,6 +13,9 @@ from datetime import datetime
 import pytz
 # ДОБАВЛЕНО: Для объединения слотов
 from datetime import timedelta, time
+from PIL import Image
+import io
+
 
 # --- 1. Конфигурация Логирования ---
 LOGGING_LEVEL = INFO
@@ -267,6 +270,66 @@ def parse_time_slot(slot_str: str) -> tuple:
     except ValueError as e:
         raise ValueError(f"Неверный формат времени в слоте {slot_str}: {e}")
     return start_time, end_time
+
+async def create_combined_screenshot(page, output_path, spacing: int = 20):
+    """
+    Создает объединенный скриншот обеих таблиц отключений (сегодня и завтра).
+    
+    Args:
+        page: Playwright page object
+        output_path: Путь для сохранения результата (Path или str)
+        spacing: Отступ между таблицами в пикселях (по умолчанию 20)
+    """
+    try:
+        screenshot_selector = "div.discon-fact.active"
+        
+        # 1. Возвращаемся на первую вкладку (сегодня)
+        logger.debug("Переход на первую таблицу для скриншота")
+        today_tab_selector = "#discon-fact > div.dates > div:nth-child(1)"
+        await page.click(today_tab_selector)
+        await page.wait_for_selector("div.discon-fact-table:nth-child(1).active", timeout=3000)
+        await page.wait_for_timeout(300)
+        
+        # 2. Делаем скриншот первой таблицы
+        screenshot1_bytes = await page.locator(screenshot_selector).screenshot()
+        logger.debug("✓ Скриншот первой таблицы (сегодня) получен")
+        
+        # 3. Переходим на вторую вкладку (завтра)
+        logger.debug("Переход на вторую таблицу для скриншота")
+        tomorrow_tab_selector = "#discon-fact > div.dates > div:nth-child(2)"
+        await page.click(tomorrow_tab_selector)
+        await page.wait_for_selector("div.discon-fact-table:nth-child(2).active", timeout=3000)
+        await page.wait_for_timeout(300)
+        
+        # 4. Делаем скриншот второй таблицы
+        screenshot2_bytes = await page.locator(screenshot_selector).screenshot()
+        logger.debug("✓ Скриншот второй таблицы (завтра) получен")
+        
+        # 5. Объединяем два скриншота вертикально
+        img1 = Image.open(io.BytesIO(screenshot1_bytes))
+        img2 = Image.open(io.BytesIO(screenshot2_bytes))
+        
+        # Создаем новое изображение с суммарной высотой + отступ
+        total_width = max(img1.width, img2.width)
+        total_height = img1.height + spacing + img2.height
+        combined_img = Image.new('RGB', (total_width, total_height), color='white')
+        
+        # Вставляем изображения одно под другим с отступом
+        combined_img.paste(img1, (0, 0))
+        combined_img.paste(img2, (0, img1.height + spacing))
+        
+        # Сохраняем объединенный скриншот
+        combined_img.save(output_path)
+        logger.info(f"✓ Объединенный скриншот сохранен: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании объединенного скриншота: {e}")
+        # Fallback: пытаемся сохранить хотя бы текущую активную таблицу
+        try:
+            await page.locator("div.discon-fact.active").screenshot(path=output_path)
+            logger.warning(f"⚠ Сохранен скриншот только одной таблицы: {output_path}")
+        except Exception as fallback_error:
+            logger.error(f"❌ Не удалось создать даже резервный скриншот: {fallback_error}")
 
 # --------------------------------------------------------------------------
 
@@ -551,6 +614,10 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
 
                 # 📌 Добавляем ОБЪЕДИНЕННЫЕ слоты в секцию schedule по дате
                 aggregated_result["schedule"][date_text] = merged_discon_slots
+
+            # Создаем объединенный скриншот обеих таблиц
+            if is_debug:
+                await create_combined_screenshot(page, png_path, spacing=40)
 
             if not aggregated_result["schedule"]:
                 logger.info("График отключений не найден ни для одного дня.")
