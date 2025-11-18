@@ -14,12 +14,11 @@ from aiogram.types import BotCommand, ReplyKeyboardRemove, BufferedInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext 
 from aiogram.fsm.state import State, StatesGroup 
-
-# --- НОВІ ІМПОРТИ ДЛЯ ГРАФІКІВ (PIL) ---
 import io
 import math
 import pytz 
 from PIL import Image, ImageDraw, ImageFont
+import json
 # ----------------------------------
 
 # --- 1. Конфігурація ---
@@ -228,34 +227,28 @@ def _get_shutdown_duration_str_by_hours(duration_hours: float) -> str:
 
 def _get_schedule_hash_compact(data: dict) -> str:
     """
-    Генерирует хеш только из данных графика (schedule) для сравнения изменений.
-    Использует компактное текстовое представление для хеширования.
+    Генерирует устойчивый хеш данных графика (schedule), используя каноническую 
+    нормализованную JSON-строку. Это исключает влияние форматирования вывода 
+    и неустойчивого порядка слотов.
     """
-    schedule = data.get("schedule", {})
-    if not schedule:
+    normalized_data = _normalize_schedule_for_hash(data)
+    
+    if not normalized_data:
         return "NO_SCHEDULE_FOUND"
 
-    schedule_parts = []
-    try:
-        # Сортировка по дате, чтобы хеш был консистентным
-        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-    except ValueError:
-        # Если формат даты не '%d.%m.%y', сортируем просто по строке
-        sorted_dates = sorted(schedule.keys())
-
-    for date in sorted_dates:
-        slots = schedule[date]
-        # Используем вспомогательную функцию для генерации строки расписания
-        day_text = _process_single_day_schedule_compact(date, slots)
-        
-        # --- ИСПРАВЛЕНИЕ: Используем весь текст расписания (без переносов) для хеширования, 
-        #    чтобы учесть временные слоты, а не только общую длительность ---
-        full_day_info = day_text.replace('\n', ' ').strip()
-        schedule_parts.append(f"{date}:{full_day_info}")
-
-    schedule_string = "|".join(schedule_parts)
+    # Создаем устойчивую (каноническую) JSON-строку:
+    # ensure_ascii=False для кириллицы
+    # separators=(',', ':') для удаления пробелов
+    # sort_keys=True гарантирует порядок верхнего уровня (хотя наша нормализация уже это делает)
+    schedule_json_string = json.dumps(
+        normalized_data, 
+        sort_keys=True, 
+        ensure_ascii=False, 
+        separators=(',', ':')
+    )
+    
     # Хешируем полученную строку
-    return hashlib.sha256(schedule_string.encode('utf-8')).hexdigest()
+    return hashlib.sha256(schedule_json_string.encode('utf-8')).hexdigest()
 
 # --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОТВЕТА ---
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
@@ -317,6 +310,46 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
     except Exception as e:
         logger.error(f"Error in send_schedule_response for user {message.from_user.id}: {e}", exc_info=True)
         await message.answer("❌ Сталася помилка під час формування відповіді.")
+
+def _normalize_schedule_for_hash(data: dict) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Нормализует данные расписания, сортируя их по дате и слотам.
+    Это необходимо, чтобы хеш зависел только от содержания, а не от порядка в исходном JSON.
+    """
+    schedule = data.get("schedule", {})
+    if not schedule:
+        return {}
+
+    normalized_schedule = {}
+
+    try:
+        # 1. Сортировка ключей по дате
+        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+    except ValueError:
+        # Если формат даты не '%d.%m.%y', сортируем просто по строке
+        sorted_dates = sorted(schedule.keys())
+
+    for date in sorted_dates:
+        slots = schedule.get(date, [])
+        
+        # 2. Сортировка слотов по времени начала (используя parse_time_range)
+        def sort_key(slot):
+            time_str = slot.get('shutdown', '00:00–00:00')
+            start_min, _ = parse_time_range(time_str)
+            return start_min
+
+        sorted_slots = sorted(slots, key=sort_key)
+        
+        # 3. Сохраняем только ключевые данные, исключая потенциально лишние поля
+        normalized_slots = []
+        for slot in sorted_slots:
+            # Убеждаемся, что хешируем только "shutdown", так как это основной маркер
+            if 'shutdown' in slot:
+                normalized_slots.append({'shutdown': slot['shutdown']})
+        
+        normalized_schedule[date] = normalized_slots
+
+    return normalized_schedule
 
 # ---------------------------------------------------------
 

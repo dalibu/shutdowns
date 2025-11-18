@@ -180,7 +180,7 @@ class TestFullWorkflow:
 
 @pytest.mark.unit
 class TestDataValidation:
-    """Тесты валидации данных"""
+    """Тесты валидации данных и хеширования"""
     
     def test_schedule_hash_consistency(self):
         """Хеш расписания должен быть консистентным"""
@@ -261,8 +261,75 @@ class TestDataValidation:
         hash_A = _get_schedule_hash_compact(schedule_A)
         hash_B = _get_schedule_hash_compact(schedule_B)
         
-        # Благодаря исправлению, эти хеши должны быть разными
+        # С новым хешированием, основанным на слотах, хеши должны быть разными
         assert hash_A != hash_B
+
+    def test_schedule_hash_stability_on_slot_order_change(self):
+        """
+        Проверка устойчивости хеша: разный порядок слотов в исходных данных 
+        должен давать ОДИНАКОВЫЙ хеш после нормализации.
+        """
+        from dtek_telegram_bot import _get_schedule_hash_compact
+        
+        # Расписание А: слоты расположены в хронологическом порядке
+        schedule_A = {
+            "schedule": {
+                "15.11.24": [
+                    {"shutdown": "10:00–12:00"}, # 1-й слот
+                    {"shutdown": "14:00–16:00"}  # 2-й слот
+                ]
+            }
+        }
+        
+        # Расписание Б: слоты расположены в обратном порядке (имитация нестабильности API)
+        schedule_B = {
+            "schedule": {
+                "15.11.24": [
+                    {"shutdown": "14:00–16:00"}, # 2-й слот
+                    {"shutdown": "10:00–12:00"}  # 1-й слот
+                ]
+            }
+        }
+        
+        hash_A = _get_schedule_hash_compact(schedule_A)
+        hash_B = _get_schedule_hash_compact(schedule_B)
+        
+        # Благодаря нормализации (сортировке), хеши должны быть одинаковыми!
+        assert hash_A == hash_B
+        assert hash_A != "NO_SCHEDULE_FOUND"
+
+    def test_schedule_hash_ignores_extraneous_fields(self):
+        """
+        Проверка: хеш должен игнорировать любые дополнительные поля, 
+        кроме поля 'shutdown', чтобы избежать ложных срабатываний.
+        """
+        from dtek_telegram_bot import _get_schedule_hash_compact
+        
+        schedule_clean = {
+            "schedule": {
+                "16.11.24": [
+                    {"shutdown": "10:00–11:00"}
+                ]
+            }
+        }
+        
+        schedule_dirty = {
+            "schedule": {
+                "16.11.24": [
+                    {
+                        "shutdown": "10:00–11:00",
+                        "extra_info": "Some random text that changed", # Дополнительное поле
+                        "group_id": 123456
+                    }
+                ]
+            }
+        }
+        
+        hash_clean = _get_schedule_hash_compact(schedule_clean)
+        hash_dirty = _get_schedule_hash_compact(schedule_dirty)
+        
+        # Хеши должны быть одинаковыми, так как дополнительная информация игнорируется
+        assert hash_clean == hash_dirty
 
     def test_empty_schedule_handling(self):
         """Обработка пустого расписания"""
