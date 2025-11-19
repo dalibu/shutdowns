@@ -251,6 +251,111 @@ def _get_schedule_hash_compact(data: dict) -> str:
     return hashlib.sha256(schedule_json_string.encode('utf-8')).hexdigest()
 
 # --- НОВАЯ ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ОТВЕТА ---
+def _get_current_status_message(schedule: dict) -> str:
+    """
+    Определяет текущий статус (свет есть/нет) и время следующего изменения.
+    Возвращает отформатированное сообщение или None, если данных недостаточно.
+    """
+    if not schedule:
+        return None
+
+    try:
+        # 1. Получаем текущее время в Киеве
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz)
+        
+        # Для тестов можно раскомментировать и подставить фиктивное время
+        # now = datetime(2025, 11, 19, 14, 0, tzinfo=kiev_tz)
+
+        current_date_str = now.strftime('%d.%m.%y')
+        
+        # 2. Собираем все слоты отключений в один список с datetime
+        #    Учитываем сегодня и завтра, чтобы найти ближайшее событие
+        all_outage_intervals = []
+
+        # Сортируем даты
+        try:
+            sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        except ValueError:
+            sorted_dates = sorted(schedule.keys())
+
+        for date_str in sorted_dates:
+            # Пропускаем прошедшие дни (если вдруг они есть в json), но оставляем сегодня
+            try:
+                date_obj = datetime.strptime(date_str, '%d.%m.%y').date()
+                if date_obj < now.date():
+                    continue
+            except ValueError:
+                continue
+
+            slots = schedule.get(date_str, [])
+            for slot in slots:
+                time_str = slot.get('shutdown', '00:00–00:00')
+                start_min, end_min = parse_time_range(time_str)
+                
+                # Преобразуем в datetime
+                # start_min - минуты от начала дня date_obj
+                start_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=start_min)
+                end_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=end_min)
+                
+                all_outage_intervals.append((start_dt, end_dt))
+
+        # Сортируем интервалы по времени начала
+        all_outage_intervals.sort(key=lambda x: x[0])
+
+        # 3. Объединяем пересекающиеся или стыкующиеся интервалы
+        merged_intervals = []
+        if all_outage_intervals:
+            current_start, current_end = all_outage_intervals[0]
+            for next_start, next_end in all_outage_intervals[1:]:
+                if next_start <= current_end:
+                    current_end = max(current_end, next_end)
+                else:
+                    merged_intervals.append((current_start, current_end))
+                    current_start, current_end = next_start, next_end
+            merged_intervals.append((current_start, current_end))
+
+        # 4. Определяем текущий статус
+        is_light_off = False
+        current_outage_end = None
+        next_outage_start = None
+
+        for start_dt, end_dt in merged_intervals:
+            if start_dt <= now < end_dt:
+                is_light_off = True
+                current_outage_end = end_dt
+                break
+            elif start_dt > now:
+                next_outage_start = start_dt
+                break
+        
+        # Если мы не нашли next_outage_start в цикле (например, сейчас свет есть, но список кончился),
+        # то next_outage_start останется None (значит, отключений пока не предвидится в загруженном графике)
+        
+        # Если сейчас отключение, но мы не нашли его в merged_intervals (странно, но вдруг), 
+        # то is_light_off будет False.
+
+        # Дополнительная проверка: если мы нашли current_outage_end, то следующее отключение
+        # нужно искать после него.
+        if is_light_off:
+            # Ищем следующее включение (это current_outage_end)
+            # Формируем сообщение
+            time_str = current_outage_end.strftime('%H:%M')
+            return f"🔦 Відключення триватиме до {time_str}"
+        else:
+            # Свет есть. Ищем ближайшее отключение.
+            # Если next_outage_start найден в цикле выше - используем его.
+            # Если нет - значит в ближайшие 48 часов (или сколько есть в графике) отключений нет.
+            if next_outage_start:
+                time_str = next_outage_start.strftime('%H:%M')
+                return f"💡 Наступне відключення у {time_str}"
+            else:
+                # Если график пуст или отключений нет на ближайшее время
+                return "💡 Наступне відключення: Не заплановано (згідно з поточним графіком)"
+
+    except Exception as e:
+        logger.error(f"Error calculating current status: {e}")
+        return None
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
     """
     Отправляет пользователю форматированный ответ, 
@@ -302,6 +407,11 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             day_text = _process_single_day_schedule_compact(date, slots)
             # Отправляем весь день одной сообщением
             await message.answer(day_text.strip())
+
+        # 5.5. Добавляем сообщение о текущем статусе
+        status_msg = _get_current_status_message(schedule)
+        if status_msg:
+            await message.answer(status_msg)
 
         # 6. Отправляем "подвал" (приглашение к подписке)
         if not is_subscribed:
