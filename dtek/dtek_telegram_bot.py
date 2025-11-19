@@ -57,6 +57,7 @@ class CheckAddressState(StatesGroup):
 
 HUMAN_USERS: Dict[int, bool] = {} 
 ADDRESS_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+SCHEDULE_DATA_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
 DEFAULT_INTERVAL_HOURS = 1.0
 CHECKER_LOOP_INTERVAL_SECONDS = 5 * 60
@@ -79,9 +80,22 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         house TEXT NOT NULL,
         interval_hours REAL NOT NULL,
         next_check TIMESTAMP NOT NULL,
-        last_schedule_hash TEXT
+        last_schedule_hash TEXT,
+        notification_lead_time INTEGER DEFAULT 0,
+        last_alert_event_start TIMESTAMP
     )
     """)
+    
+    # --- Миграция: Добавляем колонки, если их нет (для существующих БД) ---
+    try:
+        await conn.execute("ALTER TABLE subscriptions ADD COLUMN notification_lead_time INTEGER DEFAULT 0")
+    except aiosqlite.OperationalError:
+        pass # Колонка уже существует
+
+    try:
+        await conn.execute("ALTER TABLE subscriptions ADD COLUMN last_alert_event_start TIMESTAMP")
+    except aiosqlite.OperationalError:
+        pass # Колонка уже существует
     
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS user_last_check (
@@ -893,6 +907,9 @@ async def subscription_checker_task(bot: Bot):
                     'last_schedule_hash': current_hash,
                     'last_checked': now 
                 }
+                # --- НОВОЕ: Сохраняем полные данные для алертов ---
+                SCHEDULE_DATA_CACHE[address_key] = data
+                
                 api_results[address_key] = data
             except Exception as e:
                 logger.error(f"Error checking address {address_str}: {e}")
@@ -1036,6 +1053,8 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
         "*Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
         "/unsubscribe - скасувати підписку.\n"
+        "/alert - налаштувати сповіщення перед відключенням.\n"
+        "*Приклад: `/alert 15` (за 15 хв) або `/alert 0` (вимкнути)*\n"
         "/cancel - скасувати поточну дію."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
@@ -1301,6 +1320,61 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         logger.error(f"Failed to write subscription to DB for user {user_id}: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі зберегти підписку.")
 
+# --- 4.5. Команда /alert ---
+@dp.message(Command("alert"))
+async def cmd_alert(message: types.Message):
+    """
+    Встановлює час попередження перед відключенням/включенням (у хвилинах).
+    Використання: /alert 15
+    """
+    user_id = message.from_user.id
+    args = message.text.split()
+
+    if len(args) != 2:
+        await message.answer(
+            "⚠️ **Використання:** `/alert <хвилини>`\n"
+            "Наприклад: `/alert 15` - щоб отримувати сповіщення за 15 хвилин до події.\n"
+            "Введіть `0`, щоб вимкнути сповіщення."
+        )
+        return
+
+    try:
+        minutes = int(args[1])
+        if minutes < 0 or minutes > 120:
+            await message.answer("⚠️ Будь ласка, вкажіть час від 0 до 120 хвилин.")
+            return
+    except ValueError:
+        await message.answer("⚠️ Будь ласка, вкажіть число (кількість хвилин).")
+        return
+
+    global db_conn
+    if db_conn is None:
+        await message.answer("❌ Помилка бази даних.")
+        return
+
+    try:
+        # Проверяем, есть ли подписка
+        cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await message.answer("❌ Ви ще не підписані на оновлення. Спочатку використайте `/subscribe`.")
+            return
+
+        await db_conn.execute(
+            "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
+            (minutes, user_id)
+        )
+        await db_conn.commit()
+
+        if minutes == 0:
+            await message.answer("🔕 Сповіщення про наближення подій вимкнено.")
+        else:
+            await message.answer(f"🔔 Сповіщення встановлено! Ви отримаєте повідомлення за **{minutes} хв.** до зміни статусу світла.")
+
+    except Exception as e:
+        logger.error(f"Error setting alert for user {user_id}: {e}")
+        await message.answer("❌ Сталася помилка при збереженні налаштувань.")
+
 # --- ОБРАБОТЧИК /unsubscribe ---
 @dp.message(Command("unsubscribe"))
 async def command_unsubscribe_handler(message: types.Message) -> None:
@@ -1324,6 +1398,123 @@ async def command_unsubscribe_handler(message: types.Message) -> None:
         logger.error(f"Failed to delete subscription from DB for user {user_id}: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі скасувати підписку.")
 
+# --- Фоновая задача для уведомлений о предстоящих событиях ---
+async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str, house: str, lead_time: int, last_alert_event_start_str: str, now: datetime):
+    """
+    Обрабатывает логику проверки и отправки алертов для одного пользователя.
+    Возвращает True, если алерт был отправлен (нужно обновить БД).
+    """
+    address_key = (city, street, house)
+    
+    # Берем данные из нового кеша
+    data = SCHEDULE_DATA_CACHE.get(address_key)
+    if not data:
+        return None
+    
+    schedule = data.get("schedule", {})
+    if not schedule:
+        return None
+
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    
+    # Логика поиска ближайшего события
+    events = [] # (time, type) type: 'off_start' or 'off_end'
+    
+    # Сортируем даты
+    sorted_dates = sorted(schedule.keys())
+    
+    for date_str in sorted_dates:
+        try:
+            date_obj = datetime.strptime(date_str, '%d.%m.%y').date()
+        except ValueError:
+            continue
+            
+        # Пропускаем прошедшие дни
+        if date_obj < now.date():
+            continue
+            
+        slots = schedule.get(date_str, [])
+        for slot in slots:
+            time_str = slot.get('shutdown', '00:00–00:00')
+            start_min, end_min = parse_time_range(time_str)
+            
+            start_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=start_min)
+            end_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=end_min)
+            
+            events.append((start_dt, 'off_start'))
+            events.append((end_dt, 'off_end'))
+    
+    events.sort(key=lambda x: x[0])
+    
+    # Ищем ближайшее событие в будущем
+    target_event = None
+    for event_dt, event_type in events:
+        if event_dt > now:
+            target_event = (event_dt, event_type)
+            break
+    
+    if not target_event:
+        return None
+        
+    event_dt, event_type = target_event
+    time_to_event = (event_dt - now).total_seconds() / 60.0 # минуты
+    
+    # Проверяем, пора ли слать алерт
+    if 0 < time_to_event <= lead_time:
+        event_dt_str = event_dt.isoformat()
+        
+        if last_alert_event_start_str != event_dt_str:
+            # Шлем алерт!
+            msg_type = "відключення" if event_type == 'off_start' else "включення"
+            time_str = event_dt.strftime('%H:%M')
+            minutes_left = int(time_to_event)
+            
+            msg = (
+                f"⚠️ **Увага!** Через {minutes_left} хв. очікується **{msg_type}** світла.\n"
+                f"🕐 Час події: {time_str}"
+            )
+            
+            try:
+                await bot.send_message(user_id, msg, parse_mode="Markdown")
+                return event_dt_str # Возвращаем время события для обновления БД
+            except Exception as e:
+                logger.error(f"Failed to send alert to {user_id}: {e}")
+                return None
+    return None
+
+async def alert_checker_task(bot: Bot):
+    global db_conn
+    logger.info("Alert checker started.")
+    while True:
+        await asyncio.sleep(60)
+        if db_conn is None: continue
+
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz)
+
+        try:
+            cursor = await db_conn.execute(
+                "SELECT user_id, city, street, house, notification_lead_time, last_alert_event_start FROM subscriptions WHERE notification_lead_time > 0"
+            )
+            rows = await cursor.fetchall()
+            
+            for row in rows:
+                user_id, city, street, house, lead_time, last_alert_event_start_str = row
+                
+                new_last_alert = await _process_alert_for_user(
+                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now
+                )
+                
+                if new_last_alert:
+                    await db_conn.execute(
+                        "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
+                        (new_last_alert, user_id)
+                    )
+                    await db_conn.commit()
+
+        except Exception as e:
+            logger.error(f"Error in alert_checker_task loop: {e}", exc_info=True)
+
 # --- 5. Запуск Бота ---
 async def set_default_commands(bot: Bot):
     """Устанавливает список команд в меню Telegram."""
@@ -1334,9 +1525,15 @@ async def set_default_commands(bot: Bot):
         BotCommand(command="repeat", description="Повторити останню перевірку"),
         BotCommand(command="subscribe", description="Підписатися на оновлення"),
         BotCommand(command="unsubscribe", description="Скасувати підписку"),
+        BotCommand(command="alert", description="Налаштувати сповіщення"),
         BotCommand(command="cancel", description="Скасувати поточну дію")
     ]
-    await bot.set_my_commands(commands)
+    logger.info("Setting default commands...")
+    try:
+        await bot.set_my_commands(commands)
+        logger.info("Default commands set successfully.")
+    except Exception as e:
+        logger.error(f"Failed to set default commands: {e}")
 
 async def main():
     global db_conn 
@@ -1366,18 +1563,19 @@ async def main():
     dp.message.register(command_repeat_handler, Command("repeat"))
     dp.message.register(command_subscribe_handler, Command("subscribe")) 
     dp.message.register(command_unsubscribe_handler, Command("unsubscribe"))
+    dp.message.register(cmd_alert, Command("alert"))
 
     checker_task = asyncio.create_task(subscription_checker_task(bot))
+    alert_task = asyncio.create_task(alert_checker_task(bot)) # Add alert_task here
 
     logger.info("Бот запущено. Початок опитування...")
     try:
-        await asyncio.gather(
-            dp.start_polling(bot),
-            checker_task,
-        )
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
     finally:
         logger.info("Зупинка бота. Скасування фонових завдань...")
         checker_task.cancel()
+        alert_task.cancel() # Ensure alert task is also cancelled
         if db_conn:
             await db_conn.close()
             logger.info("Database connection closed.")
@@ -1388,5 +1586,5 @@ if __name__ == "__main__":
     logger.setLevel(logging.DEBUG) 
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Бот зупинено вручну.")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")

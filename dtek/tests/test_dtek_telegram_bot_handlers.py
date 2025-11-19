@@ -430,5 +430,106 @@ class TestProcessSingleDayScheduleCompact:
         assert "24 год." in result
 
 
+
+@pytest.mark.unit
+class TestAlertCommand:
+    """Тесты для команды /alert"""
+
+    @pytest.mark.asyncio
+    async def test_alert_command_success(self, mock_telegram_message):
+        """Успешная установка алерта"""
+        from dtek_telegram_bot import cmd_alert
+        
+        mock_telegram_message.text = "/alert 15"
+        mock_telegram_message.from_user.id = 12345
+        
+        # Mock DB
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone.return_value = (1,) # Subscription exists
+        mock_conn.execute.return_value = mock_cursor
+        
+        with patch('dtek_telegram_bot.db_conn', mock_conn):
+            await cmd_alert(mock_telegram_message)
+            
+        # Verify DB update
+        mock_conn.execute.assert_any_call(
+            "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
+            (15, 12345)
+        )
+        mock_conn.commit.assert_called_once()
+        
+        # Verify success message
+        mock_telegram_message.answer.assert_called_with(
+            "🔔 Сповіщення встановлено! Ви отримаєте повідомлення за **15 хв.** до зміни статусу світла."
+        )
+
+    @pytest.mark.asyncio
+    async def test_alert_command_disable(self, mock_telegram_message):
+        """Отключение алерта (0 минут)"""
+        from dtek_telegram_bot import cmd_alert
+        
+        mock_telegram_message.text = "/alert 0"
+        mock_telegram_message.from_user.id = 12345
+        
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone.return_value = (1,)
+        mock_conn.execute.return_value = mock_cursor
+        
+        with patch('dtek_telegram_bot.db_conn', mock_conn):
+            await cmd_alert(mock_telegram_message)
+            
+        mock_conn.execute.assert_any_call(
+            "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
+            (0, 12345)
+        )
+        
+        mock_telegram_message.answer.assert_called_with(
+            "🔕 Сповіщення про наближення подій вимкнено."
+        )
+
+    @pytest.mark.asyncio
+    async def test_alert_command_invalid_args(self, mock_telegram_message):
+        """Неверные аргументы"""
+        from dtek_telegram_bot import cmd_alert
+        
+        # Case 1: No args
+        mock_telegram_message.text = "/alert"
+        await cmd_alert(mock_telegram_message)
+        mock_telegram_message.answer.assert_called()
+        assert "Використання" in mock_telegram_message.answer.call_args[0][0]
+        
+        # Case 2: Non-integer
+        mock_telegram_message.text = "/alert abc"
+        await cmd_alert(mock_telegram_message)
+        assert "вкажіть число" in mock_telegram_message.answer.call_args[0][0]
+        
+        # Case 3: Out of range
+        mock_telegram_message.text = "/alert 200"
+        await cmd_alert(mock_telegram_message)
+        assert "від 0 до 120" in mock_telegram_message.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_alert_command_no_subscription(self, mock_telegram_message):
+        """Нет подписки"""
+        from dtek_telegram_bot import cmd_alert
+        
+        mock_telegram_message.text = "/alert 15"
+        mock_telegram_message.from_user.id = 12345
+        
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchone.return_value = None # No subscription
+        mock_conn.execute.return_value = mock_cursor
+        
+        with patch('dtek_telegram_bot.db_conn', mock_conn):
+            await cmd_alert(mock_telegram_message)
+            
+        mock_telegram_message.answer.assert_called_with(
+            "❌ Ви ще не підписані на оновлення. Спочатку використайте `/subscribe`."
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

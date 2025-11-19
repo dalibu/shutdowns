@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}🧪 Запуск тестов DTEK Telegram Bot${NC}\n"
 
 # Проверка установки pytest
-if ! command -v pytest &> /dev/null; then
+if ! python3 -m pytest --version &> /dev/null; then
     echo -e "${RED}❌ pytest не установлен!${NC}"
     echo "Установите: pip install pytest pytest-asyncio pytest-mock pytest-cov"
     exit 1
@@ -41,7 +41,7 @@ fi
 export PYTHONPATH="."
 
 # Определяем команду запуска без PYTHONPATH внутри строки
-CMD="pytest tests/"
+CMD="python3 -m pytest tests/"
 
 # Обработка аргументов
 case "${1:-all}" in
