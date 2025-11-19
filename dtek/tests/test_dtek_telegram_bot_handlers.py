@@ -531,5 +531,110 @@ class TestAlertCommand:
         )
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+
+@pytest.mark.unit
+class TestSubscribeCommand:
+    """Тесты для команды /subscribe (с интеграцией алертов)"""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_enables_alert_default(self, mock_telegram_message, mock_fsm_state):
+        """Подписка включает алерт по умолчанию (15 мин), если он был 0"""
+        from dtek_telegram_bot import command_subscribe_handler, HUMAN_USERS
+        
+        user_id = 12345
+        mock_telegram_message.from_user.id = user_id
+        mock_telegram_message.text = "/subscribe"
+        
+        # Setup
+        HUMAN_USERS[user_id] = True
+        
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        
+        # 1. Check last_check -> found
+        # 2. Check existing sub -> None (new sub) OR existing but we need to check alert logic
+        # Let's simulate new subscription
+        
+        # Mock responses for sequential execute calls
+        # Call 1: SELECT ... from user_last_check
+        # Call 2: SELECT ... from subscriptions (check existing)
+        # Call 3: SELECT notification_lead_time ... (check alert)
+        # Call 4: INSERT OR REPLACE ...
+        
+        # We need to be careful with mocking multiple execute calls
+        # Let's use side_effect for execute to return different cursors or the same cursor with different results
+        
+        cursor_last_check = AsyncMock()
+        cursor_last_check.fetchone.return_value = ("Dnipro", "Street", "1", "hash")
+        
+        cursor_check_sub = AsyncMock()
+        cursor_check_sub.fetchone.return_value = None # No existing sub
+        
+        cursor_check_alert = AsyncMock()
+        cursor_check_alert.fetchone.return_value = (0,) # Current alert is 0 (or None/default)
+        
+        mock_conn.execute.side_effect = [
+            cursor_last_check,
+            cursor_check_sub,
+            cursor_check_alert,
+            AsyncMock() # Insert
+        ]
+        
+        with patch('dtek_telegram_bot.db_conn', mock_conn):
+            await command_subscribe_handler(mock_telegram_message, mock_fsm_state)
+            
+        # Verify INSERT called with notification_lead_time = 15
+        # The last call to execute should be the INSERT
+        insert_call = mock_conn.execute.call_args
+        sql = insert_call[0][0]
+        params = insert_call[0][1]
+        
+        assert "INSERT OR REPLACE INTO subscriptions" in sql
+        assert "notification_lead_time" in sql
+        # Params: user_id, city, street, house, interval, next_check, hash, lead_time
+        assert params[-1] == 15 # Last param is new_lead_time
+        
+        # Verify message mentions alert
+        mock_telegram_message.answer.assert_called()
+        args = mock_telegram_message.answer.call_args[0][0]
+        assert "15 хв" in args
+
+    @pytest.mark.asyncio
+    async def test_subscribe_preserves_custom_alert(self, mock_telegram_message, mock_fsm_state):
+        """Подписка сохраняет пользовательский алерт (например, 30 мин)"""
+        from dtek_telegram_bot import command_subscribe_handler, HUMAN_USERS
+        
+        user_id = 12345
+        mock_telegram_message.from_user.id = user_id
+        mock_telegram_message.text = "/subscribe"
+        HUMAN_USERS[user_id] = True
+        
+        mock_conn = AsyncMock()
+        
+        cursor_last_check = AsyncMock()
+        cursor_last_check.fetchone.return_value = ("Dnipro", "Street", "1", "hash")
+        
+        cursor_check_sub = AsyncMock()
+        cursor_check_sub.fetchone.return_value = None
+        
+        cursor_check_alert = AsyncMock()
+        cursor_check_alert.fetchone.return_value = (30,) # User set 30 min previously
+        
+        mock_conn.execute.side_effect = [
+            cursor_last_check,
+            cursor_check_sub,
+            cursor_check_alert,
+            AsyncMock()
+        ]
+        
+        with patch('dtek_telegram_bot.db_conn', mock_conn):
+            await command_subscribe_handler(mock_telegram_message, mock_fsm_state)
+            
+        insert_call = mock_conn.execute.call_args
+        params = insert_call[0][1]
+        
+        assert params[-1] == 30 # Should stay 30
+        
+        # Message should mention 30 min
+        args = mock_telegram_message.answer.call_args[0][0]
+        assert "30 хв" in args

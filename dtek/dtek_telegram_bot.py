@@ -1059,10 +1059,10 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "/check - перевірити графік за адресою.\n"
         "/repeat - повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
-        "*Приклад: `/subscribe 3` (кожні 3 години) або `/subscribe 0.5` (кожні 30 хв)*\n"
+        "*Приклад: `/subscribe 3` (кожні 3 години). Автоматично вмикає сповіщення за 15 хв.*\n"
         "/unsubscribe - скасувати підписку.\n"
-        "/alert - налаштувати сповіщення перед відключенням.\n"
-        "*Приклад: `/alert 15` (за 15 хв) або `/alert 0` (вимкнути)*\n"
+        "/alert - налаштувати час сповіщення (або вимкнути).\n"
+        "*Приклад: `/alert 30` (за 30 хв) або `/alert 0` (вимкнути)*\n"
         "/cancel - скасувати поточну дію."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
@@ -1314,15 +1314,38 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
             hash_to_use = "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"
 
         next_check_time = datetime.now()
+        
+        # --- ИЗМЕНЕНИЕ: Объединение логики /alert и /subscribe ---
+        # Проверяем текущее значение notification_lead_time
+        current_lead_time = 0
+        cursor = await db_conn.execute("SELECT notification_lead_time FROM subscriptions WHERE user_id = ?", (user_id,))
+        row_alert = await cursor.fetchone()
+        if row_alert:
+            current_lead_time = row_alert[0] if row_alert[0] is not None else 0
+        
+        # Если алерты выключены (0), включаем их по умолчанию (15 мин)
+        # Если пользователь уже настроил (например, 30 мин), оставляем как есть
+        new_lead_time = current_lead_time
+        if current_lead_time == 0:
+            new_lead_time = 15
+
         await db_conn.execute(
-            "INSERT OR REPLACE INTO subscriptions (user_id, city, street, house, interval_hours, next_check, last_schedule_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, interval_hours, next_check_time, hash_to_use)
+            "INSERT OR REPLACE INTO subscriptions (user_id, city, street, house, interval_hours, next_check, last_schedule_hash, notification_lead_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, city, street, house, interval_hours, next_check_time, hash_to_use, new_lead_time)
         )
         await db_conn.commit()
-        logger.info(f"User {user_id} subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Next check now.")
+        
+        alert_msg = ""
+        if new_lead_time > 0:
+            alert_msg = f"\n🔔 Сповіщення за **{new_lead_time} хв.** до події також увімкнено."
+            if current_lead_time == 0:
+                 alert_msg += " (Ви можете змінити це командою `/alert`)"
+
+        logger.info(f"User {user_id} subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Next check now. Alert: {new_lead_time}m")
         await message.answer(
             f"✅ **Підписка оформлена!**\n"
-            f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**.\n"
+            f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**."
+            f"{alert_msg}"
         )
     except Exception as e:
         logger.error(f"Failed to write subscription to DB for user {user_id}: {e}", exc_info=True)
