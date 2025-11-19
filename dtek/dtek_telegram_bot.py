@@ -1007,6 +1007,14 @@ async def subscription_checker_task(bot: Bot):
                         logger.error(f"Failed to send update message to user {user_id}: {e}")
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
+                # Добавляем статусное сообщение в конце (как в send_schedule_response)
+                status_msg = _get_current_status_message(schedule)
+                if status_msg:
+                    try:
+                        await bot.send_message(chat_id=user_id, text=status_msg)
+                    except Exception as e:
+                        logger.error(f"Failed to send status message to user {user_id}: {e}")
+
                 db_updates_success.append((next_check_time, new_hash, user_id))
                 logger.info(f"Notification sent to user {user_id}. Hash updated to {new_hash[:8]}.")
             else:
