@@ -26,25 +26,6 @@ class ShutdownResponse(BaseModel):
     group: str
     schedule: Dict[str, List[ShutdownSlot]]
 
-# --- Provider Resolution Logic ---
-def determine_provider(city: str, street: str, house: str) -> str:
-    """
-    Определяет провайдера (DTEK или CEK) на основе адреса.
-    Пока используется простая логика - можно расширить.
-    """
-    city_lower = city.lower()
-    
-    # DTEK обслуживает: Днепр, Киев (частично), Одесса (частично)
-    dtek_cities = ["дніпро", "днепр", "київ", "киев", "одеса", "одесса"]
-    
-    # CEK обслуживает другие города
-    # Пока возвращаем DTEK для известных городов, иначе CEK
-    for dtek_city in dtek_cities:
-        if dtek_city in city_lower:
-            return "DTEK"
-    
-    return "CEK"
-
 # --- Endpoints ---
 
 @app.get("/shutdowns", response_model=ShutdownResponse)
@@ -55,22 +36,46 @@ async def get_shutdowns(
 ):
     logger.info(f"API Request: City={city}, Street={street}, House={house}")
     
+    # Стратегия: сначала пробуем DTEK, потом CEK
+    result = None
+    last_error = None
+    
     try:
-        # Определяем провайдера
-        provider = determine_provider(city, street, house)
-        logger.info(f"Determined provider: {provider}")
+        # Попытка 1: DTEK парсер
+        logger.info("Trying DTEK parser...")
+        result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
+        logger.info("DTEK parser succeeded")
         
-        if provider == "DTEK":
-            # Вызываем DTEK парсер
-            result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
-        elif provider == "CEK":
-            # TODO: Вызываем CEK парсер когда он будет готов
-            logger.warning("CEK parser not implemented yet, using DTEK as fallback")
-            result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
-        else:
-            raise HTTPException(status_code=400, detail="Unknown provider")
+    except Exception as dtek_error:
+        logger.warning(f"DTEK parser failed: {str(dtek_error)[:100]}")
+        last_error = dtek_error
         
-        # Извлекаем данные из ключа 'data'
+        try:
+            # Попытка 2: CEK парсер
+            logger.info("Trying CEK parser...")
+            # TODO: Раскомментировать когда CEK parser будет готов
+            # result = await cek_parser(city=city, street=street, house=house, is_debug=False)
+            # logger.info("CEK parser succeeded")
+            
+            # Временно: CEK parser не реализован
+            logger.error("CEK parser not implemented yet")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Address not found in DTEK. CEK parser not yet implemented. DTEK error: {str(dtek_error)[:200]}"
+            )
+            
+        except HTTPException:
+            raise  # Пробрасываем HTTPException дальше
+        except Exception as cek_error:
+            logger.error(f"CEK parser also failed: {str(cek_error)[:100]}")
+            # Оба парсера не смогли найти адрес
+            raise HTTPException(
+                status_code=404,
+                detail=f"Address not found in both DTEK and CEK. Please check your address. DTEK: {str(dtek_error)[:100]}, CEK: {str(cek_error)[:100]}"
+            )
+    
+    # Если результат получен, извлекаем данные
+    if result:
         response_data = result.get("data")
         
         if not response_data:
@@ -78,10 +83,12 @@ async def get_shutdowns(
             raise HTTPException(status_code=500, detail="Parser returned empty data")
 
         return response_data
-
-    except Exception as e:
-        logger.error(f"Error processing request: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    
+    # Если ничего не получилось
+    raise HTTPException(
+        status_code=404,
+        detail=f"Address not found. Last error: {str(last_error)[:200]}"
+    )
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
