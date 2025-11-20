@@ -1496,13 +1496,18 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
         
         if last_alert_event_start_str != event_dt_str:
             # Шлем алерт!
-            msg_type = "відключення" if event_type == 'off_start' else "включення"
             time_str = event_dt.strftime('%H:%M')
             minutes_left = int(time_to_event)
             
+            # Формируем сообщение в зависимости от типа события
+            if event_type == 'off_start':
+                event_msg = f"🔦 Відключення очікується у {time_str}"
+            else:
+                event_msg = f"💡 Включення очікується у {time_str}"
+            
             msg = (
-                f"⚠️ **Увага!** Через {minutes_left} хв. очікується **{msg_type}** світла.\n"
-                f"🕐 Час події: {time_str}"
+                f"⚠️ **Увага!** Через {minutes_left} хв. очікується зміна стану світла.\n"
+                f"{event_msg}"
             )
             
             try:

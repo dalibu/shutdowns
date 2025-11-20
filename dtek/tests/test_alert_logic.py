@@ -45,7 +45,8 @@ class TestAlertLogic(unittest.IsolatedAsyncioTestCase):
         # Expect alert sent
         self.bot.send_message.assert_called_once()
         args, kwargs = self.bot.send_message.call_args
-        self.assertIn("Через 15 хв. очікується **відключення**", args[1])
+        self.assertIn("Через 15 хв. очікується зміна стану світла", args[1])
+        self.assertIn("🔦 Відключення очікується у 14:00", args[1])
         self.assertEqual(kwargs.get('parse_mode'), 'Markdown')
         
         # Expect return value is the event time string
@@ -116,7 +117,8 @@ class TestAlertLogic(unittest.IsolatedAsyncioTestCase):
         
         self.bot.send_message.assert_called_once()
         args, kwargs = self.bot.send_message.call_args
-        self.assertIn("Через 15 хв. очікується **включення**", args[1])
+        self.assertIn("Через 15 хв. очікується зміна стану світла", args[1])
+        self.assertIn("💡 Включення очікується у 16:00", args[1])
         self.assertEqual(kwargs.get('parse_mode'), 'Markdown')
 
 if __name__ == '__main__':
