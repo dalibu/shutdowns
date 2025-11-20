@@ -46,7 +46,7 @@ async def get_shutdowns(
         # Попытка 1: DTEK парсер
         logger.info("Trying DTEK parser...")
         result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
-        provider_name = "DTEK"
+        provider_name = "ДТЕК"
         logger.info("DTEK parser succeeded")
         
     except Exception as dtek_error:
