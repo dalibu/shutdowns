@@ -381,8 +381,11 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         street = api_data.get("street", "Н/Д")
         house = api_data.get("house_num", "Н/Д")
         group = api_data.get("group", "Н/Д")
+        provider = api_data.get("provider", "DTEK")
+
         header = (
             f"🏠 Адреса: `{city}, {street}, {house}`\n"
+            f"🏭 Постачальник: `{provider}`\n"
             f"👥 Черга: `{group}`"
         )
         await message.answer(header)
@@ -954,11 +957,13 @@ async def subscription_checker_task(bot: Bot):
                 
                 # ИСПРАВЛЕНИЕ: Определение 'group' из полученных данных.
                 group = data.get("group", "Н/Д") 
+                provider = data.get("provider", "DTEK")
                 
                 # --- ИЗМЕНЕНИЕ: Форматирование уведомления с учетом нового формата ---
                 # Отправляем "шапку" (Адрес, Черга)
                 header_msg = (
                     f"🏠 Адреса: `{city}, {street}, {house}`\n"
+                    f"🏭 Постачальник: `{provider}`\n"
                     f"👥 Черга: `{group}`"
                 )
                 interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"

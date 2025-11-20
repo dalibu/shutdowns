@@ -24,6 +24,7 @@ class ShutdownResponse(BaseModel):
     street: str
     house_num: str
     group: str
+    provider: str
     schedule: Dict[str, List[ShutdownSlot]]
 
 # --- Endpoints ---
@@ -39,11 +40,13 @@ async def get_shutdowns(
     # Стратегия: сначала пробуем DTEK, потом CEK
     result = None
     last_error = None
+    provider_name = None
     
     try:
         # Попытка 1: DTEK парсер
         logger.info("Trying DTEK parser...")
         result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
+        provider_name = "DTEK"
         logger.info("DTEK parser succeeded")
         
     except Exception as dtek_error:
@@ -55,6 +58,7 @@ async def get_shutdowns(
             logger.info("Trying CEK parser...")
             # TODO: Раскомментировать когда CEK parser будет готов
             # result = await cek_parser(city=city, street=street, house=house, is_debug=False)
+            # provider_name = "CEK"
             # logger.info("CEK parser succeeded")
             
             # Временно: CEK parser не реализован
@@ -82,6 +86,7 @@ async def get_shutdowns(
             logger.error("Parser returned empty data payload.")
             raise HTTPException(status_code=500, detail="Parser returned empty data")
 
+        response_data['provider'] = provider_name
         return response_data
     
     # Если ничего не получилось
