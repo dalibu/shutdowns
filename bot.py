@@ -82,7 +82,8 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         next_check TIMESTAMP NOT NULL,
         last_schedule_hash TEXT,
         notification_lead_time INTEGER DEFAULT 0,
-        last_alert_event_start TIMESTAMP
+        last_alert_event_start TIMESTAMP,
+        group_name TEXT
     )
     """)
     
@@ -97,15 +98,27 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
     except aiosqlite.OperationalError:
         pass # Колонка уже существует
     
+    try:
+        await conn.execute("ALTER TABLE subscriptions ADD COLUMN group_name TEXT")
+    except aiosqlite.OperationalError:
+        pass # Колонка уже существует
+    
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS user_last_check (
         user_id INTEGER PRIMARY KEY,
         city TEXT NOT NULL,
         street TEXT NOT NULL,
         house TEXT NOT NULL,
-        last_hash TEXT
+        last_hash TEXT,
+        group_name TEXT
     )
     """)
+    
+    # --- Миграция: Добавляем group_name в user_last_check ---
+    try:
+        await conn.execute("ALTER TABLE user_last_check ADD COLUMN group_name TEXT")
+    except aiosqlite.OperationalError:
+        pass # Колонка уже существует
     await conn.commit()
     logger.info(f"Database initialized and connected at {db_path}")
     return conn
@@ -816,15 +829,19 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
     return False
 
 # --- 3. Интеграция с API ---
-async def _fetch_shutdowns_data_from_api(city: str, street: str, house: str) -> dict:
+async def _fetch_shutdowns_data_from_api(city: str, street: str, house: str, cached_group: str = None) -> dict:
     """Выполняет HTTP-запрос к API и возвращает JSON-ответ."""
     params = {
         "city": city,
         "street": street,
         "house": house
     }
+    # Add cached_group if available
+    if cached_group:
+        params["cached_group"] = cached_group
+        
     async with aiohttp.ClientSession() as session:
-        async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=45) as response:
+        async with session.get(f"{API_BASE_URL}/shutdowns", params=params, timeout=60) as response:
             if response.status == 404:
                 error_json = {}
                 try:
@@ -836,10 +853,10 @@ async def _fetch_shutdowns_data_from_api(city: str, street: str, house: str) -> 
             response.raise_for_status()
             return await response.json()
 
-async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
+async def get_shutdowns_data(city: str, street: str, house: str, cached_group: str = None) -> dict:
     """Вызывает API-парсер и возвращает полный агрегированный JSON-ответ."""
     try:
-        return await _fetch_shutdowns_data_from_api(city, street, house)
+        return await _fetch_shutdowns_data_from_api(city, street, house, cached_group)
     except aiohttp.ClientError:
         logger.error("API Connection Error during shutdown data fetch.", exc_info=True)
         raise ConnectionError("Помилка підключення до парсера. Спробуйте пізніше.")
@@ -1134,11 +1151,23 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
     await message.answer(f"✅ **Перевіряю графік** для адреси: {address_str}\n\n⏳ Очікуйте...")
 
     try:
-        api_data = await get_shutdowns_data(city, street, house)
+        # Try to get cached group from database
+        cached_group = None
+        cursor = await db_conn.execute(
+            "SELECT group_name FROM user_last_check WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
+            (user_id, city, street, house)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            cached_group = row[0]
+            logger.info(f"Using cached group: {cached_group}")
+        
+        api_data = await get_shutdowns_data(city, street, house, cached_group)
         current_hash = _get_schedule_hash_compact(api_data) # ИСПРАВЛЕНО: используем новую функцию
+        group = api_data.get('group', None)  # Extract group from API response
         await db_conn.execute(
-            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash) VALUES (?, ?, ?, ?, ?)",
-            (user_id, city, street, house, current_hash)
+            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, city, street, house, current_hash, group)
         )
         await db_conn.commit()
         await state.clear()
@@ -1185,11 +1214,24 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     await message.answer("⏳ Перевіряю графік за вказаною адресою. Очікуйте...")
     try:
         city, street, house = parse_address_from_text(text_args)
-        api_data = await get_shutdowns_data(city, street, house)
+        
+        # Try to get cached group from database
+        cached_group = None
+        cursor = await db_conn.execute(
+            "SELECT group_name FROM user_last_check WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
+            (user_id, city, street, house)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            cached_group = row[0]
+            logger.info(f"Using cached group for inline check: {cached_group}")
+        
+        api_data = await get_shutdowns_data(city, street, house, cached_group)
         current_hash = _get_schedule_hash_compact(api_data) # ИСПРАВЛЕНО: используем новую функцию
+        group = api_data.get('group', None)  # Extract group from API response
         await db_conn.execute(
-            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash) VALUES (?, ?, ?, ?, ?)",
-            (user_id, city, street, house, current_hash)
+            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, city, street, house, current_hash, group)
         )
         await db_conn.commit()
         
@@ -1237,7 +1279,18 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
     await message.answer(f"🔄 **Повторюю перевірку** для адреси:\n{address_str}\n⏳ Очікуйте...")
     
     try:
-        data = await get_shutdowns_data(city, street, house)
+        # Try to get cached group from database
+        cached_group = None
+        cursor = await db_conn.execute(
+            "SELECT group_name FROM user_last_check WHERE user_id = ?",
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            cached_group = row[0]
+            logger.info(f"Using cached group for /repeat: {cached_group}")
+        
+        data = await get_shutdowns_data(city, street, house, cached_group)
         current_hash = _get_schedule_hash_compact(data) # ИСПРАВЛЕНО: используем новую функцию
         await db_conn.execute(
             "UPDATE user_last_check SET last_hash = ? WHERE user_id = ?", 
@@ -1334,9 +1387,17 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         if current_lead_time == 0:
             new_lead_time = 15
 
+        # Extract group from last check or API data
+        cursor_group = await db_conn.execute(
+            "SELECT group_name FROM user_last_check WHERE user_id = ?",
+            (user_id,)
+        )
+        row_group = await cursor_group.fetchone()
+        group = row_group[0] if row_group and row_group[0] else None
+        
         await db_conn.execute(
-            "INSERT OR REPLACE INTO subscriptions (user_id, city, street, house, interval_hours, next_check, last_schedule_hash, notification_lead_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, interval_hours, next_check_time, hash_to_use, new_lead_time)
+            "INSERT OR REPLACE INTO subscriptions (user_id, city, street, house, interval_hours, next_check, last_schedule_hash, notification_lead_time, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, city, street, house, interval_hours, next_check_time, hash_to_use, new_lead_time, group)
         )
         await db_conn.commit()
         

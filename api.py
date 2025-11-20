@@ -6,8 +6,7 @@ from typing import List, Dict, Optional
 
 # Импортируем парсеры
 from dtek.dtek_parser import run_parser_service as dtek_parser
-# CEK parser будет добавлен позже
-# from cek.cek_parser import run_parser_service as cek_parser
+from cek.cek_parser import run_parser_service as cek_parser
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -33,9 +32,10 @@ class ShutdownResponse(BaseModel):
 async def get_shutdowns(
     city: str = Query(..., description="Назва міста"),
     street: str = Query(..., description="Назва вулиці"),
-    house: str = Query(..., description="Номер будинку")
+    house: str = Query(..., description="Номер будинку"),
+    cached_group: str = Query(None, description="Кешована група (опціонально)")
 ):
-    logger.info(f"API Request: City={city}, Street={street}, House={house}")
+    logger.info(f"API Request: City={city}, Street={street}, House={house}, CachedGroup={cached_group}")
     
     # Стратегия: сначала пробуем DTEK, потом CEK
     result = None
@@ -54,19 +54,11 @@ async def get_shutdowns(
         last_error = dtek_error
         
         try:
-            # Попытка 2: CEK парсер
-            logger.info("Trying CEK parser...")
-            # TODO: Раскомментировать когда CEK parser будет готов
-            # result = await cek_parser(city=city, street=street, house=house, is_debug=False)
-            # provider_name = "CEK"
-            # logger.info("CEK parser succeeded")
-            
-            # Временно: CEK parser не реализован
-            logger.error("CEK parser not implemented yet")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Address not found in DTEK. CEK parser not yet implemented. DTEK error: {str(dtek_error)[:200]}"
-            )
+            # Попытка 2: CEK парсер (с кешированной группой, если есть)
+            logger.info(f"Trying CEK parser{' with cached group ' + cached_group if cached_group else ''}...")
+            result = await cek_parser(city=city, street=street, house=house, is_debug=False, cached_group=cached_group)
+            provider_name = "ЦЕК"
+            logger.info("CEK parser succeeded")
             
         except HTTPException:
             raise  # Пробрасываем HTTPException дальше
