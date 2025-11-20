@@ -1500,10 +1500,7 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
             time_str = event_dt.strftime('%H:%M')
             minutes_left = int(time_to_event)
             
-            msg = (
-                f"⚠️ **Увага!** Через {minutes_left} хв. очікується **{msg_type}** світла.\n"
-                f"🕐 Час події: {time_str}"
-            )
+            msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла."
             
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown")
