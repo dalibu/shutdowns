@@ -209,3 +209,9 @@ __marimo__/
 .DS_Store
 dtek/data/bot.db-wal
 dtek/data/bot.db-shm
+
+# Parser output directories (each provider has its own)
+dtek/out/
+cek/out/
+
+

@@ -41,7 +41,8 @@ if not logger.handlers:
 DEFAULT_CITY = "м. Дніпро"
 DEFAULT_STREET = "вул. Сонячна набережна"
 DEFAULT_HOUSE = "6"
-OUT_DIR = "out"
+# Используем абсолютный путь относительно расположения парсера
+OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 
 # --- 3. Новые упрощенные вспомогательные функции ---
 
