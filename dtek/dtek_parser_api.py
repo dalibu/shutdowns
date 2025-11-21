@@ -3,14 +3,24 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+
 # Импортируем функцию из вашего парсера
 from dtek_parser import run_parser_service
 
+# Импортируем security middleware
+from security_middleware import SecurityMiddleware
+
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="DTEK Shutdowns API", version="1.0.0")
+
+# Add security middleware
+app.add_middleware(SecurityMiddleware)
 
 # --- Pydantic Models ---
 class ShutdownSlot(BaseModel):
@@ -24,6 +34,11 @@ class ShutdownResponse(BaseModel):
     schedule: Dict[str, List[ShutdownSlot]]
 
 # --- Endpoints ---
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring."""
+    return {"status": "healthy", "service": "DTEK Shutdowns API"}
 
 @app.get("/shutdowns", response_model=ShutdownResponse)
 async def get_shutdowns(

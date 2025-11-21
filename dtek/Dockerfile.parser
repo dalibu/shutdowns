@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем код API и парсера
 COPY dtek_parser_api.py .
 COPY dtek_parser.py .
+COPY security_middleware.py .
 
 # Запуск Uvicorn (FastAPI)
 CMD ["uvicorn", "dtek_parser_api:app", "--host", "0.0.0.0", "--port", "8000"]
