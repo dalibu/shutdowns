@@ -149,17 +149,22 @@ def format_minutes_to_hh_m(minutes: int) -> str:
     m = minutes % 60
     return f"{h:02d}:{m:02d}"
 
-def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]]) -> str:
+def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], provider: str = "DTEK") -> str:
     """
     Генерирует компактное текстовое представление расписания для одного дня.
     Возвращает строку в формате:
     "🔴 14.11.2025: 10,5 год. відключень 00:00 - 02:00 (2 год.)..."
+    Для ЦЕК использует 🟡/⚫, для ДТЕК - 🟢/🔴
     """
     outage_slots = slots
 
+    # Выбираем емодзі в зависимости от провайдера
+    emoji_no_shutdown = "🟡" if provider == "ЦЕК" else "🟢"
+    emoji_shutdown = "⚫" if provider == "ЦЕК" else "🔴"
+    
     # Сценарий: Нет отключений
     if not outage_slots:
-        return f"🟢 {date}: Не заплановані"
+        return f"{emoji_no_shutdown} {date}: Відключення не заплановані"
 
     groups = []
     current_group = None
@@ -209,7 +214,7 @@ def _process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]])
     # Формируем выходную строку
     total_duration_hours = total_duration_minutes / 60.0
     total_duration_str = _get_shutdown_duration_str_by_hours(total_duration_hours)
-    output_parts = [f"🔴 {date}: {total_duration_str} відключень\n"]
+    output_parts = [f"{emoji_shutdown} {date}: {total_duration_str} відключень\n"]
     
     for group in groups:
         start_time_final = format_minutes_to_hh_m(group["start_min"])
@@ -377,8 +382,8 @@ def _get_current_status_message(schedule: dict) -> str:
                 time_str = next_outage_start.strftime('%H:%M')
                 return f"💡 Наступне відключення у {time_str}"
             else:
-                # Если график пуст или отключений нет на ближайшее время
-                return "💡 Наступне відключення: Не заплановано (згідно з поточним графіком)"
+                # Якщо відключень немає - не показуємо статусне повідомлення
+                return None
 
     except Exception as e:
         logger.error(f"Error calculating current status: {e}")
@@ -416,25 +421,44 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Собираем слоты для 48-часового графика, но только для первых двух дней
-        all_slots_48h = {}
-        for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
-            slots = schedule.get(date, [])
-            all_slots_48h[date] = slots
-
-        # 4. Генерируем и отправляем общий 48-часовой график (если есть данные хотя бы за 1 день)
-        if all_slots_48h:
-            image_data = _generate_48h_schedule_image(all_slots_48h)
+        # 3. Генерируем и отправляем график (выбор зависит от провайдера)
+        if provider == "ЦЕК":
+            # ЦЕК: 24-часовой график (только сегодня)
+            today_slots = {}
+            if sorted_dates:
+                today_date = sorted_dates[0]
+                today_slots[today_date] = schedule.get(today_date, [])
             
-            if image_data:
-                await message.answer("🕙 **Загальний графік на 48 годин**:")
-                image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
-                await message.answer_photo(photo=image_file)
+            if today_slots:
+                image_data = _generate_24h_schedule_image(today_slots)
+                
+                if image_data:
+                    await message.answer("🕙 **Графік на 24 години**:")
+                    image_file = BufferedInputFile(image_data, filename="schedule_24h.png")
+                    await message.answer_photo(photo=image_file)
+        else:
+            # ДТЕК: 48-часовой график (первые 2 дня)
+            all_slots_48h = {}
+            for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
+                slots = schedule.get(date, [])
+                all_slots_48h[date] = slots
 
-        # 5. Цикл по дням (Только текст) - теперь после графика
-        for date in sorted_dates:
+            if all_slots_48h:
+                image_data = _generate_48h_schedule_image(all_slots_48h)
+                
+                if image_data:
+                    await message.answer("🕙 **Загальний графік на 48 годин**:")
+                    image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
+                    await message.answer_photo(photo=image_file)
+
+
+        # 5. Цикл по дням (Только текст)
+        # Для ЦЕК показываем только сегодня (первый день)
+        days_to_show = sorted_dates[:1] if provider == "ЦЕК" else sorted_dates
+        
+        for date in days_to_show:
             slots = schedule.get(date, [])
-            day_text = _process_single_day_schedule_compact(date, slots)
+            day_text = _process_single_day_schedule_compact(date, slots, provider)
             # Отправляем весь день одной сообщением
             await message.answer(day_text.strip())
 
@@ -796,6 +820,174 @@ def _generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]]) ->
         logger.error(f"Failed to generate 48h schedule image with PIL: {e}", exc_info=True)
         return None
 
+def _generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]]) -> bytes:
+    """
+    Генерирует 24-часовое изображение графика для ЦЕК.
+    НОВАЯ ЛОГИКА: 24 равных сектора (по 1 часу каждый) с белыми разделительными линиями.
+    Метки часов в середине каждого сектора (например, "20-21", "08-09").
+    """
+    global FONT_PATH
+    
+    if not day_slots:
+        return None
+
+    try:
+        # 1. Получаем данные для сегодня
+        try:
+            sorted_dates = sorted(day_slots.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        except ValueError:
+            sorted_dates = sorted(day_slots.keys())
+        
+        if not sorted_dates:
+            return None
+            
+        today_date = sorted_dates[0]
+        today_slots = day_slots[today_date]
+        
+        # 2. Создаем массив из 24 часов (каждый час - отдельный сектор)
+        # True = отключение (черный), False = свет есть (желтый)
+        hours_status = [False] * 24  # По умолчанию везде свет
+        
+        # Заполняем часы с отключениями
+        for slot in today_slots:
+            try:
+                time_str = slot.get('shutdown', '00:00–00:00')
+                time_parts = time_str.split('–')
+                if len(time_parts) != 2:
+                    continue
+                    
+                start_h, start_m = map(int, time_parts[0].split(':'))
+                end_h, end_m = map(int, time_parts[1].split(':'))
+                
+                # Определяем какие часы затронуты
+                current_h = start_h
+                while True:
+                    if current_h >= 24:
+                        current_h -= 24
+                    hours_status[current_h] = True
+                    
+                    # Проверяем достигли ли конца
+                    if current_h == end_h or (current_h + 1) % 24 == end_h:
+                        if end_m > 0:  # Если минуты > 0, значит час затронут
+                            hours_status[end_h % 24] = True
+                        break
+                    
+                    current_h += 1
+                    if current_h >= 24:
+                        current_h = 0
+                    
+                    # Защита от бесконечного цикла
+                    if current_h == start_h:
+                        break
+                        
+            except Exception as e:
+                logger.warning(f"Error processing shutdown slot '{slot}': {e}")
+                continue
+
+        # 3. Настройка рисования
+        size = 300  # Как у ДТЕК
+        padding = 30  # Как у ДТЕК
+        center = (size // 2, size // 2)
+        radius = (size // 2) - padding
+        bbox = [padding, padding, size - padding, size - padding]
+        image = Image.new('RGB', (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+
+        # 4. Загрузка шрифта
+        font_size = 9  # Уменьшен шрифт с 12 до 9
+        font = None
+        try:
+            font = ImageFont.truetype(FONT_PATH, font_size)
+        except IOError:
+            logger.warning(f"Font not found at '{FONT_PATH}', using default")
+            font = ImageFont.load_default()
+
+        # 5. Рисуем 24 сектора
+        # Каждый сектор = 15 градусов (360 / 24)
+        # Начало: 00:00 слева (180 градусов)
+        degrees_per_hour = 360.0 / 24.0  # 15 градусов на час
+        
+        for hour in range(24):
+            # Угол начала сектора (00:00 = 180°, идем по часовой стрелке)
+            start_angle = 180 + (hour * degrees_per_hour)
+            end_angle = start_angle + degrees_per_hour
+            
+            # Цвет сектора
+            color = "#000000" if hours_status[hour] else "#FFD700"
+            
+            # Рисуем сектор
+            draw.pieslice(bbox, start_angle, end_angle, fill=color, outline=None)
+
+        # 6. Рисуем белые разделительные линии между всеми секторами
+        for hour in range(24):
+            angle_deg = 180 + (hour * degrees_per_hour)
+            angle_rad = math.radians(angle_deg)
+            x_pos = center[0] + radius * math.cos(angle_rad)
+            y_pos = center[1] + radius * math.sin(angle_rad)
+            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=2)
+
+        # 7. Белый центральный круг
+        inner_radius = int(radius * 0.50)
+        inner_bbox = [
+            center[0] - inner_radius,
+            center[1] - inner_radius,
+            center[0] + inner_radius,
+            center[1] + inner_radius
+        ]
+        draw.ellipse(inner_bbox, fill='#FFFFFF', outline=None)
+        
+        # 8. Дата в центре
+        try:
+            temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
+            temp_draw = ImageDraw.Draw(temp_img)
+            temp_draw.text((50, 50), today_date, fill='#000000', font=font, anchor="mm")
+            
+            bbox_date = temp_img.getbbox()
+            if bbox_date:
+                cropped_date = temp_img.crop(bbox_date)
+                paste_x = int(center[0] - cropped_date.width // 2)
+                paste_y = int(center[1] - cropped_date.height // 2)
+                image.paste(cropped_date, (paste_x, paste_y), cropped_date)
+        except Exception as e:
+            logger.warning(f"Failed to add date: {e}")
+
+        # 9. Метки часов в середине каждого сектора
+        # Показываем ВСЕ 24 часа
+        label_radius = radius + (padding * 0.5)  # Оптимальное расстояние от секторов
+        
+        for hour in range(0, 24):  # Все 24 часа
+            # Угол середины сектора
+            mid_angle_deg = 180 + (hour * degrees_per_hour) + (degrees_per_hour / 2)
+            mid_angle_rad = math.radians(mid_angle_deg)
+            
+            x_pos = center[0] + label_radius * math.cos(mid_angle_rad)
+            y_pos = center[1] + label_radius * math.sin(mid_angle_rad)
+            
+            # Метка вида "20-21", "08-09"
+            next_hour = (hour + 1) % 24
+            label = f"{hour:02d}-{next_hour:02d}"
+            
+            try:
+                draw.text((x_pos, y_pos), label, fill="black", font=font, anchor="mm")
+            except Exception:
+                # Fallback для старых версий Pillow
+                bbox_text = draw.textbbox((0, 0), label, font=font)
+                text_width = bbox_text[2] - bbox_text[0]
+                text_height = bbox_text[3] - bbox_text[1]
+                draw.text((x_pos - text_width / 2, y_pos - text_height / 2), label, fill="black", font=font)
+
+        # 10. Без обводки основного кольца
+
+        # 11. Сохранение
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+        buf.seek(0)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to generate 24h CEK diagram: {e}", exc_info=True)
+        return None
+
 # -----------------------------------------------
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ CAPTCHA ---
@@ -992,32 +1184,51 @@ async def subscription_checker_task(bot: Bot):
                     parse_mode="Markdown"
                 )
 
-                # --- ИЗМЕНЕНИЕ: Сначала отправляем диаграмму ---
+                # --- ИЗМЕНЕНИЕ: Сначала отправляем диаграмму (выбор зависит от провайдера) ---
                 schedule = data.get("schedule", {})
                 try:
                     sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
                 except ValueError:
                     sorted_dates = sorted(schedule.keys())
 
-                days_slots_48h = {}
-                for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
-                    slots = schedule[date]
-                    days_slots_48h[date] = slots
+                # Генерируем диаграмму в зависимости от провайдера
+                if provider == "ЦЕК":
+                    # ЦЕК: 24-часовой график (только сегодня)
+                    today_slots = {}
+                    if sorted_dates:
+                        today_date = sorted_dates[0]
+                        today_slots[today_date] = schedule.get(today_date, [])
+                    
+                    if today_slots:
+                        image_data = _generate_24h_schedule_image(today_slots)
+                        if image_data:
+                            await bot.send_message(chat_id=user_id, text="🕙 **Графік на 24 години**:")
+                            image_file = BufferedInputFile(image_data, filename="schedule_24h_update.png")
+                            await bot.send_photo(chat_id=user_id, photo=image_file)
+                else:
+                    # ДТЕК: 48-часовой график (первые 2 дня)
+                    days_slots_48h = {}
+                    for idx, date in enumerate(sorted_dates[:2]): # Только первые 2 дня
+                        slots = schedule[date]
+                        days_slots_48h[date] = slots
 
-                # Отправка 48-часового графика
-                if days_slots_48h:
-                    image_data = _generate_48h_schedule_image(days_slots_48h)
-                    if image_data:
-                        await bot.send_message(chat_id=user_id, text="🕙 **Загальний графік на 48 годин**:")
-                        image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
-                        await bot.send_photo(chat_id=user_id, photo=image_file)
+                    if days_slots_48h:
+                        image_data = _generate_48h_schedule_image(days_slots_48h)
+                        if image_data:
+                            await bot.send_message(chat_id=user_id, text="🕙 **Загальний графік на 48 годин**:")
+                            image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
+                            await bot.send_photo(chat_id=user_id, photo=image_file)
+
 
                 # --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
                 # --- ИЗМЕНЕНИЕ: Затем отправляем текстовые данные по дням ---
-                for date in sorted_dates:
+                # Для ЦЕК показываем только сегодня (первый день)
+                days_to_show = sorted_dates[:1] if provider == "ЦЕК" else sorted_dates
+                
+                for date in days_to_show:
                     slots = schedule[date]
-                    day_text = _process_single_day_schedule_compact(date, slots)
+                    day_text = _process_single_day_schedule_compact(date, slots, provider)
                     # Отправляем весь день одной сообщением
                     try:
                         await bot.send_message(
