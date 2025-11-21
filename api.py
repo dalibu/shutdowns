@@ -8,11 +8,20 @@ from typing import List, Dict, Optional
 from dtek.dtek_parser import run_parser_service as dtek_parser
 from cek.cek_parser import run_parser_service as cek_parser
 
+# Импортируем security middleware
+from security_middleware import SecurityMiddleware
+
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Shutdowns API", version="1.0.0")
+
+# Add security middleware
+app.add_middleware(SecurityMiddleware)
 
 # --- Pydantic Models ---
 class ShutdownSlot(BaseModel):
@@ -27,6 +36,11 @@ class ShutdownResponse(BaseModel):
     schedule: Dict[str, List[ShutdownSlot]]
 
 # --- Endpoints ---
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring."""
+    return {"status": "healthy", "service": "Shutdowns API"}
 
 @app.get("/shutdowns", response_model=ShutdownResponse)
 async def get_shutdowns(
