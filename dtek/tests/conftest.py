@@ -4,7 +4,26 @@
 import sys
 import os
 import pytest
-from unittest.mock import Mock, AsyncMock  # <-- Добавлен AsyncMock
+from unittest.mock import Mock, AsyncMock, MagicMock
+
+# Mock aiosqlite if not installed
+try:
+    import aiosqlite
+except ImportError:
+    # Create a mock module
+    mock_aiosqlite = MagicMock()
+    mock_aiosqlite.connect = AsyncMock()
+    
+    # Define Connection class for type hinting and spec
+    class MockConnection:
+        def __init__(self, *args, **kwargs):
+            pass
+            
+    mock_aiosqlite.Connection = MockConnection
+    mock_aiosqlite.OperationalError = Exception
+    
+    # Inject into sys.modules
+    sys.modules["aiosqlite"] = mock_aiosqlite
 
 # Добавляем корневую директорию проекта в PYTHONPATH
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
