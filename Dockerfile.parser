@@ -9,8 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код API и парсеры
+# Копируем код API и# Копируем код
 COPY api.py .
+COPY security_middleware.py .
 COPY dtek/ ./dtek/
 COPY cek/ ./cek/
 
