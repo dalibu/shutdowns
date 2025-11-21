@@ -1,0 +1,16 @@
+playwright==1.55.0
+fastapi
+uvicorn
+requests
+python-dotenv
+aiogram>=3.7.0
+pytest
+pytest-asyncio
+pytest-mock
+pytest-cov
+aioresponses
+aiohttp
+httpx
+pytz
+aiosqlite
+Pillow>=9.0.0
