@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  dtek_bot:
+    build:
+      context: ../..
+      dockerfile: dtek/bot/Dockerfile
+    container_name: dtek_bot
+    restart: unless-stopped
+    environment:
+      - DTEK_BOT_TOKEN=${DTEK_BOT_TOKEN}
+      - DTEK_DB_PATH=/data/dtek_bot.db
+      - DTEK_FONT_PATH=/app/resources/DejaVuSans.ttf
+    volumes:
+      - dtek_data:/data
+    networks:
+      - bot_network
+
+volumes:
+  dtek_data:
+    driver: local
+
+networks:
+  bot_network:
+    driver: bridge

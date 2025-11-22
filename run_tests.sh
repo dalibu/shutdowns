@@ -1,165 +1,196 @@
 #!/bin/bash
 
-# Централизованный скрипт для запуска всех тестов проекта
-# Использование: ./run_tests.sh [опции] [provider]
+#############################################
+# Test Runner for Multi-Bot Architecture
+# Usage: ./run_tests.sh [test_type] [provider]
+#############################################
 
-set -e  # Остановка при ошибке
+set -e
 
-# Цвета для вывода
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-echo -e "${GREEN}🧪 Централизованный запуск тестов Shutdowns Service${NC}\n"
+echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║     Multi-Bot Test Runner              ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
 
-# Проверка установки pytest
+# Check pytest installation
 if ! python3 -m pytest --version &> /dev/null; then
-    echo -e "${RED}❌ pytest не установлен!${NC}"
-    echo "Установите: pip install pytest pytest-asyncio pytest-mock pytest-cov aioresponses"
+    echo -e "${RED}✗ pytest not installed!${NC}"
+    echo "Install: pip install pytest pytest-asyncio pytest-mock pytest-cov aioresponses"
     exit 1
 fi
 
-# Установка PYTHONPATH
+# Set PYTHONPATH
 export PYTHONPATH="."
 
-# Определяем провайдера (по умолчанию все)
-PROVIDER="${2:-all}"
+# Parse arguments
 TEST_TYPE="${1:-all}"
+PROVIDER="${2:-all}"
 
-# Функция для запуска тестов конкретного провайдера
-run_provider_tests() {
-    local provider=$1
-    local test_type=$2
-    local test_dir="${provider}/tests"
+# Function to run tests for a specific component
+run_tests() {
+    local component=$1
+    local test_dir=$2
+    local test_type=$3
     
     if [ ! -d "$test_dir" ]; then
-        echo -e "${YELLOW}⚠️  Директория ${test_dir} не найдена, пропускаем${NC}"
+        echo -e "${YELLOW}⚠ Directory ${test_dir} not found, skipping${NC}"
         return 0
     fi
     
-    echo -e "${BLUE}📦 Запуск тестов для ${provider}${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════${NC}"
+    echo -e "${BLUE}📦 Testing: ${component}${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════${NC}\n"
     
     case "$test_type" in
         all)
-            python3 -m pytest "$test_dir" -v
+            python3 -m pytest "$test_dir" -v --tb=short
             ;;
         unit)
-            python3 -m pytest "$test_dir" -m unit -v
-            ;;
-        api)
-            python3 -m pytest "$test_dir" -m api -v
+            python3 -m pytest "$test_dir" -m "unit" -v --tb=short
             ;;
         integration)
-            python3 -m pytest "$test_dir" -m integration -v
-            ;;
-        coverage)
-            python3 -m pytest "$test_dir" --cov="${provider}" --cov-report=html:"htmlcov/${provider}" --cov-report=term-missing
+            python3 -m pytest "$test_dir" -m "integration" -v --tb=short
             ;;
         quick)
-            python3 -m pytest "$test_dir" -m "not slow" -v
+            python3 -m pytest "$test_dir" -m "not slow" -v --tb=short
+            ;;
+        coverage)
+            local cov_source="${component%%/*}"  # Get first part (common, dtek, cek)
+            python3 -m pytest "$test_dir" \
+                --cov="$cov_source" \
+                --cov-report=html:"htmlcov/${component}" \
+                --cov-report=term-missing \
+                -v
+            ;;
+        failed)
+            python3 -m pytest "$test_dir" --lf -v --tb=short
             ;;
         *)
-            python3 -m pytest "$test_dir" -v
+            echo -e "${RED}✗ Unknown test type: $test_type${NC}"
+            return 1
             ;;
     esac
+    
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        echo -e "\n${GREEN}✓ ${component} tests passed${NC}\n"
+    else
+        echo -e "\n${RED}✗ ${component} tests failed${NC}\n"
+    fi
+    
+    return $exit_code
 }
 
-# Обработка аргументов
-case "$TEST_TYPE" in
-    all|unit|api|integration|quick)
-        if [ "$PROVIDER" = "all" ]; then
-            echo -e "${GREEN}📋 Запуск тестов для всех провайдеров${NC}\n"
-            run_provider_tests "dtek" "$TEST_TYPE"
-            echo ""
-            run_provider_tests "cek" "$TEST_TYPE"
-        elif [ "$PROVIDER" = "dtek" ] || [ "$PROVIDER" = "cek" ]; then
-            run_provider_tests "$PROVIDER" "$TEST_TYPE"
-        else
-            echo -e "${RED}❌ Неизвестный провайдер: $PROVIDER${NC}"
-            echo "Доступные провайдеры: dtek, cek, all"
+# Main test execution
+main() {
+    local failed_components=()
+    local passed_components=()
+    
+    case "$PROVIDER" in
+        common)
+            run_tests "Common Library" "common/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("Common") || failed_components+=("Common")
+            ;;
+        dtek)
+            run_tests "DTEK Provider" "dtek/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("DTEK") || failed_components+=("DTEK")
+            ;;
+        cek)
+            run_tests "CEK Provider" "cek/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("CEK") || failed_components+=("CEK")
+            ;;
+        all)
+            echo -e "${CYAN}Running tests for all components...${NC}\n"
+            
+            # Common library tests
+            run_tests "Common Library" "common/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("Common") || failed_components+=("Common")
+            
+            # DTEK tests
+            run_tests "DTEK Provider" "dtek/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("DTEK") || failed_components+=("DTEK")
+            
+            # CEK tests
+            run_tests "CEK Provider" "cek/tests" "$TEST_TYPE"
+            [ $? -eq 0 ] && passed_components+=("CEK") || failed_components+=("CEK")
+            ;;
+        *)
+            echo -e "${RED}✗ Unknown provider: $PROVIDER${NC}"
+            echo -e "${YELLOW}Usage: ./run_tests.sh [test_type] [provider]${NC}"
+            echo -e "${YELLOW}Test types: all, unit, integration, quick, coverage, failed${NC}"
+            echo -e "${YELLOW}Providers: all, common, dtek, cek${NC}"
             exit 1
-        fi
-        ;;
-    coverage|cov)
-        echo -e "${GREEN}📊 Запуск с покрытием кода${NC}\n"
-        if [ "$PROVIDER" = "all" ]; then
-            run_provider_tests "dtek" "coverage"
-            echo ""
-            run_provider_tests "cek" "coverage"
-            echo -e "\n${GREEN}✅ HTML отчеты созданы в htmlcov/dtek и htmlcov/cek${NC}"
-        else
-            run_provider_tests "$PROVIDER" "coverage"
-            echo -e "\n${GREEN}✅ HTML отчет создан в htmlcov/${PROVIDER}${NC}"
-        fi
-        ;;
-    failed)
-        echo -e "${GREEN}🔄 Повторный запуск упавших тестов${NC}\n"
-        if [ "$PROVIDER" = "all" ]; then
-            python3 -m pytest dtek/tests cek/tests --lf -v
-        else
-            python3 -m pytest "${PROVIDER}/tests" --lf -v
-        fi
-        ;;
-    debug)
-        echo -e "${GREEN}🐛 Запуск с отладчиком${NC}\n"
-        if [ "$PROVIDER" = "all" ]; then
-            python3 -m pytest dtek/tests cek/tests --pdb -v
-        else
-            python3 -m pytest "${PROVIDER}/tests" --pdb -v
-        fi
-        ;;
-    verbose)
-        echo -e "${GREEN}📢 Подробный вывод${NC}\n"
-        if [ "$PROVIDER" = "all" ]; then
-            python3 -m pytest dtek/tests cek/tests -vv -s
-        else
-            python3 -m pytest "${PROVIDER}/tests" -vv -s
-        fi
-        ;;
-    help|--help|-h)
-        echo "Использование: ./run_tests.sh [команда] [провайдер]"
+            ;;
+    esac
+    
+    # Summary
+    echo -e "${BLUE}═══════════════════════════════════════${NC}"
+    echo -e "${BLUE}📊 Test Summary${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════${NC}\n"
+    
+    if [ ${#passed_components[@]} -gt 0 ]; then
+        echo -e "${GREEN}✓ Passed (${#passed_components[@]}):${NC}"
+        for component in "${passed_components[@]}"; do
+            echo -e "  ${GREEN}✓${NC} $component"
+        done
         echo ""
-        echo "Команды:"
-        echo "  all         - Запустить все тесты (по умолчанию)"
-        echo "  unit        - Только unit тесты"
-        echo "  api         - Только API тесты"
-        echo "  integration - Только интеграционные тесты"
-        echo "  coverage    - Запуск с отчетом о покрытии"
-        echo "  quick       - Быстрый запуск (без медленных)"
-        echo "  failed      - Повторить только упавшие тесты"
-        echo "  debug       - Запуск с отладчиком (--pdb)"
-        echo "  verbose     - Подробный вывод"
-        echo "  help        - Показать эту справку"
+    fi
+    
+    if [ ${#failed_components[@]} -gt 0 ]; then
+        echo -e "${RED}✗ Failed (${#failed_components[@]}):${NC}"
+        for component in "${failed_components[@]}"; do
+            echo -e "  ${RED}✗${NC} $component"
+        done
         echo ""
-        echo "Провайдеры:"
-        echo "  all         - Все провайдеры (по умолчанию)"
-        echo "  dtek        - Только DTEK"
-        echo "  cek         - Только CEK"
-        echo ""
-        echo "Примеры:"
-        echo "  ./run_tests.sh                    # Все тесты всех провайдеров"
-        echo "  ./run_tests.sh unit dtek          # Unit тесты DTEK"
-        echo "  ./run_tests.sh coverage all       # Покрытие всех провайдеров"
-        echo "  ./run_tests.sh quick cek          # Быстрые тесты CEK"
-        exit 0
-        ;;
-    *)
-        echo -e "${RED}❌ Неизвестная команда: $TEST_TYPE${NC}"
-        echo "Используйте './run_tests.sh help' для справки"
         exit 1
-        ;;
-esac
+    fi
+    
+    echo -e "${GREEN}🎉 All tests passed!${NC}\n"
+    
+    # Show coverage report location if coverage was run
+    if [ "$TEST_TYPE" = "coverage" ]; then
+        echo -e "${BLUE}📈 Coverage reports:${NC}"
+        echo -e "  ${CYAN}htmlcov/${NC}"
+        echo ""
+    fi
+}
 
-# Код выхода pytest
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo -e "\n${GREEN}✅ Все тесты прошли успешно!${NC}"
-else
-    echo -e "\n${RED}❌ Некоторые тесты упали (код: $EXIT_CODE)${NC}"
-    echo -e "${YELLOW}💡 Попробуйте: ./run_tests.sh debug${NC}"
+# Help message
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo -e "${CYAN}Usage:${NC}"
+    echo -e "  ./run_tests.sh [test_type] [provider]"
+    echo ""
+    echo -e "${CYAN}Test Types:${NC}"
+    echo -e "  ${GREEN}all${NC}         - Run all tests (default)"
+    echo -e "  ${GREEN}unit${NC}        - Run only unit tests"
+    echo -e "  ${GREEN}integration${NC} - Run only integration tests"
+    echo -e "  ${GREEN}quick${NC}       - Run quick tests (exclude slow tests)"
+    echo -e "  ${GREEN}coverage${NC}    - Run tests with coverage report"
+    echo -e "  ${GREEN}failed${NC}      - Re-run only failed tests from last run"
+    echo ""
+    echo -e "${CYAN}Providers:${NC}"
+    echo -e "  ${GREEN}all${NC}         - Test all components (default)"
+    echo -e "  ${GREEN}common${NC}      - Test common library only"
+    echo -e "  ${GREEN}dtek${NC}        - Test DTEK provider only"
+    echo -e "  ${GREEN}cek${NC}         - Test CEK provider only"
+    echo ""
+    echo -e "${CYAN}Examples:${NC}"
+    echo -e "  ./run_tests.sh                    # Run all tests"
+    echo -e "  ./run_tests.sh all dtek           # Run all DTEK tests"
+    echo -e "  ./run_tests.sh unit all           # Run unit tests for all"
+    echo -e "  ./run_tests.sh coverage common    # Coverage for common library"
+    echo -e "  ./run_tests.sh quick cek          # Quick CEK tests"
+    echo -e "  ./run_tests.sh failed all         # Re-run failed tests"
+    echo ""
+    exit 0
 fi
 
-exit $EXIT_CODE
+# Run main function
+main

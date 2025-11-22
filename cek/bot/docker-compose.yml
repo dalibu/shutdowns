@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  cek_bot:
+    build:
+      context: ../..
+      dockerfile: cek/bot/Dockerfile
+    container_name: cek_bot
+    restart: unless-stopped
+    environment:
+      - CEK_BOT_TOKEN=${CEK_BOT_TOKEN}
+      - CEK_DB_PATH=/data/cek_bot.db
+      - CEK_FONT_PATH=/app/resources/DejaVuSans.ttf
+    volumes:
+      - cek_data:/data
+    networks:
+      - bot_network
+
+volumes:
+  cek_data:
+    driver: local
+
+networks:
+  bot_network:
+    driver: bridge

@@ -1,153 +1,184 @@
 #!/bin/bash
 
 #############################################
-# Скрипт деплоя проектов на сервер
-# Использование: bash deploy.sh [project]
+# Deployment Script for Multi-Bot Architecture
+# Usage: bash deploy.sh [dtek|cek|all]
 #############################################
 
 set -e
 
-# Цвета
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-PROJECT=${1:-all}
+BOT=${1:-all}
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-LOG_FILE="/var/log/deployments/deploy-${TIMESTAMP}.log"
+LOG_DIR="/var/log/shutdowns-deployments"
+LOG_FILE="${LOG_DIR}/deploy-${TIMESTAMP}.log"
+
+# Create log directory if it doesn't exist
+mkdir -p "$LOG_DIR"
 
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║         Deployment Script              ║${NC}"
+echo -e "${GREEN}║    Multi-Bot Deployment Script         ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
 
-# Функция логирования
+# Logging function
 log() {
     echo -e "$1" | tee -a "$LOG_FILE"
 }
 
-# Функция деплоя Shutdowns Bot
-deploy_shutdowns() {
-    log "${BLUE}📦 Deploying Shutdowns Bot...${NC}"
+# Backup database function
+backup_db() {
+    local bot_name=$1
+    local db_path=$2
     
-    cd /opt/shutdowns
-    
-    # Бэкап БД перед обновлением
-    if [ -f "data/bot.db" ]; then
-        log "${YELLOW}💾 Backing up database...${NC}"
-        cp data/bot.db data/bot.db.backup-${TIMESTAMP}
-    fi
-    
-    # Обновление кода
-    log "${BLUE}📥 Pulling latest code...${NC}"
-    git pull origin shutdowns-common
-    
-    # Пересборка и перезапуск контейнеров
-    log "${BLUE}🔨 Rebuilding containers...${NC}"
-    docker compose down
-    docker compose build --no-cache
-    docker compose up -d
-    
-    # Проверка статуса
-    sleep 5
-    if docker compose ps | grep -q "Up"; then
-        log "${GREEN}✅ Shutdowns Bot deployed successfully${NC}"
+    if [ -f "$db_path" ]; then
+        log "${YELLOW}💾 Backing up ${bot_name} database...${NC}"
+        cp "$db_path" "${db_path}.backup-${TIMESTAMP}"
+        log "${GREEN}✓ Database backed up${NC}"
     else
-        log "${RED}❌ Deployment failed! Check logs: docker compose logs${NC}"
-        exit 1
+        log "${YELLOW}⚠ No database found at ${db_path}${NC}"
     fi
 }
 
-# Функция деплоя Personal Site
-deploy_personal_site() {
-    log "${BLUE}📦 Deploying Personal Site...${NC}"
+# Deploy bot function
+deploy_bot() {
+    local bot_name=$1
+    local bot_dir=$2
     
-    cd /opt/personal-site
+    log "\n${BLUE}═══════════════════════════════════════${NC}"
+    log "${BLUE}📦 Deploying ${bot_name} Bot...${NC}"
+    log "${BLUE}═══════════════════════════════════════${NC}\n"
     
-    # Обновление кода
-    log "${BLUE}📥 Pulling latest code...${NC}"
-    git pull origin main
+    # Navigate to bot directory
+    cd "$bot_dir" || {
+        log "${RED}✗ Failed to navigate to ${bot_dir}${NC}"
+        return 1
+    }
     
-    # Если есть build процесс (например, для React/Vue)
-    if [ -f "package.json" ]; then
-        log "${BLUE}🔨 Building site...${NC}"
-        npm install
-        npm run build
+    # Check if .env exists
+    if [ ! -f ".env" ]; then
+        log "${RED}✗ .env file not found in ${bot_dir}${NC}"
+        log "${YELLOW}  Please create .env from .env.example${NC}"
+        return 1
     fi
     
-    # Перезагрузка Nginx
-    log "${BLUE}🔄 Reloading Nginx...${NC}"
-    nginx -t && systemctl reload nginx
+    # Stop existing containers
+    log "${BLUE}🛑 Stopping existing containers...${NC}"
+    docker-compose down || true
     
-    log "${GREEN}✅ Personal Site deployed successfully${NC}"
-}
-
-# Функция деплоя Web App
-deploy_webapp() {
-    local app_name=$1
-    log "${BLUE}📦 Deploying ${app_name}...${NC}"
-    
-    cd /opt/${app_name}
-    
-    # Обновление кода
+    # Pull latest code (from parent directory)
+    cd ../..
     log "${BLUE}📥 Pulling latest code...${NC}"
-    git pull origin main
+    git pull origin main || {
+        log "${YELLOW}⚠ Git pull failed, continuing with local code${NC}"
+    }
     
-    # Пересборка контейнеров
-    if [ -f "docker-compose.yml" ]; then
-        log "${BLUE}🔨 Rebuilding containers...${NC}"
-        docker compose down
-        docker compose build --no-cache
-        docker compose up -d
+    # Return to bot directory
+    cd "$bot_dir"
+    
+    # Build new images
+    log "${BLUE}🔨 Building Docker images...${NC}"
+    docker-compose build --no-cache
+    
+    # Start containers
+    log "${BLUE}🚀 Starting containers...${NC}"
+    docker-compose up -d
+    
+    # Wait for container to be healthy
+    log "${BLUE}⏳ Waiting for container to be ready...${NC}"
+    sleep 5
+    
+    # Check container status
+    if docker-compose ps | grep -q "Up"; then
+        log "${GREEN}✓ ${bot_name} bot deployed successfully!${NC}"
         
-        sleep 5
-        if docker compose ps | grep -q "Up"; then
-            log "${GREEN}✅ ${app_name} deployed successfully${NC}"
-        else
-            log "${RED}❌ Deployment failed! Check logs${NC}"
-            exit 1
-        fi
+        # Show logs
+        log "${BLUE}📋 Recent logs:${NC}"
+        docker-compose logs --tail=20
+        
+        return 0
+    else
+        log "${RED}✗ ${bot_name} bot failed to start${NC}"
+        log "${RED}📋 Error logs:${NC}"
+        docker-compose logs --tail=50
+        return 1
     fi
 }
 
-# Основная логика
-case "$PROJECT" in
-    shutdowns)
-        deploy_shutdowns
-        ;;
-    personal-site)
-        deploy_personal_site
-        ;;
-    webapp1)
-        deploy_webapp "webapp1"
-        ;;
-    webapp2)
-        deploy_webapp "webapp2"
-        ;;
-    all)
-        log "${GREEN}🚀 Deploying all projects...${NC}\n"
-        deploy_shutdowns
-        echo ""
-        deploy_personal_site
-        echo ""
-        deploy_webapp "webapp1"
-        echo ""
-        deploy_webapp "webapp2"
-        log "\n${GREEN}✅ All projects deployed!${NC}"
-        ;;
-    *)
-        echo -e "${RED}❌ Unknown project: $PROJECT${NC}"
-        echo "Usage: bash deploy.sh [shutdowns|personal-site|webapp1|webapp2|all]"
-        exit 1
-        ;;
-esac
+# Main deployment logic
+main() {
+    local project_root="/opt/shutdowns"
+    
+    # Check if we're in the right directory
+    if [ ! -d "$project_root" ]; then
+        log "${YELLOW}⚠ Project directory not found at ${project_root}${NC}"
+        log "${YELLOW}  Using current directory: $(pwd)${NC}"
+        project_root=$(pwd)
+    fi
+    
+    cd "$project_root"
+    
+    case "$BOT" in
+        dtek)
+            backup_db "DTEK" "${project_root}/dtek/bot/data/dtek_bot.db"
+            deploy_bot "DTEK" "${project_root}/dtek/bot"
+            ;;
+        cek)
+            backup_db "CEK" "${project_root}/cek/bot/data/cek_bot.db"
+            deploy_bot "CEK" "${project_root}/cek/bot"
+            ;;
+        all)
+            log "${GREEN}Deploying all bots...${NC}\n"
+            
+            backup_db "DTEK" "${project_root}/dtek/bot/data/dtek_bot.db"
+            backup_db "CEK" "${project_root}/cek/bot/data/cek_bot.db"
+            
+            deploy_bot "DTEK" "${project_root}/dtek/bot"
+            DTEK_STATUS=$?
+            
+            deploy_bot "CEK" "${project_root}/cek/bot"
+            CEK_STATUS=$?
+            
+            # Summary
+            log "\n${BLUE}═══════════════════════════════════════${NC}"
+            log "${BLUE}📊 Deployment Summary${NC}"
+            log "${BLUE}═══════════════════════════════════════${NC}\n"
+            
+            if [ $DTEK_STATUS -eq 0 ]; then
+                log "${GREEN}✓ DTEK bot: SUCCESS${NC}"
+            else
+                log "${RED}✗ DTEK bot: FAILED${NC}"
+            fi
+            
+            if [ $CEK_STATUS -eq 0 ]; then
+                log "${GREEN}✓ CEK bot: SUCCESS${NC}"
+            else
+                log "${RED}✗ CEK bot: FAILED${NC}"
+            fi
+            
+            if [ $DTEK_STATUS -eq 0 ] && [ $CEK_STATUS -eq 0 ]; then
+                log "\n${GREEN}🎉 All bots deployed successfully!${NC}"
+                exit 0
+            else
+                log "\n${RED}⚠ Some deployments failed. Check logs above.${NC}"
+                exit 1
+            fi
+            ;;
+        *)
+            log "${RED}✗ Invalid bot name: ${BOT}${NC}"
+            log "${YELLOW}Usage: bash deploy.sh [dtek|cek|all]${NC}"
+            exit 1
+            ;;
+    esac
+    
+    log "\n${GREEN}✓ Deployment completed${NC}"
+    log "${BLUE}Log file: ${LOG_FILE}${NC}\n"
+}
 
-# Очистка старых Docker образов
-log "\n${BLUE}🧹 Cleaning up old Docker images...${NC}"
-docker system prune -f
-
-log "\n${GREEN}╔════════════════════════════════════════╗${NC}"
-log "${GREEN}║      Deployment Complete! ✓            ║${NC}"
-log "${GREEN}╚════════════════════════════════════════╝${NC}"
-log "\n${YELLOW}📝 Log saved to: ${LOG_FILE}${NC}\n"
+# Run main function
+main

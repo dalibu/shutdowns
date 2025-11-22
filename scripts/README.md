@@ -1,216 +1,192 @@
-# Server Automation Scripts
+# Deployment Scripts
 
-This directory contains automation scripts for managing the Contabo VPS server.
+Набор скриптов для управления DTEK и CEK ботами в продакшн окружении.
 
-## 📜 Available Scripts
+## Скрипты
 
-### 1. `setup-server.sh` - Initial Server Setup
-**Purpose**: Automates the initial setup of a fresh Contabo VPS.
+### 1. deploy.sh - Деплой ботов
 
-**What it does**:
-- Updates system packages
-- Installs Docker & Docker Compose
-- Installs Nginx
-- Installs Certbot for SSL certificates
-- Configures UFW firewall
-- Installs and configures Fail2ban
-- Sets up automatic security updates
-- Creates project directories
+Автоматический деплой одного или всех ботов.
 
-**Usage**:
+**Использование:**
 ```bash
-# On fresh Contabo VPS (as root)
-wget https://raw.githubusercontent.com/your-repo/shutdowns/main/scripts/setup-server.sh
-sudo bash setup-server.sh
+# Деплой DTEK бота
+bash scripts/deploy.sh dtek
+
+# Деплой CEK бота
+bash scripts/deploy.sh cek
+
+# Деплой всех ботов
+bash scripts/deploy.sh all
 ```
 
-**Time**: ~5-10 minutes
+**Что делает:**
+- Создает бэкап базы данных
+- Останавливает текущие контейнеры
+- Обновляет код из git
+- Пересобирает Docker образы
+- Запускает новые контейнеры
+- Проверяет статус и показывает логи
 
----
+**Логи:** `/var/log/shutdowns-deployments/deploy-YYYYMMDD-HHMMSS.log`
 
-### 2. `deploy.sh` - Project Deployment
-**Purpose**: Deploy or update projects on the server.
+### 2. backup.sh - Резервное копирование
 
-**Usage**:
+Создает бэкапы баз данных и конфигураций.
+
+**Использование:**
 ```bash
-# Deploy specific project
-bash deploy.sh shutdowns
-bash deploy.sh personal-site
-bash deploy.sh webapp1
+# Бэкап DTEK бота
+bash scripts/backup.sh dtek
 
-# Deploy all projects
-bash deploy.sh all
+# Бэкап CEK бота
+bash scripts/backup.sh cek
+
+# Бэкап всех ботов
+bash scripts/backup.sh all
 ```
 
-**Features**:
-- Automatic database backup before update
-- Git pull latest code
-- Docker rebuild and restart
-- Health check after deployment
-- Deployment logging
+**Что делает:**
+- Экспортирует базу данных из контейнера
+- Копирует .env файлы
+- Создает tar.gz архив
+- Удаляет бэкапы старше 7 дней
 
----
+**Бэкапы:** `/opt/backups/shutdowns/`
 
-### 3. `monitor.sh` - Server Monitoring
-**Purpose**: Real-time monitoring of server resources and services.
+### 3. monitor.sh - Мониторинг
 
-**Usage**:
+Проверяет статус и здоровье ботов.
+
+**Использование:**
 ```bash
-# Single check
-bash monitor.sh
+# Мониторинг DTEK бота
+bash scripts/monitor.sh dtek
 
-# Live monitoring (updates every 5 seconds)
-watch -n 5 bash monitor.sh
+# Мониторинг CEK бота
+bash scripts/monitor.sh cek
+
+# Мониторинг всех ботов
+bash scripts/monitor.sh all
 ```
 
-**Shows**:
-- CPU, RAM, Disk usage
-- Docker container status
-- System services status
-- Nginx connections
-- Recent errors
-- SSL certificate expiry
+**Что показывает:**
+- Статус контейнера (запущен/остановлен)
+- Время работы (uptime)
+- Использование ресурсов (CPU, RAM, Network)
+- Последние логи
+- Количество ошибок
+- Health check (активность за последние 5 минут)
 
----
+## Установка
 
-### 4. `backup.sh` - Backup Script
-**Purpose**: Create backups of databases and configurations.
-
-**Usage**:
+1. Сделать скрипты исполняемыми:
 ```bash
-# Manual backup
-bash backup.sh
-
-# Automated (add to crontab)
-0 3 * * * /opt/shutdowns/scripts/backup.sh >> /var/log/backups.log 2>&1
+chmod +x scripts/*.sh
 ```
 
-**Backs up**:
-- Shutdowns bot database
-- Nginx configurations
-- Environment files (.env)
-
-**Retention**: Keeps backups for 30 days
-
----
-
-## 🚀 Quick Start Guide
-
-### First Time Setup:
-
-1. **Purchase Contabo VPS** and get SSH access
-2. **Connect to server**:
-   ```bash
-   ssh root@your-server-ip
-   ```
-
-3. **Run setup script**:
-   ```bash
-   wget https://raw.githubusercontent.com/your-repo/shutdowns/main/scripts/setup-server.sh
-   bash setup-server.sh
-   ```
-
-4. **Clone your projects**:
-   ```bash
-   cd /opt/shutdowns
-   git clone https://github.com/your-repo/shutdowns.git .
-   ```
-
-5. **Configure environment**:
-   ```bash
-   cp .env.example .env
-   nano .env  # Add your bot token
-   ```
-
-6. **Deploy**:
-   ```bash
-   bash scripts/deploy.sh shutdowns
-   ```
-
----
-
-## 📅 Recommended Cron Jobs
-
-Add to crontab (`crontab -e`):
-
+2. Создать необходимые директории:
 ```bash
-# Daily backup at 3 AM
-0 3 * * * /opt/shutdowns/scripts/backup.sh >> /var/log/backups.log 2>&1
-
-# Weekly deployment (optional, for auto-updates)
-0 4 * * 0 /opt/shutdowns/scripts/deploy.sh all >> /var/log/deployments/weekly.log 2>&1
-
-# SSL certificate renewal check (Certbot does this automatically, but just in case)
-0 0 * * * certbot renew --quiet
+sudo mkdir -p /var/log/shutdowns-deployments
+sudo mkdir -p /opt/backups/shutdowns
+sudo chown -R $USER:$USER /var/log/shutdowns-deployments /opt/backups/shutdowns
 ```
 
----
+## Автоматизация
 
-## 🔒 Security Best Practices
+### Cron задачи
 
-1. **Change default SSH port** (optional):
-   ```bash
-   nano /etc/ssh/sshd_config
-   # Change Port 22 to Port 2222
-   systemctl restart sshd
-   ufw allow 2222/tcp
-   ```
+Добавить в crontab (`crontab -e`):
 
-2. **Disable root login**:
-   ```bash
-   # Create sudo user first
-   adduser yourname
-   usermod -aG sudo yourname
-   
-   # Then disable root
-   nano /etc/ssh/sshd_config
-   # Set: PermitRootLogin no
-   systemctl restart sshd
-   ```
-
-3. **Setup SSH keys** (instead of passwords):
-   ```bash
-   # On your local machine
-   ssh-copy-id user@server-ip
-   ```
-
----
-
-## 📊 Monitoring & Alerts
-
-For production, consider adding:
-- **Uptime monitoring**: UptimeRobot (free)
-- **Log aggregation**: Papertrail (free tier)
-- **Error tracking**: Sentry (free tier)
-
----
-
-## 🆘 Troubleshooting
-
-### Container won't start:
 ```bash
-docker compose logs -f
-docker compose down && docker compose up -d
+# Ежедневный бэкап в 3:00
+0 3 * * * /opt/shutdowns/scripts/backup.sh all >> /var/log/shutdowns-deployments/backup.log 2>&1
+
+# Мониторинг каждые 15 минут
+*/15 * * * * /opt/shutdowns/scripts/monitor.sh all >> /var/log/shutdowns-deployments/monitor.log 2>&1
 ```
 
-### Nginx errors:
+### Systemd таймеры
+
+Альтернатива cron - systemd таймеры (более современный подход).
+
+## Требования
+
+- Docker и Docker Compose
+- Git
+- Bash 4.0+
+- Права на запись в `/var/log/shutdowns-deployments` и `/opt/backups/shutdowns`
+
+## Примеры использования
+
+### Обычный деплой
 ```bash
-nginx -t
-systemctl status nginx
-tail -f /var/log/nginx/error.log
+# Обновить только DTEK бота
+cd /opt/shutdowns
+bash scripts/deploy.sh dtek
 ```
 
-### Disk space issues:
+### Деплой с проверкой
 ```bash
-docker system prune -a  # Remove unused Docker data
-du -sh /opt/*          # Check directory sizes
+# Деплой всех ботов и проверка статуса
+bash scripts/deploy.sh all && bash scripts/monitor.sh all
 ```
 
----
+### Бэкап перед обновлением
+```bash
+# Создать бэкап перед деплоем
+bash scripts/backup.sh all
+bash scripts/deploy.sh all
+```
 
-## 📝 Logs Location
+### Проверка здоровья
+```bash
+# Быстрая проверка всех ботов
+bash scripts/monitor.sh all
+```
 
-- Deployment logs: `/var/log/deployments/`
-- Nginx logs: `/var/log/nginx/`
-- Docker logs: `docker compose logs`
-- System logs: `/var/log/syslog`
+## Troubleshooting
+
+### Бот не запускается после деплоя
+```bash
+# Проверить логи
+docker-compose -f dtek/bot/docker-compose.yml logs --tail=100
+
+# Проверить .env файл
+cat dtek/bot/.env
+```
+
+### Восстановление из бэкапа
+```bash
+# Найти нужный бэкап
+ls -lh /opt/backups/shutdowns/dtek/
+
+# Распаковать
+cd /opt/backups/shutdowns
+tar -xzf dtek-backup-20231122-120000.tar.gz
+
+# Восстановить базу данных
+docker cp dtek/20231122-120000/dtek_bot.db dtek_bot:/data/dtek_bot.db
+docker-compose -f /opt/shutdowns/dtek/bot/docker-compose.yml restart
+```
+
+### Очистка старых логов
+```bash
+# Удалить логи старше 30 дней
+find /var/log/shutdowns-deployments -name "*.log" -mtime +30 -delete
+```
+
+## Безопасность
+
+- Скрипты требуют доступа к Docker (пользователь должен быть в группе `docker`)
+- Бэкапы содержат чувствительные данные (.env файлы)
+- Рекомендуется настроить права доступа: `chmod 700 scripts/*.sh`
+- Логи могут содержать токены - защитите директорию логов
+
+## Поддержка
+
+При проблемах проверьте:
+1. Логи деплоя: `/var/log/shutdowns-deployments/`
+2. Логи контейнеров: `docker-compose logs`
+3. Статус контейнеров: `docker ps -a`
+4. Наличие .env файлов в директориях ботов
