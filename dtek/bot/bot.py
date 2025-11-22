@@ -46,7 +46,7 @@ from dtek.parser.dtek_parser import run_parser_service as dtek_parser
 # --- Configuration ---
 PROVIDER = "DTEK"
 BOT_TOKEN = os.getenv("DTEK_BOT_TOKEN")
-DB_PATH = os.getenv("DTEK_DB_PATH", "/data/dtek_bot.db")
+DB_PATH = os.getenv("DTEK_DB_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "bot.db"))
 FONT_PATH = os.getenv("DTEK_FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
 
 # Logging

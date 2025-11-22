@@ -46,7 +46,7 @@ from cek.parser.cek_parser import run_parser_service as cek_parser
 # --- Configuration ---
 PROVIDER = "CEK"
 BOT_TOKEN = os.getenv("CEK_BOT_TOKEN")
-DB_PATH = os.getenv("CEK_DB_PATH", "/data/cek_bot.db")
+DB_PATH = os.getenv("CEK_DB_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "bot.db"))
 FONT_PATH = os.getenv("CEK_FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
 
 # Logging

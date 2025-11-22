@@ -217,4 +217,12 @@ dtek/data/bot.db-shm
 dtek/out/
 cek/out/
 
+# Bot data directories
+dtek/data/*.db
+dtek/data/*.db-shm
+dtek/data/*.db-wal
+cek/data/*.db
+cek/data/*.db-shm
+cek/data/*.db-wal
+
 

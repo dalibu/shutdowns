@@ -12,13 +12,9 @@ services:
       - DTEK_DB_PATH=/data/dtek_bot.db
       - DTEK_FONT_PATH=/app/resources/DejaVuSans.ttf
     volumes:
-      - dtek_data:/data
+      - ../../dtek/data:/data
     networks:
       - bot_network
-
-volumes:
-  dtek_data:
-    driver: local
 
 networks:
   bot_network:

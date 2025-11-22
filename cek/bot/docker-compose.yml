@@ -12,13 +12,9 @@ services:
       - CEK_DB_PATH=/data/cek_bot.db
       - CEK_FONT_PATH=/app/resources/DejaVuSans.ttf
     volumes:
-      - cek_data:/data
+      - ../../cek/data:/data
     networks:
       - bot_network
-
-volumes:
-  cek_data:
-    driver: local
 
 networks:
   bot_network:
