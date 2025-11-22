@@ -22,7 +22,7 @@ echo -e "${GREEN}╚════════════════════
 # Check pytest installation
 if ! python3 -m pytest --version &> /dev/null; then
     echo -e "${RED}✗ pytest not installed!${NC}"
-    echo "Install: pip install pytest pytest-asyncio pytest-mock pytest-cov aioresponses"
+    echo "Install: pip install -r requirements-dev.txt"
     exit 1
 fi
 

@@ -134,7 +134,7 @@ The `common/` directory contains shared logic used by both bots:
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Run DTEK bot
 export DTEK_BOT_TOKEN="your_token"
