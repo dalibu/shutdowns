@@ -17,8 +17,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from fastapi import status
+from datetime import datetime
+import pytz
+
+# Настройка логирования с Kyiv timezone
+def custom_time(*args):
+    """Возвращает текущее время в Киевском часовом поясе для логирования."""
+    return datetime.now(pytz.timezone('Europe/Kyiv')).timetuple()
 
 logger = logging.getLogger(__name__)
+# Применяем custom time converter для этого logger
+for handler in logging.root.handlers:
+    if handler.formatter:
+        handler.formatter.converter = custom_time
 
 # Security configuration
 RATE_LIMIT_REQUESTS = 60  # requests per minute

@@ -3,6 +3,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+from datetime import datetime
+import pytz
 
 # Импортируем парсеры
 from dtek.dtek_parser import run_parser_service as dtek_parser
@@ -11,10 +13,16 @@ from cek.cek_parser import run_parser_service as cek_parser
 # Импортируем security middleware
 from security_middleware import SecurityMiddleware
 
-# Настройка логирования
+# Настройка логирования с Kyiv timezone
+def custom_time(*args):
+    """Возвращает текущее время в Киевском часовом поясе для логирования."""
+    return datetime.now(pytz.timezone('Europe/Kyiv')).timetuple()
+
+logging.Formatter.converter = custom_time
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
