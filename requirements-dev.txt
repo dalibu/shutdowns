@@ -1,0 +1,12 @@
+aiogram>=3.7.0
+playwright==1.55.0
+python-dotenv
+pytz
+aiosqlite
+Pillow>=9.0.0
+aiohttp
+pytest
+pytest-asyncio
+pytest-mock
+pytest-cov
+aioresponses

@@ -1,147 +1,200 @@
-# Power Shutdowns Telegram Bot
+# Power Shutdowns Telegram Bots
 
-A centralized Telegram bot service for tracking planned power shutdowns across multiple electricity providers in Ukraine.
+Independent Telegram bot services for tracking planned power shutdowns across multiple electricity providers in Ukraine.
 
 ## Overview
 
-This service provides a unified interface for users to check power shutdown schedules regardless of their electricity provider. Users simply enter their address, and the system automatically determines their provider and displays the relevant shutdown schedule.
+This project provides **independent, provider-specific bots** for checking power shutdown schedules. Each provider (DTEK, CEK) has its own standalone bot that can be deployed separately for different clients.
 
 ### Supported Providers
 
 - **DTEK** (ДТЕК) - Serves Dnipro, Kyiv, Odesa and other regions
-- **CEK** (ЦЕК) - Central Energy Company serving other regions (optimized with group caching)
+- **CEK** (ЦЕК) - Central Energy Company (with group caching optimization)
 
 ## Architecture
 
-The project uses a centralized architecture with the following components:
-
-### Core Components
-
-- **`api.py`** - Central FastAPI service that:
-  - Receives address requests from the bot
-  - Determines the electricity provider based on the address
-  - Routes requests to the appropriate parser (DTEK or CEK)
-  - Returns unified shutdown schedule data
-  - **New:** Supports `cached_group` parameter for optimized CEK lookups
-
-- **`bot.py`** - Telegram bot that:
-  - Provides user interface for address input
-  - Communicates with the central API
-  - Displays shutdown schedules with visual graphics
-  - Supports subscriptions for automatic updates
-  - **New:** Caches provider groups locally to speed up repeated requests (70% faster)
-
-### Provider Parsers
-
-- **`dtek/dtek_parser.py`** - Web scraper for DTEK shutdown schedules
-- **`cek/cek_parser.py`** - Web scraper for CEK shutdown schedules (fully implemented with 2-step process)
-
-### Shared Resources
-
-- **`resources/`** - Fonts and assets used by the bot for generating schedule images
-
-## Project Structure
+The project uses a **multi-bot architecture** with shared common logic:
 
 ```
 shutdowns/
-├── api.py                  # Central API with provider resolution
-├── bot.py                  # Telegram bot
-├── resources/              # Shared fonts and assets
-├── requirements.txt        # Python dependencies
-├── Dockerfile.bot          # Bot container definition
-├── Dockerfile.parser       # API container definition
-├── docker-compose.yml      # Service orchestration
-├── .env.example            # Environment variables template
-├── dtek/
-│   ├── __init__.py
-│   └── dtek_parser.py      # DTEK-specific parser
-└── cek/
-    ├── __init__.py
-    └── cek_parser.py       # CEK parser implementation
+├── common/                 # Shared library (DRY principle)
+│   ├── bot_base.py        # Database, FSM, utilities, CAPTCHA
+│   ├── formatting.py      # Schedule text formatting
+│   └── visualization.py   # Schedule image generation
+│
+├── dtek/                   # DTEK Provider
+│   ├── parser/            # DTEK web scraper
+│   │   └── dtek_parser.py
+│   ├── bot/               # DTEK bot deployment
+│   │   ├── bot.py
+│   │   ├── Dockerfile
+│   │   ├── docker-compose.yml
+│   │   ├── .env.example
+│   │   └── README.md
+│   └── tests/             # DTEK tests
+│
+├── cek/                    # CEK Provider
+│   ├── parser/            # CEK web scraper
+│   │   └── cek_parser.py
+│   ├── bot/               # CEK bot deployment
+│   │   ├── bot.py
+│   │   ├── Dockerfile
+│   │   ├── docker-compose.yml
+│   │   ├── .env.example
+│   │   └── README.md
+│   └── tests/             # CEK tests
+│
+└── resources/              # Shared fonts and assets
 ```
 
-## How It Works
+### Key Features
 
-1. User sends their address to the Telegram bot
-2. **Optimization:** Bot checks if the group for this address is already cached in the database
-3. Bot forwards the request to the central API (including `cached_group` if available)
-4. API determines the provider based on the address (city-based logic)
-5. API calls the appropriate parser (DTEK or CEK)
-   - If `cached_group` is provided, CEK parser skips the group lookup step
-6. Parser scrapes the provider's website for shutdown schedules
-7. API returns unified schedule data to the bot
-8. Bot displays the schedule and caches the group for future requests
+✅ **Independent Deployment** - Each bot can be deployed separately  
+✅ **Shared Logic** - Common library eliminates code duplication  
+✅ **Provider-Specific** - Each bot optimized for its provider  
+✅ **Easy Scaling** - Create multiple instances for different clients  
+✅ **No API Layer** - Bots call parsers directly for better performance
 
-## Setup
+## Quick Start
 
-### Prerequisites
-
-- Docker and Docker Compose
-- Telegram Bot Token (obtain from [@BotFather](https://t.me/botfather))
-
-### Configuration
-
-1. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env` and add your bot token:
-   ```
-   SHUTDOWNS_TELEGRAM_BOT_TOKEN=your_bot_token_here
-   ```
-
-### Running with Docker
+### Deploy DTEK Bot
 
 ```bash
-docker-compose up --build
+cd dtek/bot
+cp .env.example .env
+# Edit .env and add your DTEK_BOT_TOKEN
+docker-compose up -d
 ```
 
-This will start two services:
-- `api` - FastAPI service on port 8000
-- `bot` - Telegram bot
+See [dtek/bot/README.md](dtek/bot/README.md) for detailed instructions.
 
-### Development
+### Deploy CEK Bot
 
-For local development without Docker:
+```bash
+cd cek/bot
+cp .env.example .env
+# Edit .env and add your CEK_BOT_TOKEN
+docker-compose up -d
+```
 
-1. Create and activate conda environment:
-   ```bash
-   conda create -n shutdowns python=3.12
-   conda activate shutdowns
-   ```
+See [cek/bot/README.md](cek/bot/README.md) for detailed instructions.
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Bot Features
 
-3. Run the API:
-   ```bash
-   python api.py
-   ```
+Both bots support:
 
-4. Run the bot (in another terminal):
-   ```bash
-   python bot.py
-   ```
+- 🔍 **Address Lookup** - Check shutdown schedules by address
+- 📊 **Visual Diagrams** - Circular clock-face schedule visualization
+- 🔔 **Subscriptions** - Automatic updates when schedule changes
+- ⚠️ **Alerts** - Notifications N minutes before power events
+- 🤖 **CAPTCHA Protection** - Bot protection
+- 💾 **Local Database** - SQLite for user data
 
-## Features
+### Provider-Specific Features
 
-- **Automatic Provider Detection** - No need to specify your provider
-- **Visual Schedule Graphics** - 48-hour circular clock display
-- **Current Status** - Shows if power is currently on/off and next change time
-- **Subscription System** - Automatic notifications when schedules change
-- **Event Alerts** - Notifications before planned shutdowns
-- **Smart Caching** - Remembers user groups for significantly faster responses
+| Feature | DTEK | CEK |
+|---------|------|-----|
+| Visualization | 48 hours (2 days) | 24 hours (today) |
+| Group Caching | No | Yes (faster repeat checks) |
+| Schedule Display | All days | Today only |
 
-## Future Enhancements
+## Common Library
 
-- Enhanced provider resolution logic (database-based)
-- Support for additional electricity providers
-- Historical shutdown data tracking
-- Mobile app integration
+The `common/` directory contains shared logic used by both bots:
+
+- **`bot_base.py`** (229 lines)
+  - Database initialization (SQLite)
+  - FSM states for user interaction
+  - CAPTCHA logic
+  - Address parsing
+  - Schedule hashing for change detection
+  - Utility functions
+
+- **`formatting.py`** (187 lines)
+  - Schedule text formatting
+  - Current status messages
+  - Time slot merging
+
+- **`visualization.py`** (406 lines)
+  - 48-hour circular diagram (DTEK)
+  - 24-hour circular diagram (CEK)
+  - PIL/Pillow image generation
+
+## Development
+
+### Project Structure Benefits
+
+1. **DRY Principle** - Common logic in one place
+2. **Independence** - Each provider is self-contained
+3. **Scalability** - Easy to add new providers
+4. **Maintainability** - Bug fixes apply to all bots
+5. **Client-Specific** - Deploy separate instances per client
+
+### Running Locally
+
+```bash
+# Install dependencies
+pip install -r requirements-dev.txt
+
+# Run DTEK bot
+export DTEK_BOT_TOKEN="your_token"
+export DTEK_DB_PATH="./dtek_bot.db"
+python -m dtek.bot.bot
+
+# Run CEK bot
+export CEK_BOT_TOKEN="your_token"
+export CEK_DB_PATH="./cek_bot.db"
+python -m cek.bot.bot
+```
+
+### Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run provider-specific tests
+pytest dtek/tests/
+pytest cek/tests/
+
+# Run common library tests
+pytest tests/test_common/
+```
+
+## Technical Stack
+
+- **Python**: 3.12
+- **Bot Framework**: aiogram 3.x
+- **Database**: SQLite (aiosqlite)
+- **Web Scraping**: Playwright (headless Chrome)
+- **Image Generation**: Pillow (PIL)
+- **Deployment**: Docker + Docker Compose
+
+## Migration from Old Architecture
+
+This project was refactored from a centralized architecture (single bot + API) to independent provider-specific bots. Benefits:
+
+- ✅ No API layer needed (bots call parsers directly)
+- ✅ Simpler deployment (one Docker container per bot)
+- ✅ Better isolation (DTEK and CEK are independent)
+- ✅ Easier to customize per client
+- ✅ Shared logic via common library (DRY)
+
+## Contributing
+
+When adding new features:
+
+1. **Common logic** → Add to `common/`
+2. **Provider-specific** → Add to `provider/bot/` or `provider/parser/`
+3. **Tests** → Add to `provider/tests/` or `tests/test_common/`
 
 ## License
 
-[Add your license here]
+MIT
+
+## Support
+
+For issues or questions:
+- Check provider-specific READMEs: [dtek/bot/README.md](dtek/bot/README.md), [cek/bot/README.md](cek/bot/README.md)
+- Review logs: `docker-compose logs -f <bot_name>`
+- Open an issue on GitHub
