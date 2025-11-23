@@ -38,13 +38,14 @@ from common.formatting import (
 )
 from common.visualization import (
     generate_48h_schedule_image,
+    generate_24h_schedule_image,
 )
 
 # Import DTEK parser
 from dtek.parser.dtek_parser import run_parser_service as dtek_parser
 
 # --- Configuration ---
-PROVIDER = "DTEK"
+PROVIDER = "ДТЕК"
 BOT_TOKEN = os.getenv("DTEK_BOT_TOKEN")
 DB_PATH = os.getenv("DTEK_DB_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "bot.db"))
 FONT_PATH = os.getenv("DTEK_FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
@@ -124,22 +125,42 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Генерируем 48-часовой график
-        all_slots_48h = {}
-        for idx, date in enumerate(sorted_dates[:2]):  # Только первые 2 дня
-            slots = schedule.get(date, [])
-            all_slots_48h[date] = slots
+        # 3. Генерация диаграммы (24h или 48h)
+        # Определяем, есть ли отключения на завтра
+        has_shutdowns_tomorrow = False
+        if len(sorted_dates) >= 2:
+            tomorrow_date = sorted_dates[1]
+            if schedule.get(tomorrow_date):
+                has_shutdowns_tomorrow = True
+        
+        image_data = None
+        caption = ""
+        filename = ""
 
-        if all_slots_48h:
-            # Check if there are any shutdowns
-            has_shutdowns = any(slots for slots in all_slots_48h.values())
-            if has_shutdowns:
+        if has_shutdowns_tomorrow:
+            # Если есть отключения на завтра -> 48 часов
+            all_slots_48h = {}
+            for date in sorted_dates[:2]:
+                all_slots_48h[date] = schedule.get(date, [])
+            
+            if any(slots for slots in all_slots_48h.values()):
                 image_data = generate_48h_schedule_image(all_slots_48h, FONT_PATH)
-                
-                if image_data:
-                    await message.answer("🕙 **Загальний графік на 48 годин**:")
-                    image_file = BufferedInputFile(image_data, filename="schedule_48h.png")
-                    await message.answer_photo(photo=image_file)
+                caption = "🕙 **Загальний графік на 48 годин**:"
+                filename = "schedule_48h.png"
+        else:
+            # Если нет отключений на завтра -> 24 часа (только сегодня)
+            if sorted_dates:
+                today_date = sorted_dates[0]
+                today_slots = {today_date: schedule.get(today_date, [])}
+                if schedule.get(today_date):
+                    image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                    caption = "🕙 **Графік на сьогодні**:"
+                    filename = "schedule_24h.png"
+
+        if image_data:
+            await message.answer(caption)
+            image_file = BufferedInputFile(image_data, filename=filename)
+            await message.answer_photo(photo=image_file)
 
         # 4. Цикл по дням (текст)
         for date in sorted_dates:
@@ -284,20 +305,41 @@ async def subscription_checker_task(bot: Bot):
                 except ValueError:
                     sorted_dates = sorted(schedule.keys())
 
-                # Генерируем 48-часовой график
-                days_slots_48h = {}
-                for idx, date in enumerate(sorted_dates[:2]):
-                    slots = schedule[date]
-                    days_slots_48h[date] = slots
+                # Генерация диаграммы (24h или 48h)
+                has_shutdowns_tomorrow = False
+                if len(sorted_dates) >= 2:
+                    tomorrow_date = sorted_dates[1]
+                    if schedule.get(tomorrow_date):
+                        has_shutdowns_tomorrow = True
+                
+                image_data = None
+                caption = ""
+                filename = ""
 
-                if days_slots_48h:
-                    has_shutdowns = any(slots for slots in days_slots_48h.values())
-                    if has_shutdowns:
+                if has_shutdowns_tomorrow:
+                    # 48 часов
+                    days_slots_48h = {}
+                    for date in sorted_dates[:2]:
+                        days_slots_48h[date] = schedule.get(date, [])
+                    
+                    if any(slots for slots in days_slots_48h.values()):
                         image_data = generate_48h_schedule_image(days_slots_48h, FONT_PATH)
-                        if image_data:
-                            await bot.send_message(chat_id=user_id, text="🕙 **Загальний графік на 48 годин**:")
-                            image_file = BufferedInputFile(image_data, filename="schedule_48h_update.png")
-                            await bot.send_photo(chat_id=user_id, photo=image_file)
+                        caption = "🕙 **Загальний графік на 48 годин**:"
+                        filename = "schedule_48h_update.png"
+                else:
+                    # 24 часа
+                    if sorted_dates:
+                        today_date = sorted_dates[0]
+                        today_slots = {today_date: schedule.get(today_date, [])}
+                        if schedule.get(today_date):
+                            image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                            caption = "🕙 **Графік на сьогодні**:"
+                            filename = "schedule_24h_update.png"
+
+                if image_data:
+                    await bot.send_message(chat_id=user_id, text=caption)
+                    image_file = BufferedInputFile(image_data, filename=filename)
+                    await bot.send_photo(chat_id=user_id, photo=image_file)
 
                 # Текстовые данные по дням
                 for date in sorted_dates:

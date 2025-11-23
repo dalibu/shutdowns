@@ -43,8 +43,8 @@ class TestDtekBotFunctions:
                 await get_shutdowns_data("Дніпро", "Сонячна", "6")
 
     @pytest.mark.asyncio
-    async def test_send_schedule_response(self):
-        """Test sending schedule response"""
+    async def test_send_schedule_response_48h(self):
+        """Test sending 48h schedule response (shutdowns tomorrow)"""
         message = AsyncMock()
         api_data = {
             "city": "Дніпро",
@@ -52,18 +52,56 @@ class TestDtekBotFunctions:
             "house_num": "6",
             "group": "1",
             "schedule": {
-                "12.11.24": [{"shutdown": "10:00–12:00"}]
+                "12.11.24": [{"shutdown": "10:00–12:00"}],
+                "13.11.24": [{"shutdown": "10:00–12:00"}] # Shutdown tomorrow
             }
         }
         
-        with patch('dtek.bot.bot.generate_48h_schedule_image') as mock_img:
-            mock_img.return_value = b"fake_image_bytes"
+        with patch('dtek.bot.bot.generate_48h_schedule_image') as mock_48h, \
+             patch('dtek.bot.bot.generate_24h_schedule_image') as mock_24h:
+            mock_48h.return_value = b"fake_48h_image"
+            mock_24h.return_value = b"fake_24h_image"
             
             await send_schedule_response(message, api_data, is_subscribed=False)
             
-            # Should send header, image, text, status, footer
-            assert message.answer.call_count >= 4
-            # Check if image was sent
+            # Should use 48h image
+            mock_48h.assert_called_once()
+            mock_24h.assert_not_called()
+            
+            # Verify caption
+            args, _ = message.answer.call_args_list[1] # 0 is header, 1 is caption (if image sent)
+            assert "48 годин" in args[0]
+            message.answer_photo.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_schedule_response_24h(self):
+        """Test sending 24h schedule response (NO shutdowns tomorrow)"""
+        message = AsyncMock()
+        api_data = {
+            "city": "Дніпро",
+            "street": "Сонячна",
+            "house_num": "6",
+            "group": "1",
+            "schedule": {
+                "12.11.24": [{"shutdown": "10:00–12:00"}],
+                "13.11.24": [] # No shutdowns tomorrow
+            }
+        }
+        
+        with patch('dtek.bot.bot.generate_48h_schedule_image') as mock_48h, \
+             patch('dtek.bot.bot.generate_24h_schedule_image') as mock_24h:
+            mock_48h.return_value = b"fake_48h_image"
+            mock_24h.return_value = b"fake_24h_image"
+            
+            await send_schedule_response(message, api_data, is_subscribed=False)
+            
+            # Should use 24h image
+            mock_48h.assert_not_called()
+            mock_24h.assert_called_once()
+            
+            # Verify caption
+            args, _ = message.answer.call_args_list[1]
+            assert "сьогодні" in args[0]
             message.answer_photo.assert_called_once()
 
 

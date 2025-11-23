@@ -15,7 +15,7 @@ from .bot_base import (
 
 logger = logging.getLogger(__name__)
 
-def process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], provider: str = "DTEK") -> str:
+def process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], provider: str = "ДТЕК") -> str:
     """
     Генерирует компактное текстовое представление расписания для одного дня.
     Возвращает строку в формате:

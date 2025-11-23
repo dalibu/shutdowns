@@ -31,51 +31,13 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         except ValueError:
             sorted_dates = sorted(days_slots.keys())
         
-        # 2. Преобразуем слоты в массив 48 часов
-        hours_status = [False] * 48
+        # 2. Проверяем наличие отключений
         has_any_shutdowns = False
-        
-        for day_idx, date in enumerate(sorted_dates[:2]):
-            slots = days_slots[date]
+        for slots in days_slots.values():
             if slots:
                 has_any_shutdowns = True
-            day_offset = day_idx * 24
-            
-            for slot in slots:
-                try:
-                    # Читаем ключ 'shutdown'
-                    time_str = slot.get('shutdown', '00:00–00:00')
-                    time_parts = time_str.split('–')
-                    if len(time_parts) != 2:
-                        continue
-                        
-                    start_h, start_m = map(int, time_parts[0].split(':'))
-                    end_h, end_m = map(int, time_parts[1].split(':'))
-                    
-                    # Абсолютные часы 0..48
-                    abs_start = start_h + day_offset
-                    abs_end = end_h + day_offset
-                    
-                    # Обработка перехода через полночь внутри слота
-                    if end_h < start_h:
-                         abs_end += 24
-                    
-                    # Заполняем часы
-                    curr = abs_start
-                    while curr < abs_end:
-                        if 0 <= curr < 48:
-                            hours_status[curr] = True
-                        curr += 1
-                        
-                    # Если есть минуты в конце, захватываем и этот час
-                    if end_m > 0:
-                        if 0 <= abs_end < 48:
-                            hours_status[abs_end] = True
-
-                except Exception as e:
-                    logger.warning(f"Error processing DTEK slot '{slot}': {e}")
-                    continue
-
+                break
+        
         if not has_any_shutdowns:
             return None
 
@@ -97,23 +59,49 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             logger.warning(f"Font not found at '{font_path}', using default")
             font = ImageFont.load_default()
 
-        # 5. Рисуем 48 секторов (7.5 градусов каждый)
-        degrees_per_hour = 360.0 / 48.0
-        
-        for hour in range(48):
-            # 00:00 День 1 = 180 градусов (Слева)
-            # Идем по часовой стрелке
-            start_angle = 180 + (hour * degrees_per_hour)
-            end_angle = start_angle + degrees_per_hour
+        # 5. Рисуем фон (свет есть везде) - Желтый круг
+        draw.ellipse(bbox, fill="#FFD700", outline=None)
+
+        # 6. Рисуем отключения (черные сектора) с точностью до минут
+        degrees_per_minute = 360.0 / (48.0 * 60.0)  # 0.125 градуса на минуту
+
+        for day_idx, date in enumerate(sorted_dates[:2]):
+            slots = days_slots[date]
+            day_offset_minutes = day_idx * 24 * 60
             
-            # Цвет: Черный (отключение) / Желтый (свет)
-            color = "#000000" if hours_status[hour] else "#FFD700"
-            
-            draw.pieslice(bbox, start_angle, end_angle, fill=color, outline=None)
+            for slot in slots:
+                try:
+                    time_str = slot.get('shutdown', '00:00–00:00')
+                    time_parts = time_str.split('–')
+                    if len(time_parts) != 2:
+                        continue
+                        
+                    start_h, start_m = map(int, time_parts[0].split(':'))
+                    end_h, end_m = map(int, time_parts[1].split(':'))
+                    
+                    # Минуты от начала первой даты (0..2880)
+                    start_abs = day_offset_minutes + (start_h * 60 + start_m)
+                    end_abs = day_offset_minutes + (end_h * 60 + end_m)
+                    
+                    # Обработка перехода через полночь
+                    if end_h < start_h:
+                        end_abs += 24 * 60
+                    
+                    # Рисуем сектор
+                    # 00:00 День 1 = 270 градусов (Верх)
+                    start_angle = 270 + (start_abs * degrees_per_minute)
+                    end_angle = 270 + (end_abs * degrees_per_minute)
+                    
+                    draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
+
+                except Exception as e:
+                    logger.warning(f"Error processing DTEK slot '{slot}': {e}")
+                    continue
 
         # 6. Белые разделительные линии (каждый час)
+        degrees_per_hour = 360.0 / 48.0
         for hour in range(48):
-            angle_deg = 180 + (hour * degrees_per_hour)
+            angle_deg = 270 + (hour * degrees_per_hour)
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
@@ -129,46 +117,55 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         ]
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline=None)
         
-        # --- Разделительная линия (0-24) ---
+        # --- Разделительная линия (0-24) - Вертикальная ---
         draw.line(
-            [(padding, center[1]), (size - padding, center[1])],
-            fill='#000000',
-            width=1
+            [(center[0], padding), (center[0], size - padding)],
+            fill="#000000", width=1
         )
-        
-        # 8. Даты в центре
+
+        # 8. Даты
+        date_font_size = 11
+        date_font = None
         try:
-            date_font = font
-            
-            # День 1 (Верхняя половина)
+            date_font = ImageFont.truetype(font_path, date_font_size)
+        except IOError:
+            date_font = ImageFont.load_default()
+
+        try:
+            # День 1 (Правая половина)
             if len(sorted_dates) >= 1:
                 date1 = sorted_dates[0]
+                
                 temp_img = Image.new('RGBA', (100, 50), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50, 40), date1, fill='#000000', font=date_font, anchor="ms")
+                temp_draw.text((50, 25), date1, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
                     cropped_date = temp_img.crop(bbox_date)
-                    paste_x = int(center[0] - cropped_date.width // 2)
-                    paste_y = int(center[1] - cropped_date.height - 10)
-                    image.paste(cropped_date, (paste_x, paste_y), cropped_date)
+                    # Поворачиваем на -90 (по часовой) для чтения сверху-вниз
+                    rotated_date = cropped_date.rotate(-90, expand=True)
+                    
+                    paste_x = int(center[0] + 10)
+                    paste_y = int(center[1] - rotated_date.height // 2)
+                    image.paste(rotated_date, (paste_x, paste_y), rotated_date)
             
-            # День 2 (Нижняя половина) - Перевернута
+            # День 2 (Левая половина)
             if len(sorted_dates) >= 2:
                 date2 = sorted_dates[1]
                 
                 temp_img = Image.new('RGBA', (100, 50), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50, 40), date2, fill='#000000', font=date_font, anchor="ms")
+                temp_draw.text((50, 25), date2, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
                     cropped_date = temp_img.crop(bbox_date)
-                    rotated_date = cropped_date.rotate(180, expand=True)
+                    # Поворачиваем на 90 (против часовой) для чтения снизу-вверх
+                    rotated_date = cropped_date.rotate(90, expand=True)
                     
-                    paste_x = int(center[0] - rotated_date.width // 2)
-                    paste_y = int(center[1] + 10)
+                    paste_x = int(center[0] - rotated_date.width - 10)
+                    paste_y = int(center[1] - rotated_date.height // 2)
                     image.paste(rotated_date, (paste_x, paste_y), rotated_date)
 
         except Exception as e:
@@ -210,19 +207,22 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         
         # Рисуем метки
         for point in label_points:
-            angle_deg = 180 + (point * degrees_per_hour)
+            angle_deg = 270 + (point * degrees_per_hour)
             angle_rad = math.radians(angle_deg)
             
             x_pos = center[0] + label_radius * math.cos(angle_rad)
             y_pos = center[1] + label_radius * math.sin(angle_rad)
             
-            # Текст метки: ВСЕГДА "HH:MM"
+            # Текст метки: "HH" если минут 0, иначе "HH:MM"
             if abs(point - 24.0) < 0.001:
-                label = "24:00"
+                label = "24"
             else:
                 hours = int(point) % 24
                 minutes = int(round((point - int(point)) * 60))
-                label = f"{hours:02d}:{minutes:02d}"
+                if minutes == 0:
+                    label = f"{hours:02d}"
+                else:
+                    label = f"{hours:02d}:{minutes:02d}"
             
             try:
                 draw.text((x_pos, y_pos), label, fill="black", font=font, anchor="mm")
@@ -267,10 +267,28 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         if not today_slots:
             return None
         
-        # 2. Создаем массив из 24 часов
-        hours_status = [False] * 24  # По умолчанию везде свет
-        
-        # Заполняем часы с отключениями
+        # 2. Настройка рисования
+        size = 300
+        padding = 30
+        center = (size // 2, size // 2)
+        radius = (size // 2) - padding
+        bbox = [padding, padding, size - padding, size - padding]
+        image = Image.new('RGB', (size, size), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+
+        # 3. Загрузка шрифта
+        font_size = 9
+        font = None
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except IOError:
+            logger.warning(f"Font not found at '{font_path}', using default")
+            font = ImageFont.load_default()
+
+        # 4. Рисуем фон (свет есть везде) - Желтый круг
+        draw.ellipse(bbox, fill="#FFD700", outline=None)
+
+        # 5. Рисуем отключения (черные сектора) с точностью до минут
         for slot in today_slots:
             try:
                 time_str = slot.get('shutdown', '00:00–00:00')
@@ -281,66 +299,30 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 start_h, start_m = map(int, time_parts[0].split(':'))
                 end_h, end_m = map(int, time_parts[1].split(':'))
                 
-                # Определяем какие часы затронуты
-                current_h = start_h
-                while True:
-                    if current_h >= 24:
-                        current_h -= 24
-                    hours_status[current_h] = True
-                    
-                    # Проверяем достигли ли конца
-                    if current_h == end_h or (current_h + 1) % 24 == end_h:
-                        if end_m > 0:  # Если минуты > 0, значит час затронут
-                            hours_status[end_h % 24] = True
-                        break
-                    
-                    current_h += 1
-                    if current_h >= 24:
-                        current_h = 0
-                    
-                    # Защита от бесконечного цикла
-                    if current_h == start_h:
-                        break
+                # Переводим время в минуты от начала дня
+                start_minutes = start_h * 60 + start_m
+                end_minutes = end_h * 60 + end_m
+                
+                # Обработка перехода через полночь (для одной диаграммы обрезаем по 24:00)
+                if end_minutes < start_minutes:
+                    end_minutes = 24 * 60  # Рисуем до конца дня
+                
+                # Переводим минуты в углы
+                # 00:00 = 270 градусов (Верх)
+                # 1 минута = 0.25 градуса (360 / 1440)
+                start_angle = 270 + (start_minutes * 0.25)
+                end_angle = 270 + (end_minutes * 0.25)
+                
+                draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
                         
             except Exception as e:
                 logger.warning(f"Error processing shutdown slot '{slot}': {e}")
                 continue
 
-        # 3. Настройка рисования
-        size = 300
-        padding = 30
-        center = (size // 2, size // 2)
-        radius = (size // 2) - padding
-        bbox = [padding, padding, size - padding, size - padding]
-        image = Image.new('RGB', (size, size), (255, 255, 255))
-        draw = ImageDraw.Draw(image)
-
-        # 4. Загрузка шрифта
-        font_size = 9
-        font = None
-        try:
-            font = ImageFont.truetype(font_path, font_size)
-        except IOError:
-            logger.warning(f"Font not found at '{font_path}', using default")
-            font = ImageFont.load_default()
-
-        # 5. Рисуем 24 сектора
-        degrees_per_hour = 360.0 / 24.0  # 15 градусов на час
-        
+        # 6. Рисуем белые разделительные линии (каждый час)
+        degrees_per_hour = 360.0 / 24.0
         for hour in range(24):
-            # Угол начала сектора (00:00 = 180°, идем по часовой стрелке)
-            start_angle = 180 + (hour * degrees_per_hour)
-            end_angle = start_angle + degrees_per_hour
-            
-            # Цвет сектора
-            color = "#000000" if hours_status[hour] else "#FFD700"
-            
-            # Рисуем сектор
-            draw.pieslice(bbox, start_angle, end_angle, fill=color, outline=None)
-
-        # 6. Рисуем белые разделительные линии между всеми секторами
-        for hour in range(24):
-            angle_deg = 180 + (hour * degrees_per_hour)
+            angle_deg = 270 + (hour * degrees_per_hour)
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
@@ -371,20 +353,19 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         except Exception as e:
             logger.warning(f"Failed to add date: {e}")
 
-        # 9. Метки часов в середине каждого сектора
+        # 9. Метки часов напротив разделительных линий
         label_radius = radius + (padding * 0.5)
         
         for hour in range(0, 24):  # Все 24 часа
-            # Угол середины сектора
-            mid_angle_deg = 180 + (hour * degrees_per_hour) + (degrees_per_hour / 2)
-            mid_angle_rad = math.radians(mid_angle_deg)
+            # Угол разделительной линии
+            angle_deg = 270 + (hour * degrees_per_hour)
+            angle_rad = math.radians(angle_deg)
             
-            x_pos = center[0] + label_radius * math.cos(mid_angle_rad)
-            y_pos = center[1] + label_radius * math.sin(mid_angle_rad)
+            x_pos = center[0] + label_radius * math.cos(angle_rad)
+            y_pos = center[1] + label_radius * math.sin(angle_rad)
             
-            # Метка вида "20-21", "08-09"
-            next_hour = (hour + 1) % 24
-            label = f"{hour:02d}-{next_hour:02d}"
+            # Метка вида "00", "01", ...
+            label = f"{hour:02d}"
             
             try:
                 draw.text((x_pos, y_pos), label, fill="black", font=font, anchor="mm")
