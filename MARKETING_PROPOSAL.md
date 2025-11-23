@@ -91,7 +91,7 @@
 
 ### Архітектура
 
-- **Backend**: FastAPI (Python) — швидкий та надійний
+- **Backend**: Python + python-telegram-bot — надійний та перевірений стек
 - **Bot**: Aiogram 3.x — сучасний фреймворк для Telegram
 - **Deployment**: Docker — легке розгортання та масштабування
 - **Testing**: 108 автоматичних тестів — гарантія якості
