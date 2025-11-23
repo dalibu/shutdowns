@@ -214,4 +214,9 @@ dtek/data/bot.db-shm
 dtek/out/
 cek/out/
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
 
