@@ -24,14 +24,17 @@ class TestCekBotFunctions:
             }
         }
         
-        # Mock cek_parser
-        with patch('cek.bot.bot.cek_parser', new=AsyncMock()) as mock_parser:
-            mock_parser.return_value = mock_response
+        # Mock local factory
+        with patch('cek.bot.bot.get_data_source') as mock_get_source:
+            mock_source = AsyncMock()
+            mock_source.get_schedule.return_value = mock_response["data"]
+            mock_get_source.return_value = mock_source
             
             result = await get_shutdowns_data("Дніпро", "Сонячна", "6")
             
             assert result == mock_response["data"]
-            mock_parser.assert_called_once()
+            mock_get_source.assert_called_once()
+            mock_source.get_schedule.assert_called_with("Дніпро", "Сонячна", "6", cached_group=None)
 
     @pytest.mark.asyncio
     async def test_get_shutdowns_data_with_cache(self):
@@ -43,22 +46,25 @@ class TestCekBotFunctions:
             }
         }
         
-        with patch('cek.bot.bot.cek_parser', new=AsyncMock()) as mock_parser:
-            mock_parser.return_value = mock_response
+        with patch('cek.bot.bot.get_data_source') as mock_get_source:
+            mock_source = AsyncMock()
+            mock_source.get_schedule.return_value = mock_response["data"]
+            mock_get_source.return_value = mock_source
             
             await get_shutdowns_data("Дніпро", "Сонячна", "6", cached_group="1.1")
             
             # Verify cached_group was passed to parser
-            mock_parser.assert_called_with(
-                city="Дніпро", street="Сонячна", house="6", 
-                is_debug=False, cached_group="1.1"
+            mock_source.get_schedule.assert_called_with(
+                "Дніпро", "Сонячна", "6", cached_group="1.1"
             )
 
     @pytest.mark.asyncio
     async def test_get_shutdowns_data_error(self):
         """Test fetching shutdowns data with error"""
-        with patch('cek.bot.bot.cek_parser', new=AsyncMock()) as mock_parser:
-            mock_parser.side_effect = Exception("API Error")
+        with patch('cek.bot.bot.get_data_source') as mock_get_source:
+            mock_source = AsyncMock()
+            mock_source.get_schedule.side_effect = Exception("API Error")
+            mock_get_source.return_value = mock_source
             
             with pytest.raises(ValueError):
                 await get_shutdowns_data("Дніпро", "Сонячна", "6")

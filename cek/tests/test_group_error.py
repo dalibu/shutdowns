@@ -19,9 +19,13 @@ HOUSE = "7"
 @pytest.mark.asyncio
 async def test_cek_group_determination_error():
     """CEK bot should raise a ValueError with a clear message when group cannot be determined."""
-    # Mock the parser to raise the specific exception message
-    with patch("cek.bot.bot.cek_parser") as mock_parser:
-        mock_parser.side_effect = Exception(f"Could not determine group for address {CITY}, {STREET}, {HOUSE}")
+    from unittest.mock import AsyncMock
+    # Mock local factory
+    with patch("cek.bot.bot.get_data_source") as mock_get_source:
+        mock_source = AsyncMock()
+        mock_source.get_schedule.side_effect = Exception(f"Could not determine group for address {CITY}, {STREET}, {HOUSE}")
+        mock_get_source.return_value = mock_source
+        
         with pytest.raises(ValueError) as excinfo:
             await cek_get_shutdowns_data(CITY, STREET, HOUSE)
         # The error message should be user‑friendly and not contain the raw parser traceback
@@ -31,8 +35,12 @@ async def test_cek_group_determination_error():
 @pytest.mark.asyncio
 async def test_dtek_group_determination_error():
     """DTEK bot should raise a ValueError with a clear message when group cannot be determined."""
-    with patch("dtek.bot.bot.dtek_parser") as mock_parser:
-        mock_parser.side_effect = Exception(f"Could not determine group for address {CITY}, {STREET}, {HOUSE}")
+    from unittest.mock import AsyncMock
+    with patch("dtek.bot.bot.get_data_source") as mock_get_source:
+        mock_source = AsyncMock()
+        mock_source.get_schedule.side_effect = Exception(f"Could not determine group for address {CITY}, {STREET}, {HOUSE}")
+        mock_get_source.return_value = mock_source
+        
         with pytest.raises(ValueError) as excinfo:
             await dtek_get_shutdowns_data(CITY, STREET, HOUSE)
         assert "Не вдалося отримати групу для адреси" in str(excinfo.value)

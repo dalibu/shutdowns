@@ -20,6 +20,7 @@ COPY common/ ./common/
 # Copy CEK parser
 COPY cek/parser/ ./cek/parser/
 COPY cek/__init__.py ./cek/
+COPY cek/data_source.py ./cek/
 
 # Copy CEK bot
 COPY cek/bot/bot.py ./cek/bot/

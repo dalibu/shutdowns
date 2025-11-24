@@ -19,12 +19,14 @@ The project uses a **multi-bot architecture** with shared common logic:
 shutdowns/
 ├── common/                 # Shared library (DRY principle)
 │   ├── bot_base.py        # Database, FSM, utilities, CAPTCHA
+│   ├── data_source.py     # Abstract Data Source Interface
 │   ├── formatting.py      # Schedule text formatting
 │   └── visualization.py   # Schedule image generation
 │
 ├── dtek/                   # DTEK Provider
 │   ├── parser/            # DTEK web scraper
 │   │   └── dtek_parser.py
+│   ├── data_source.py     # DTEK Data Source Implementation
 │   ├── bot/               # DTEK bot deployment
 │   │   ├── bot.py
 │   │   ├── Dockerfile
@@ -36,6 +38,7 @@ shutdowns/
 ├── cek/                    # CEK Provider
 │   ├── parser/            # CEK web scraper
 │   │   └── cek_parser.py
+│   ├── data_source.py     # CEK Data Source Implementation
 │   ├── bot/               # CEK bot deployment
 │   │   ├── bot.py
 │   │   ├── Dockerfile
@@ -119,6 +122,16 @@ The `common/` directory contains shared logic used by both bots:
   - 48-hour circular diagram (DTEK)
   - 24-hour circular diagram (CEK)
   - PIL/Pillow image generation
+
+## Data Sources (Pluggable Architecture)
+
+The project supports a **pluggable data source architecture**, allowing providers to switch between different data retrieval methods (Web Parser, Database, API) without changing the bot's core logic.
+
+- **Interface**: Defined in `common/data_source.py` (`ShutdownDataSource`).
+- **Implementation**: Each provider implements its own data source (e.g., `dtek/data_source.py`).
+- **Configuration**: Controlled via `DATA_SOURCE_TYPE` environment variable.
+
+For detailed implementation guide, see [DATA_SOURCES.md](DATA_SOURCES.md).
 
 ## Development
 

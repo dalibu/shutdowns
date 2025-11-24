@@ -40,8 +40,8 @@ from common.visualization import (
     generate_24h_schedule_image,
 )
 
-# Import CEK parser
-from cek.parser.cek_parser import run_parser_service as cek_parser
+# Import Data Source Factory
+from cek.data_source import get_data_source
 
 # --- Configuration ---
 PROVIDER = "ЦЕК"
@@ -83,12 +83,12 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
     return False
 
 async def get_shutdowns_data(city: str, street: str, house: str, cached_group: str = None) -> dict:
-    """Вызывает CEK парсер напрямую и возвращает данные."""
+    """Отримує дані через абстракцію DataSource."""
     try:
-        result = await cek_parser(city=city, street=street, house=house, is_debug=False, cached_group=cached_group)
-        return result.get("data", {})
+        source = get_data_source()
+        return await source.get_schedule(city, street, house, cached_group=cached_group)
     except Exception as e:
-        logger.error(f"CEK parser error: {e}", exc_info=True)
+        logger.error(f"Data source error: {e}", exc_info=True)
         error_str = str(e)
         if "Could not determine group for address" in error_str:
             # Extract address from error message if possible, or just use the input args

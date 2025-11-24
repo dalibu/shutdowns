@@ -41,8 +41,8 @@ from common.visualization import (
     generate_24h_schedule_image,
 )
 
-# Import DTEK parser
-from dtek.parser.dtek_parser import run_parser_service as dtek_parser
+# Import Data Source Factory
+from dtek.data_source import get_data_source
 
 # --- Configuration ---
 PROVIDER = "ДТЕК"
@@ -84,12 +84,12 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
     return False
 
 async def get_shutdowns_data(city: str, street: str, house: str) -> dict:
-    """Вызывает DTEK парсер напрямую и возвращает данные."""
+    """Отримує дані через абстракцію DataSource."""
     try:
-        result = await dtek_parser(city=city, street=street, house=house, is_debug=False)
-        return result.get("data", {})
+        source = get_data_source()
+        return await source.get_schedule(city, street, house)
     except Exception as e:
-        logger.error(f"DTEK parser error: {e}", exc_info=True)
+        logger.error(f"Data source error: {e}", exc_info=True)
         error_str = str(e)
         if "Could not determine group for address" in error_str:
             raise ValueError(f"Не вдалося отримати групу для адреси: {city}, {street}, {house}")

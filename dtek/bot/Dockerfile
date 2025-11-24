@@ -20,6 +20,7 @@ COPY common/ ./common/
 # Copy DTEK parser
 COPY dtek/parser/ ./dtek/parser/
 COPY dtek/__init__.py ./dtek/
+COPY dtek/data_source.py ./dtek/
 
 # Copy DTEK bot
 COPY dtek/bot/bot.py ./dtek/bot/
