@@ -5,6 +5,8 @@ services:
       dockerfile: cek/bot/Dockerfile
     container_name: cek_bot
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - CEK_BOT_TOKEN=${CEK_BOT_TOKEN}
       - CEK_DB_PATH=/data/cek_bot.db
