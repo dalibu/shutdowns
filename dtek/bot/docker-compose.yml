@@ -6,7 +6,7 @@ services:
     container_name: dtek_bot
     restart: unless-stopped
     env_file:
-      - .env
+      - ../../.env
     environment:
       - DTEK_BOT_TOKEN=${DTEK_BOT_TOKEN}
       - DTEK_DB_PATH=/data/dtek_bot.db
