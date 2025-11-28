@@ -31,6 +31,7 @@ from common.bot_base import (
     get_captcha_data,
     get_hours_str,
     get_shutdown_duration_str_by_hours,
+    update_user_activity,
 )
 from common.formatting import (
     process_single_day_schedule_compact,
@@ -524,6 +525,61 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
         "/cancel - скасувати поточну дію."
     )
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    await update_user_activity(db_conn, user_id, username=message.from_user.username)
+
+@dp.message(Command("stats"))
+async def command_stats_handler(message: types.Message) -> None:
+    user_id = message.from_user.id
+    
+    # Load ADMIN_IDS from env
+    admin_ids_str = os.getenv("ADMIN_IDS", "")
+    try:
+        admin_ids = [int(x.strip()) for x in admin_ids_str.split(",") if x.strip()]
+    except ValueError:
+        admin_ids = []
+
+    if user_id not in admin_ids:
+         await message.answer("⛔ **Відмовлено в доступі.** У вас недостатньо прав для перегляду статистики.")
+         return
+
+    await message.answer("📊 **Збираю статистику...**")
+    
+    try:
+        # 1. Summary
+        async with db_conn.execute("SELECT COUNT(*) FROM user_activity") as cursor:
+            total_users = (await cursor.fetchone())[0]
+        
+        yesterday = datetime.now() - timedelta(days=1)
+        async with db_conn.execute("SELECT COUNT(*) FROM user_activity WHERE last_seen >= ?", (yesterday,)) as cursor:
+            active_24h = (await cursor.fetchone())[0]
+            
+        summary = (
+            f"📊 **Статистика ДТЕК Бот**\n"
+            f"👤 Всього користувачів: {total_users}\n"
+            f"🔥 Активних за 24г: {active_24h}\n"
+            f"📥 Завантажую детальний звіт..."
+        )
+        await message.answer(summary)
+        
+        # 2. CSV Export
+        import csv
+        import io
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(['User ID', 'Username', 'First Seen', 'Last Seen', 'Last City', 'Last Street', 'Last House', 'Last Group'])
+        
+        async with db_conn.execute("SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house, last_group FROM user_activity ORDER BY last_seen DESC") as cursor:
+            async for row in cursor:
+                writer.writerow(row)
+                
+        output.seek(0)
+        document = BufferedInputFile(output.getvalue().encode('utf-8'), filename=f"dtek_stats_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
+        await message.answer_document(document, caption="📄 Детальна статистика користувачів")
+        
+    except Exception as e:
+        logger.error(f"Error generating stats: {e}", exc_info=True)
+        await message.answer(f"❌ Помилка генерації статистики: {e}")
 
 @dp.message(CaptchaState.waiting_for_answer)
 async def captcha_answer_handler(message: types.Message, state: FSMContext) -> None:
@@ -609,6 +665,7 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
         is_subscribed = bool(await cursor.fetchone())
         
         await send_schedule_response(message, api_data, is_subscribed)
+        await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
 
     except (ValueError, ConnectionError) as e:
         await state.clear()
@@ -658,6 +715,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         is_subscribed = bool(await cursor.fetchone())
         
         await send_schedule_response(message, api_data, is_subscribed)
+        await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
 
     except ValueError as e:
         await message.answer(f"❌ **Помилка вводу:** {e}")
@@ -680,28 +738,32 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         await _handle_captcha_check(message, state)
         return
 
-    city, street, house = None, None, None
+    city, street, house, group = None, None, None, None
     try:
-        cursor = await db_conn.execute("SELECT city, street, house FROM user_last_check WHERE user_id = ?", (user_id,))
+        cursor = await db_conn.execute("SELECT city, street, house, group_name FROM user_last_check WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         if not row:
             await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.")
             return
-        city, street, house = row
+        city, street, house, group = row
     except Exception as e:
         logger.error(f"Failed to fetch last_check from DB for user {user_id}: {e}")
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
         return
 
     address_str = f"`{city}, {street}, {house}`"
-    await message.answer(f"🔄 **Повторюю перевірку** для адреси:\n{address_str}\n⏳ Очікуйте...")
-    
+    await message.answer(f"🔄 **Повторюю перевірку** для: {address_str}...")
+
     try:
         data = await get_shutdowns_data(city, street, house)
+        
+        # Update hash and group if changed
         current_hash = get_schedule_hash_compact(data)
+        new_group = data.get('group', group)
+        
         await db_conn.execute(
-            "UPDATE user_last_check SET last_hash = ? WHERE user_id = ?", 
-            (current_hash, user_id)
+            "UPDATE user_last_check SET last_hash = ?, group_name = ? WHERE user_id = ?",
+            (current_hash, new_group, user_id)
         )
         await db_conn.commit()
         
@@ -709,6 +771,7 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         is_subscribed = bool(await cursor.fetchone())
         
         await send_schedule_response(message, data, is_subscribed)
+        await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=new_group)
 
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
@@ -769,7 +832,17 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         if sub_row:
             hash_to_use = sub_row[0]
             if sub_row[1] == interval_hours:
-                await message.answer(f"✅ Ви вже підписані на оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**.")
+                await message.answer(f"✅ **Підписка оформлена!\nАдреса: `{city}, {street}, {house}`\nІнтервал: **{interval_display}**.\nСповіщення за: **{new_lead_time} хв**.")
+                # Fetch group name if available
+                group = None
+                try:
+                    async with db_conn.execute("SELECT group_name FROM user_last_check WHERE user_id = ?", (user_id,)) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            group = row[0]
+                except Exception:
+                    pass
+                await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
                 return
 
         if hash_to_use is None:
@@ -902,6 +975,7 @@ async def set_default_commands(bot: Bot):
         BotCommand(command="subscribe", description="Підписатися на оновлення"),
         BotCommand(command="unsubscribe", description="Скасувати підписку"),
         BotCommand(command="alert", description="Налаштувати сповіщення"),
+        BotCommand(command="stats", description="📊 Статистика (Admin)"),
         BotCommand(command="cancel", description="Скасувати поточну дію")
     ]
     logger.info("Setting default commands...")
