@@ -1,5 +1,4 @@
 aiogram>=3.7.0
-playwright==1.55.0
 python-dotenv
 pytz
 aiosqlite

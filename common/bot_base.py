@@ -90,9 +90,80 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         await conn.execute("ALTER TABLE user_last_check ADD COLUMN group_name TEXT")
     except aiosqlite.OperationalError:
         pass  # Колонка уже существует
+
+    # --- Создание таблицы активности пользователей ---
+    await conn.execute("""
+    CREATE TABLE IF NOT EXISTS user_activity (
+        user_id INTEGER PRIMARY KEY,
+        first_seen TIMESTAMP,
+        last_seen TIMESTAMP,
+        last_city TEXT,
+        last_street TEXT,
+        last_house TEXT,
+        username TEXT,
+        last_group TEXT
+    )
+    """)
+    
+    # --- Миграция: Добавляем last_group в user_activity ---
+    try:
+        await conn.execute("ALTER TABLE user_activity ADD COLUMN last_group TEXT")
+    except aiosqlite.OperationalError:
+        pass  # Колонка уже существует
+
     await conn.commit()
     logging.info(f"Database initialized and connected at {db_path}")
     return conn
+
+async def update_user_activity(
+    conn: aiosqlite.Connection, 
+    user_id: int, 
+    username: Optional[str] = None,
+    city: Optional[str] = None, 
+    street: Optional[str] = None, 
+    house: Optional[str] = None,
+    group_name: Optional[str] = None
+):
+    """Updates user activity record. Sets first_seen if new, updates last_seen and address."""
+    if not conn:
+        return
+
+    now = datetime.now()
+    
+    try:
+        # Check if user exists
+        async with conn.execute("SELECT first_seen FROM user_activity WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+        
+        if row:
+            # Update existing
+            query = "UPDATE user_activity SET last_seen = ?, username = COALESCE(?, username)"
+            params = [now, username]
+            
+            if city and street and house:
+                query += ", last_city = ?, last_street = ?, last_house = ?"
+                params.extend([city, street, house])
+            
+            if group_name:
+                query += ", last_group = ?"
+                params.append(group_name)
+            
+            query += " WHERE user_id = ?"
+            params.append(user_id)
+            
+            await conn.execute(query, params)
+        else:
+            # Insert new
+            await conn.execute(
+                """INSERT INTO user_activity 
+                   (user_id, first_seen, last_seen, last_city, last_street, last_house, username, last_group) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, now, now, city, street, house, username, group_name)
+            )
+            
+        await conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to update user activity: {e}")
 
 # --- Utility Functions ---
 def parse_time_range(time_str: str) -> tuple:

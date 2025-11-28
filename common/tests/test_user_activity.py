@@ -1,0 +1,56 @@
+import pytest
+import aiosqlite
+import os
+from datetime import datetime, timedelta
+from common.bot_base import init_db, update_user_activity
+
+@pytest.mark.asyncio
+async def test_update_user_activity():
+    db_path = "test_activity.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    
+    conn = await init_db(db_path)
+    
+    try:
+        # 1. Verify table exists
+        async with conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_activity'") as cursor:
+            row = await cursor.fetchone()
+            assert row is not None, "user_activity table was not created"
+            
+        # 2. Add new user
+        await update_user_activity(conn, 123, username="test_user", city="Kyiv", street="Main", house="1")
+        
+        async with conn.execute("SELECT * FROM user_activity WHERE user_id = 123") as cursor:
+            row = await cursor.fetchone()
+            assert row is not None
+            # user_id, first_seen, last_seen, last_city, last_street, last_house, username
+            assert row[0] == 123
+            assert row[3] == "Kyiv"
+            assert row[6] == "test_user"
+            first_seen = row[1]
+            last_seen = row[2]
+            assert first_seen == last_seen
+            
+        # 3. Update existing user (time only)
+        await update_user_activity(conn, 123, username="test_user")
+        
+        async with conn.execute("SELECT * FROM user_activity WHERE user_id = 123") as cursor:
+            row = await cursor.fetchone()
+            assert row[1] == first_seen # first_seen unchanged
+            assert row[2] != last_seen  # last_seen updated
+            assert row[3] == "Kyiv"     # address unchanged
+            
+        # 4. Update existing user (address)
+        await update_user_activity(conn, 123, username="test_user", city="Lviv", street="Market", house="2")
+        
+        async with conn.execute("SELECT * FROM user_activity WHERE user_id = 123") as cursor:
+            row = await cursor.fetchone()
+            assert row[3] == "Lviv"
+            assert row[4] == "Market"
+            assert row[5] == "2"
+            
+    finally:
+        await conn.close()
+        if os.path.exists(db_path):
+            os.remove(db_path)

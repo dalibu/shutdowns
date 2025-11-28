@@ -2,17 +2,23 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies for Botasaurus
 RUN apt-get update && apt-get install -y \
     fonts-dejavu-core \
+    wget \
+    gnupg \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
 COPY dtek/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright
-RUN playwright install --with-deps chromium
+# Install Chromium for Botasaurus
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy common library
 COPY common/ ./common/

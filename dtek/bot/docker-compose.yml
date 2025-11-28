@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   dtek_bot:
     build:
@@ -7,6 +5,8 @@ services:
       dockerfile: dtek/bot/Dockerfile
     container_name: dtek_bot
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - DTEK_BOT_TOKEN=${DTEK_BOT_TOKEN}
       - DTEK_DB_PATH=/data/dtek_bot.db
