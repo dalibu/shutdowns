@@ -113,3 +113,64 @@ class TestVisualization:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+
+import pytest
+import os
+from datetime import datetime
+from common.visualization import (
+    generate_48h_schedule_image,
+    generate_24h_schedule_image
+)
+
+@pytest.mark.unit
+@pytest.mark.visualization
+class TestVisualizationMarker:
+    """Tests for schedule image generation with current time marker"""
+    
+    @pytest.fixture
+    def font_path(self):
+        """Path to a font file for testing"""
+        resource_font = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../resources/DejaVuSans.ttf'))
+        if os.path.exists(resource_font):
+            return resource_font
+        return "arial.ttf" 
+
+    def test_generate_48h_schedule_image_with_marker(self, font_path):
+        """Test generating 48h schedule image with current time marker"""
+        schedule_data = {
+            "12.11.24": [{"shutdown": "10:00–12:00"}],
+            "13.11.24": [{"shutdown": "08:00–12:00"}]
+        }
+        
+        # Test with time in Day 1
+        current_time_day1 = datetime.strptime("12.11.24 15:30", "%d.%m.%y %H:%M")
+        
+        try:
+            image_bytes = generate_48h_schedule_image(schedule_data, font_path=font_path, current_time=current_time_day1)
+            assert isinstance(image_bytes, bytes)
+            assert len(image_bytes) > 0
+            
+            # Test with time in Day 2
+            current_time_day2 = datetime.strptime("13.11.24 09:15", "%d.%m.%y %H:%M")
+            image_bytes_2 = generate_48h_schedule_image(schedule_data, font_path=font_path, current_time=current_time_day2)
+            assert isinstance(image_bytes_2, bytes)
+            assert len(image_bytes_2) > 0
+            
+        except OSError:
+            pytest.skip("Font not found, skipping visualization test")
+
+    def test_generate_24h_schedule_image_with_marker(self, font_path):
+        """Test generating 24h schedule image with current time marker"""
+        schedule_data = {
+            "12.11.24": [{"shutdown": "10:00–12:00"}]
+        }
+        
+        current_time = datetime.strptime("12.11.24 11:45", "%d.%m.%y %H:%M")
+        
+        try:
+            image_bytes = generate_24h_schedule_image(schedule_data, font_path=font_path, current_time=current_time)
+            assert isinstance(image_bytes, bytes)
+            assert len(image_bytes) > 0
+            
+        except OSError:
+            pytest.skip("Font not found, skipping visualization test")

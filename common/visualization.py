@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
-def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], font_path: str) -> Optional[bytes]:
+def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], font_path: str, current_time: Optional[datetime] = None) -> Optional[bytes]:
     """
     Генерирует 48-часовое изображение графика (clock-face) для DTEK.
     - 48 секторов (по 1 часу).
@@ -232,6 +232,37 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                 text_height = bbox_text[3] - bbox_text[1]
                 draw.text((x_pos - text_width / 2, y_pos - text_height / 2), label, fill="black", font=font)
 
+        # 10. Маркер текущего времени
+        if current_time:
+            try:
+                marker_angle = None
+                current_date_str = current_time.strftime('%d.%m.%y')
+                
+                # Определяем, какой это день (1-й или 2-й)
+                if len(sorted_dates) >= 1 and current_date_str == sorted_dates[0]:
+                    # День 1
+                    minutes = current_time.hour * 60 + current_time.minute
+                    marker_angle = 270 + (minutes * degrees_per_minute)
+                elif len(sorted_dates) >= 2 and current_date_str == sorted_dates[1]:
+                    # День 2
+                    minutes = (24 * 60) + (current_time.hour * 60 + current_time.minute)
+                    marker_angle = 270 + (minutes * degrees_per_minute)
+                
+                if marker_angle is not None:
+                    angle_rad = math.radians(marker_angle)
+                    # Рисуем маркер снаружи цветного кольца (указывает на центр)
+                    marker_len = 7
+                    
+                    # Координаты: от radius до (radius + marker_len)
+                    start_x = center[0] + radius * math.cos(angle_rad)
+                    start_y = center[1] + radius * math.sin(angle_rad)
+                    end_x = center[0] + (radius + marker_len) * math.cos(angle_rad)
+                    end_y = center[1] + (radius + marker_len) * math.sin(angle_rad)
+                    
+                    draw.line([(start_x, start_y), (end_x, end_y)], fill="black", width=2)
+            except Exception as e:
+                logger.warning(f"Failed to draw current time marker: {e}")
+
         # 10. Сохранение
         buf = io.BytesIO()
         image.save(buf, format='PNG')
@@ -242,7 +273,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         logger.error(f"Failed to generate 48h schedule image: {e}", exc_info=True)
         return None
 
-def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font_path: str) -> Optional[bytes]:
+def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font_path: str, current_time: Optional[datetime] = None) -> Optional[bytes]:
     """
     Генерирует 24-часовое изображение графика для ЦЕК.
     - 24 равных сектора (по 1 часу каждый) с белыми разделительными линиями.
@@ -355,8 +386,8 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
 
         # 9. Метки часов напротив разделительных линий
         label_radius = radius + (padding * 0.5)
-        
-        for hour in range(0, 24):  # Все 24 часа
+
+        for hour in range(0, 24):  # Все 24 hours
             # Угол разделительной линии
             angle_deg = 270 + (hour * degrees_per_hour)
             angle_rad = math.radians(angle_deg)
@@ -375,6 +406,42 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 text_width = bbox_text[2] - bbox_text[0]
                 text_height = bbox_text[3] - bbox_text[1]
                 draw.text((x_pos - text_width / 2, y_pos - text_height / 2), label, fill="black", font=font)
+
+        # 10. Маркер текущего времени
+        if current_time:
+            try:
+                current_date_str = current_time.strftime('%d.%m.%y')
+                if current_date_str == today_date:
+                    minutes = current_time.hour * 60 + current_time.minute
+                    # 00:00 = 270 градусов
+                    # 1 минута = 0.25 градуса
+                    marker_angle = 270 + (minutes * 0.25)
+                    
+                    angle_rad = math.radians(marker_angle)
+                    # Рисуем маркер внутри белого центрального круга (маленький прямоугольник по радиусу)
+                    # Используем ранее рассчитанный inner_radius (радиус белого круга)
+                    marker_len = 8
+                    marker_width = 3
+
+                    # Разместим маркер внутри белого круга, чуть ближе к его краю
+                    outer = inner_radius - 2
+                    inner = outer - marker_len
+
+                    # Нарисуем маленький чёрный кружок диаметром 2 px на краю белого круга
+                    # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
+                    gap = 2
+                    dot_radius = 2  # px (диаметр = 4)
+                    # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей
+                    outer = inner_radius - gap - dot_radius
+                    dot_cx = center[0] + outer * math.cos(angle_rad)
+                    dot_cy = center[1] + outer * math.sin(angle_rad)
+
+                    draw.ellipse([
+                        (dot_cx - dot_radius, dot_cy - dot_radius),
+                        (dot_cx + dot_radius, dot_cy + dot_radius)
+                    ], fill="black")
+            except Exception as e:
+                logger.warning(f"Failed to draw current time marker: {e}")
 
         # 10. Сохранение
         buf = io.BytesIO()

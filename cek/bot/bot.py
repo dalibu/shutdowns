@@ -136,7 +136,7 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             # Check if there are any shutdowns
             has_shutdowns = any(slots for slots in today_slots.values())
             if has_shutdowns:
-                image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now())
                 
                 if image_data:
                     await message.answer("🕙 **Графік на 24 години**:")
@@ -310,7 +310,7 @@ async def subscription_checker_task(bot: Bot):
                 if today_slots:
                     has_shutdowns = any(slots for slots in today_slots.values())
                     if has_shutdowns:
-                        image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                        image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now())
                         if image_data:
                             await bot.send_message(chat_id=user_id, text="🕙 **Графік на 24 години**:")
                             image_file = BufferedInputFile(image_data, filename="schedule_24h_update.png")

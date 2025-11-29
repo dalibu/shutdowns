@@ -143,9 +143,9 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
             all_slots_48h = {}
             for date in sorted_dates[:2]:
                 all_slots_48h[date] = schedule.get(date, [])
-            
+
             if any(slots for slots in all_slots_48h.values()):
-                image_data = generate_48h_schedule_image(all_slots_48h, FONT_PATH)
+                image_data = generate_48h_schedule_image(all_slots_48h, FONT_PATH, current_time=datetime.now())
                 caption = "🕙 **Загальний графік на 48 годин**:"
                 filename = "schedule_48h.png"
         else:
@@ -154,7 +154,7 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
                 today_date = sorted_dates[0]
                 today_slots = {today_date: schedule.get(today_date, [])}
                 if schedule.get(today_date):
-                    image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                    image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now())
                     caption = "🕙 **Графік на сьогодні**:"
                     filename = "schedule_24h.png"
 
@@ -323,8 +323,8 @@ async def subscription_checker_task(bot: Bot):
                     for date in sorted_dates[:2]:
                         days_slots_48h[date] = schedule.get(date, [])
                     
-                    if any(slots for slots in days_slots_48h.values()):
-                        image_data = generate_48h_schedule_image(days_slots_48h, FONT_PATH)
+                        if any(slots for slots in days_slots_48h.values()):
+                            image_data = generate_48h_schedule_image(days_slots_48h, FONT_PATH, current_time=datetime.now())
                         caption = "🕙 **Загальний графік на 48 годин**:"
                         filename = "schedule_48h_update.png"
                 else:
@@ -333,7 +333,7 @@ async def subscription_checker_task(bot: Bot):
                         today_date = sorted_dates[0]
                         today_slots = {today_date: schedule.get(today_date, [])}
                         if schedule.get(today_date):
-                            image_data = generate_24h_schedule_image(today_slots, FONT_PATH)
+                            image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now())
                             caption = "🕙 **Графік на сьогодні**:"
                             filename = "schedule_24h_update.png"
 
