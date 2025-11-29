@@ -24,15 +24,13 @@ class TestProcessSingleDaySchedule:
         """No outages - empty list"""
         slots = []
         result = process_single_day_schedule_compact("12.11.24", slots)
-        # Check for parts of the string to avoid encoding issues
-        assert "12.11.24" in result
-        assert "не заплановані" in result.lower()
-        assert "🟡" in result
+        # No message should be produced for days without outages
+        assert result == "" or result.strip() == ""
     
     def test_empty_slots(self):
         """Empty slots list"""
         result = process_single_day_schedule_compact("12.11.24", [])
-        assert "не заплановані" in result.lower()
+        assert result == "" or result.strip() == ""
     
     def test_single_full_slot(self):
         """One full hour slot"""

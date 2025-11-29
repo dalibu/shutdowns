@@ -148,7 +148,8 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         for date in days_to_show:
             slots = schedule.get(date, [])
             day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
-            await message.answer(day_text.strip())
+            if day_text and day_text.strip():
+                await message.answer(day_text.strip())
 
         # 5. Добавляем сообщение о текущем статусе
         status_msg = get_current_status_message(schedule)
@@ -321,6 +322,8 @@ async def subscription_checker_task(bot: Bot):
                 for date in days_to_show:
                     slots = schedule[date]
                     day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
+                    if not day_text or not day_text.strip():
+                        continue
                     try:
                         await bot.send_message(
                             chat_id=user_id,

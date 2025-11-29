@@ -28,9 +28,9 @@ def process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], 
     emoji_no_shutdown = "🟡"
     emoji_shutdown = "⚫"
     
-    # Сценарий: Нет отключений
+    # Сценарий: Нет отключений -> ничего не показываем (боты сами решают, что отправлять)
     if not outage_slots:
-        return f"{emoji_no_shutdown} {date}: Відключення не заплановані"
+        return ""
 
     groups = []
     current_group = None
