@@ -92,6 +92,7 @@ Both bots support:
 - ⚠️ **Alerts** - Notifications N minutes before power events
 - 🤖 **CAPTCHA Protection** - Bot protection
 - 💾 **Local Database** - SQLite for user data
+- 📈 **Statistics** - Admin-only `/stats` command provides usage summary and CSV export with last group information
 
 ### Provider-Specific Features
 
