@@ -269,6 +269,9 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             if shutdowns:
                 aggregated_result["schedule"][date_key] = shutdowns
                 logger.info(f"Дата {date_key}: найдено {len(shutdowns)} отключений.")
+                # Детальное логирование каждого слота
+                for idx, slot in enumerate(shutdowns, 1):
+                    logger.info(f"  Слот {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
             else:
                 aggregated_result["schedule"][date_key] = []
                 logger.info(f"Дата {date_key}: найдено 0 отключений.")

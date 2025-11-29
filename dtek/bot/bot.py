@@ -395,10 +395,12 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
     data = SCHEDULE_DATA_CACHE.get(address_key)
     
     if not data:
+        logger.debug(f"Alert check user {user_id}: no data in cache for address {address_key}")
         return None
     
     schedule = data.get("schedule", {})
     if not schedule:
+        logger.debug(f"Alert check user {user_id}: no schedule data")
         return None
     
     kiev_tz = pytz.timezone('Europe/Kiev')
@@ -433,6 +435,8 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
     
     events.sort(key=lambda x: x[0])
     
+    logger.debug(f"Alert check user {user_id}: found {len(events)} events total")
+    
     # Ищем ближайшее событие в будущем
     target_event = None
     for event_dt, event_type in events:
@@ -441,10 +445,14 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
             break
     
     if not target_event:
+        logger.debug(f"Alert check user {user_id}: no future events found")
         return None
         
     event_dt, event_type = target_event
     time_to_event = (event_dt - now).total_seconds() / 60.0  # минуты
+    
+    msg_type = "відключення" if event_type == 'off_start' else "включення"
+    logger.debug(f"Alert check user {user_id}: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
     
     # Проверяем, пора ли слать алерт
     if 0 < time_to_event <= lead_time:
@@ -452,18 +460,28 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
         
         if last_alert_event_start_str != event_dt_str:
             # Шлем алерт!
-            msg_type = "відключення" if event_type == 'off_start' else "включення"
             time_str = event_dt.strftime('%H:%M')
             minutes_left = int(time_to_event)
             
             msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла."
             
+            logger.info(f"Sending alert to user {user_id}: {msg_type} at {time_str} in {minutes_left} min")
+            
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown")
+                logger.info(f"Alert sent successfully to user {user_id}, event_dt={event_dt_str}")
                 return event_dt_str  # Возвращаем время события для обновления БД
             except Exception as e:
                 logger.error(f"Failed to send alert to {user_id}: {e}")
                 return None
+        else:
+            logger.debug(f"Alert check user {user_id}: alert already sent for this event (last_alert={last_alert_event_start_str})")
+    else:
+        if time_to_event <= 0:
+            logger.debug(f"Alert check user {user_id}: event already passed")
+        else:
+            logger.debug(f"Alert check user {user_id}: event too far ({time_to_event:.1f} min > {lead_time} min)")
+    
     return None
 
 async def alert_checker_task(bot: Bot):
@@ -484,14 +502,20 @@ async def alert_checker_task(bot: Bot):
             )
             rows = await cursor.fetchall()
             
+            if rows:
+                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user(s) with notifications enabled")
+            
             for row in rows:
                 user_id, city, street, house, lead_time, last_alert_event_start_str = row
+                
+                logger.debug(f"Processing alerts for user {user_id}, lead_time={lead_time} min, last_alert={last_alert_event_start_str}")
                 
                 new_last_alert = await _process_alert_for_user(
                     bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now
                 )
                 
                 if new_last_alert:
+                    logger.info(f"Updating last_alert_event_start for user {user_id} to {new_last_alert}")
                     await db_conn.execute(
                         "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
                         (new_last_alert, user_id)
