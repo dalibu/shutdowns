@@ -250,16 +250,21 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                 
                 if marker_angle is not None:
                     angle_rad = math.radians(marker_angle)
-                    # Рисуем маркер снаружи цветного кольца (указывает на центр)
-                    marker_len = 7
+                    # Рисуем маркер внутри белого центрального круга (черный кружок)
+                    # Используем ранее рассчитанный inner_radius (радиус белого круга)
                     
-                    # Координаты: от radius до (radius + marker_len)
-                    start_x = center[0] + radius * math.cos(angle_rad)
-                    start_y = center[1] + radius * math.sin(angle_rad)
-                    end_x = center[0] + (radius + marker_len) * math.cos(angle_rad)
-                    end_y = center[1] + (radius + marker_len) * math.sin(angle_rad)
-                    
-                    draw.line([(start_x, start_y), (end_x, end_y)], fill="black", width=2)
+                    # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
+                    gap = 2
+                    dot_radius = 2  # px (диаметр = 4)
+                    # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей от края белого круга
+                    outer = inner_radius - gap - dot_radius
+                    dot_cx = center[0] + outer * math.cos(angle_rad)
+                    dot_cy = center[1] + outer * math.sin(angle_rad)
+
+                    draw.ellipse([
+                        (dot_cx - dot_radius, dot_cy - dot_radius),
+                        (dot_cx + dot_radius, dot_cy + dot_radius)
+                    ], fill="black")
             except Exception as e:
                 logger.warning(f"Failed to draw current time marker: {e}")
 
