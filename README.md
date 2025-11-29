@@ -102,6 +102,12 @@ Both bots support:
 | Group Caching | No | Yes (faster repeat checks) |
 | Schedule Display | All days | Today only |
 
+## Deployed Bots
+Users can subscribe to updates and interact with the bots directly in Telegram.
+The bots are already deployed, running on Telegram, and can be found under the following names:
+- **DTEK**: `@dtek_disconnections_bot`
+- **CEK**: `@cek_disconnections_bot`
+
 ## Common Library
 
 The `common/` directory contains shared logic used by both bots:
