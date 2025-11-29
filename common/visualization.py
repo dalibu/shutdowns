@@ -172,7 +172,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             logger.warning(f"Failed to add dates: {e}")
 
         # 9. Метки (начало/конец отключений + 00:00 и 24:00)
-        label_radius = radius + (padding * 0.6)
+        label_radius = radius + (padding * 0.35)
         label_points = set()
         
         # Добавляем фиксированные метки
@@ -390,7 +390,7 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
             logger.warning(f"Failed to add date: {e}")
 
         # 9. Метки часов напротив разделительных линий
-        label_radius = radius + (padding * 0.5)
+        label_radius = radius + (padding * 0.35)
 
         for hour in range(0, 24):  # Все 24 hours
             # Угол разделительной линии
