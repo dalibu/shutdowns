@@ -23,13 +23,18 @@ class TestProcessSingleDaySchedule:
     def test_no_outages(self):
         """No outages - empty list"""
         slots = []
-        result = process_single_day_schedule_compact("12.11.24", slots)
-        # No message should be produced for days without outages
-        assert result == "" or result.strip() == ""
+        # For today's date we should show the 'no outages' message
+        import pytz
+        from datetime import datetime
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        today_str = datetime.now(kiev_tz).strftime('%d.%m.%y')
+        result = process_single_day_schedule_compact(today_str, slots)
+        assert f"🟡 {today_str}: Відключення не заплановані" in result
     
     def test_empty_slots(self):
         """Empty slots list"""
-        result = process_single_day_schedule_compact("12.11.24", [])
+        # For a non-today date with no slots, we should not show anything
+        result = process_single_day_schedule_compact("01.01.20", [])
         assert result == "" or result.strip() == ""
     
     def test_single_full_slot(self):

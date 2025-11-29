@@ -31,7 +31,8 @@ SCHEDULE_URL = "https://cek.dp.ua/index.php/cpojivaham/vidkliuchennia/2-uncatego
     headless=True,
     block_images=False,
     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    reuse_driver=False
+    reuse_driver=False,
+    output=None  # Disable default JSON file output to avoid writing into `out/`
 )
 def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[str, Any]:
     """

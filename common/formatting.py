@@ -28,9 +28,17 @@ def process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], 
     emoji_no_shutdown = "🟡"
     emoji_shutdown = "⚫"
     
-    # Сценарий: Нет отключений -> ничего не показываем (боты сами решают, что отправлять)
+    # Сценарий: Нет отключений -> показываем сообщение только если это сегодняшняя дата (Киев)
     if not outage_slots:
-        return ""
+        try:
+            kiev_tz = pytz.timezone('Europe/Kiev')
+            now = datetime.now(kiev_tz)
+            today_str = now.strftime('%d.%m.%y')
+            if date == today_str:
+                return f"🟡 {date}: Відключення не заплановані"
+            return ""
+        except Exception:
+            return ""
 
     groups = []
     current_group = None
