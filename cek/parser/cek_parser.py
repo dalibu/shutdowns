@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import pytz
 import time
 
+from common.formatting import merge_consecutive_slots
+
 # Botasaurus imports
 
 # Botasaurus imports
@@ -14,7 +16,10 @@ from botasaurus.browser import browser, Driver
 # --- Logging ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Отключаем дублирование логов
+
 handler = logging.StreamHandler()
+
 formatter = logging.Formatter(
     '%(asctime)s %(name)s %(levelname)s %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
@@ -210,6 +215,9 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 logger.warning(f"Could not fetch schedule for {date_str_output}: {e}")
                 schedule[date_str_output] = []
         
+        # Merge slots for cleaner output
+        schedule = merge_consecutive_slots(schedule)
+
         result = {
             "city": city,
             "street": street,

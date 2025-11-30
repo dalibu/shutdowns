@@ -408,10 +408,8 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
         logger.debug(f"Alert check user {user_id}: no schedule data")
         return None
     
-    # ВАЖНО: Объединяем последовательные слоты в непрерывные периоды
-    # Это предотвращает ложные события "включення" между последовательными
-    # почасовыми слотами одного и того же непрерывного отключения
-    merged_schedule = merge_consecutive_slots(schedule)
+    # Data is already merged by the parser service
+    merged_schedule = schedule
     
     kiev_tz = pytz.timezone('Europe/Kiev')
     

@@ -11,6 +11,8 @@ from datetime import datetime
 import pytz
 import uuid
 
+from common.formatting import merge_consecutive_slots
+
 # Botasaurus imports
 from botasaurus.browser import browser, Driver
 import time
@@ -19,6 +21,7 @@ import time
 LOGGING_LEVEL = INFO
 logger = logging.getLogger(__name__)
 logger.setLevel(LOGGING_LEVEL)
+logger.propagate = False  # Отключаем дублирование логов
 
 handler = logging.StreamHandler()
 
@@ -267,11 +270,16 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             shutdowns = driver.run_js(js_parse_table)
             
             if shutdowns:
-                aggregated_result["schedule"][date_key] = shutdowns
-                logger.info(f"Дата {date_key}: найдено {len(shutdowns)} отключений.")
-                # Детальное логирование каждого слота
-                for idx, slot in enumerate(shutdowns, 1):
-                    logger.info(f"  Слот {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
+                # Merge slots for cleaner logging and output
+                temp_schedule = {date_key: shutdowns}
+                merged_temp = merge_consecutive_slots(temp_schedule)
+                merged_shutdowns = merged_temp[date_key]
+                
+                aggregated_result["schedule"][date_key] = merged_shutdowns
+                logger.info(f"Дата {date_key}: найдено {len(shutdowns)} слотів, об'єднано в {len(merged_shutdowns)} періодів.")
+                # Детальное логирование каждого периода
+                for idx, slot in enumerate(merged_shutdowns, 1):
+                    logger.info(f"Період {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
             else:
                 aggregated_result["schedule"][date_key] = []
                 logger.info(f"Дата {date_key}: найдено 0 отключений.")
