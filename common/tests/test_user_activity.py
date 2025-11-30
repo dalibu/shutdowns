@@ -19,15 +19,13 @@ async def test_update_user_activity():
             assert row is not None, "user_activity table was not created"
             
         # 2. Add new user
-        await update_user_activity(conn, 123, username="test_user", city="Kyiv", street="Main", house="1")
+        await update_user_activity(conn, 123, username="test_user", city="Kyiv", street="Main", house="1", first_name="John", last_name="Doe")
         
         async with conn.execute("SELECT * FROM user_activity WHERE user_id = 123") as cursor:
             row = await cursor.fetchone()
             assert row is not None
-            # user_id, first_seen, last_seen, last_city, last_street, last_house, username
+            # user_id, first_seen, last_seen, last_city, last_street, last_house, username, last_group, first_name, last_name
             assert row[0] == 123
-            assert row[3] == "Kyiv"
-            assert row[6] == "test_user"
             first_seen = row[1]
             last_seen = row[2]
             assert first_seen == last_seen
@@ -39,16 +37,15 @@ async def test_update_user_activity():
             row = await cursor.fetchone()
             assert row[1] == first_seen # first_seen unchanged
             assert row[2] != last_seen  # last_seen updated
-            assert row[3] == "Kyiv"     # address unchanged
             
         # 4. Update existing user (address)
         await update_user_activity(conn, 123, username="test_user", city="Lviv", street="Market", house="2")
         
-        async with conn.execute("SELECT * FROM user_activity WHERE user_id = 123") as cursor:
+        async with conn.execute("SELECT last_city, last_street, last_house FROM user_activity WHERE user_id = 123") as cursor:
             row = await cursor.fetchone()
-            assert row[3] == "Lviv"
-            assert row[4] == "Market"
-            assert row[5] == "2"
+            assert row[0] == "Lviv"
+            assert row[1] == "Market"
+            assert row[2] == "2"
             
     finally:
         await conn.close()

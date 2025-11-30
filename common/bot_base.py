@@ -111,6 +111,17 @@ async def init_db(db_path: str) -> aiosqlite.Connection:
         await conn.execute("ALTER TABLE user_activity ADD COLUMN last_group TEXT")
     except aiosqlite.OperationalError:
         pass  # Колонка уже существует
+    
+    # --- Миграция: Добавляем first_name и last_name в user_activity ---
+    try:
+        await conn.execute("ALTER TABLE user_activity ADD COLUMN first_name TEXT")
+    except aiosqlite.OperationalError:
+        pass  # Колонка уже существует
+        
+    try:
+        await conn.execute("ALTER TABLE user_activity ADD COLUMN last_name TEXT")
+    except aiosqlite.OperationalError:
+        pass  # Колонка уже существует
 
     await conn.commit()
     logging.info(f"Database initialized and connected at {db_path}")
@@ -120,6 +131,8 @@ async def update_user_activity(
     conn: aiosqlite.Connection, 
     user_id: int, 
     username: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
     city: Optional[str] = None, 
     street: Optional[str] = None, 
     house: Optional[str] = None,
@@ -148,6 +161,14 @@ async def update_user_activity(
             if group_name:
                 query += ", last_group = ?"
                 params.append(group_name)
+                
+            if first_name is not None:
+                query += ", first_name = ?"
+                params.append(first_name)
+                
+            if last_name is not None:
+                query += ", last_name = ?"
+                params.append(last_name)
             
             query += " WHERE user_id = ?"
             params.append(user_id)
@@ -157,9 +178,9 @@ async def update_user_activity(
             # Insert new
             await conn.execute(
                 """INSERT INTO user_activity 
-                   (user_id, first_seen, last_seen, last_city, last_street, last_house, username, last_group) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, now, now, city, street, house, username, group_name)
+                   (user_id, first_seen, last_seen, last_city, last_street, last_house, username, last_group, first_name, last_name) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, now, now, city, street, house, username, group_name, first_name, last_name)
             )
             
         await conn.commit()

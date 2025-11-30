@@ -284,7 +284,13 @@ async def subscription_checker_task(bot: Bot):
                 try:
                     await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
                 except Exception as e:
-                    logger.error(f"Failed to send error message to user {user_id}: {e}")
+                    # Get user info for logging
+                    try:
+                        user = await bot.get_chat(user_id)
+                        user_info = format_user_info(user)
+                    except:
+                        user_info = str(user_id)
+                    logger.error(f"Failed to send error message to user {user_info}: {e}")
 
                 db_updates_fail.append((next_check_time, user_id))
                 continue
@@ -376,10 +382,24 @@ async def subscription_checker_task(bot: Bot):
                     except Exception as e:
                         logger.error(f"Failed to send status message to user {user_id}: {e}")
 
+                # Get user info for logging
+                try:
+                    user = await bot.get_chat(user_id)
+                    user_info = format_user_info(user)
+                except:
+                    user_info = str(user_id)
+                    
                 db_updates_success.append((next_check_time, new_hash, user_id))
-                logger.info(f"Notification sent to user {user_id}. Hash updated to {new_hash[:8]}.")
+                logger.info(f"Notification sent to user {user_info}. Hash updated to {new_hash[:8]}.")
             else:
-                logger.debug(f"User {user_id} check for {address_str}. No change in hash: {new_hash[:8]}.")
+                # Get user info for logging
+                try:
+                    user = await bot.get_chat(user_id)
+                    user_info = format_user_info(user)
+                except:
+                    user_info = str(user_id)
+                    
+                logger.debug(f"User {user_info} check for {address_str}. No change in hash: {new_hash[:8]}.")
                 db_updates_fail.append((next_check_time, user_id))
 
         try:
@@ -398,18 +418,21 @@ async def subscription_checker_task(bot: Bot):
         except Exception as e:
              logger.error(f"Failed to batch update subscriptions in DB: {e}", exc_info=True)
 
-async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str, house: str, lead_time: int, last_alert_event_start_str: str, now: datetime) -> str:
+async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str, house: str, lead_time: int, last_alert_event_start_str: str, now: datetime, user_info: str = None) -> str:
     """Проверяет, нужно ли отправить алерт пользователю."""
+    if user_info is None:
+        user_info = str(user_id)
+        
     address_key = (city, street, house)
     data = SCHEDULE_DATA_CACHE.get(address_key)
     
     if not data:
-        logger.debug(f"Alert check user {user_id}: no data in cache for address {address_key}")
+        logger.debug(f"Alert check user {user_info}: no data in cache for address {address_key}")
         return None
     
     schedule = data.get("schedule", {})
     if not schedule:
-        logger.debug(f"Alert check user {user_id}: no schedule data")
+        logger.debug(f"Alert check user {user_info}: no schedule data")
         return None
     
     # Data is already merged by the parser service
@@ -447,7 +470,7 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
     
     events.sort(key=lambda x: x[0])
     
-    logger.debug(f"Alert check user {user_id}: found {len(events)} events total")
+    logger.debug(f"Alert check user {user_info}: found {len(events)} events total")
     
     # Ищем ближайшее событие в будущем
     target_event = None
@@ -457,14 +480,14 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
             break
     
     if not target_event:
-        logger.debug(f"Alert check user {user_id}: no future events found")
+        logger.debug(f"Alert check user {user_info}: no future events found")
         return None
         
     event_dt, event_type = target_event
     time_to_event = (event_dt - now).total_seconds() / 60.0  # минуты
     
     msg_type = "відключення" if event_type == 'off_start' else "включення"
-    logger.debug(f"Alert check user {user_id}: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
+    logger.debug(f"Alert check user {user_info}: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
     
     # Проверяем, пора ли слать алерт
     if 0 < time_to_event <= lead_time:
@@ -477,22 +500,22 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
             
             msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла."
             
-            logger.info(f"Sending alert to user {user_id}: {msg_type} at {time_str} in {minutes_left} min")
+            logger.info(f"Sending alert to user {user_info}: {msg_type} at {time_str} in {minutes_left} min")
             
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown")
-                logger.info(f"Alert sent successfully to user {user_id}, event_dt={event_dt_str}")
+                logger.info(f"Alert sent successfully to user {user_info}, event_dt={event_dt_str}")
                 return event_dt_str  # Возвращаем время события для обновления БД
             except Exception as e:
-                logger.error(f"Failed to send alert to {user_id}: {e}")
+                logger.error(f"Failed to send alert to {user_info}: {e}")
                 return None
         else:
-            logger.debug(f"Alert check user {user_id}: alert already sent for this event (last_alert={last_alert_event_start_str})")
+            logger.debug(f"Alert check user {user_info}: alert already sent for this event (last_alert={last_alert_event_start_str})")
     else:
         if time_to_event <= 0:
-            logger.debug(f"Alert check user {user_id}: event already passed")
+            logger.debug(f"Alert check user {user_info}: event already passed")
         else:
-            logger.debug(f"Alert check user {user_id}: event too far ({time_to_event:.1f} min > {lead_time} min)")
+            logger.debug(f"Alert check user {user_info}: event too far ({time_to_event:.1f} min > {lead_time} min)")
     
     return None
 
@@ -520,14 +543,21 @@ async def alert_checker_task(bot: Bot):
             for row in rows:
                 user_id, city, street, house, lead_time, last_alert_event_start_str = row
                 
-                logger.debug(f"Processing alerts for user {user_id}, lead_time={lead_time} min, last_alert={last_alert_event_start_str}")
+                # Get user info for logging
+                try:
+                    user = await bot.get_chat(user_id)
+                    user_info = format_user_info(user)
+                except:
+                    user_info = str(user_id)
+                
+                logger.debug(f"Processing alerts for user {user_info}, lead_time={lead_time} min, last_alert={last_alert_event_start_str}")
                 
                 new_last_alert = await _process_alert_for_user(
-                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now
+                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now, user_info
                 )
                 
                 if new_last_alert:
-                    logger.info(f"Updating last_alert_event_start for user {user_id} to {new_last_alert}")
+                    logger.info(f"Updating last_alert_event_start for user {user_info} to {new_last_alert}")
                     await db_conn.execute(
                         "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
                         (new_last_alert, user_id)
@@ -594,6 +624,9 @@ async def command_stats_handler(message: types.Message) -> None:
         async with db_conn.execute("SELECT COUNT(*) FROM user_activity") as cursor:
             total_users = (await cursor.fetchone())[0]
         
+        async with db_conn.execute("SELECT COUNT(*) FROM subscriptions") as cursor:
+            total_subscriptions = (await cursor.fetchone())[0]
+        
         yesterday = datetime.now() - timedelta(days=1)
         async with db_conn.execute("SELECT COUNT(*) FROM user_activity WHERE last_seen >= ?", (yesterday,)) as cursor:
             active_24h = (await cursor.fetchone())[0]
@@ -601,20 +634,44 @@ async def command_stats_handler(message: types.Message) -> None:
         summary = (
             f"📊 **Статистика ДТЕК Бот**\n"
             f"👤 Всього користувачів: {total_users}\n"
+            f"📋 Всього підписок: {total_subscriptions}\n"
             f"🔥 Активних за 24г: {active_24h}\n"
             f"📥 Завантажую детальний звіт..."
         )
         await message.answer(summary)
         
-        # 2. CSV Export
+        # 2. CSV Export with subscription data
         import csv
         import io
         
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(['User ID', 'Username', 'First Seen', 'Last Seen', 'Last City', 'Last Street', 'Last House', 'Last Group'])
+        writer.writerow(['User ID', 'Username', 'Full Name', 'First Seen', 'Last Seen', 'Last City', 'Last Street', 'Last House', 'Last Group', 'Subscribed', 'Sub City', 'Sub Street', 'Sub House', 'Sub Group', 'Sub Interval'])
         
-        async with db_conn.execute("SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house, last_group FROM user_activity ORDER BY last_seen DESC") as cursor:
+        # Join user_activity with subscriptions
+        query = """
+        SELECT 
+            ua.user_id, ua.username, 
+            COALESCE(ua.first_name || ' ' || ua.last_name, 'N/A') as full_name,
+            ua.first_seen, ua.last_seen, 
+            ua.last_city, ua.last_street, ua.last_house, ua.last_group,
+            CASE WHEN s.user_id IS NOT NULL THEN 'Yes' ELSE 'No' END as subscribed,
+            s.city as sub_city, s.street as sub_street, s.house as sub_house, 
+            s.group_name as sub_group, s.interval_hours as sub_interval
+        FROM user_activity ua
+        LEFT JOIN subscriptions s ON ua.user_id = s.user_id
+        ORDER BY ua.last_seen DESC
+        """
+        
+        # Add full_name column to user_activity if not exists
+        try:
+            await db_conn.execute("ALTER TABLE user_activity ADD COLUMN first_name TEXT")
+            await db_conn.execute("ALTER TABLE user_activity ADD COLUMN last_name TEXT")
+            await db_conn.commit()
+        except:
+            pass  # Columns already exist
+        
+        async with db_conn.execute(query) as cursor:
             async for row in cursor:
                 writer.writerow(row)
                 
