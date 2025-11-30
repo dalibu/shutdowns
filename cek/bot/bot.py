@@ -316,7 +316,15 @@ async def subscription_checker_task(bot: Bot):
             schedule = data.get("schedule", {})
             has_actual_schedule = any(slots for slots in schedule.values() if slots)
             
-            if new_hash != last_hash and (has_actual_schedule or last_hash not in (None, "NO_SCHEDULE_FOUND", "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION")):
+            # Отправляем уведомление только если:
+            # 1. Хеш изменился И
+            # 2. Есть реальное расписание ИЛИ это первая проверка (last_hash в специальных значениях)
+            should_notify = (
+                new_hash != last_hash and 
+                (has_actual_schedule or last_hash in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"))
+            )
+            
+            if should_notify:
                 group = data.get("group", "Н/Д")
                 
                 header_msg = (
