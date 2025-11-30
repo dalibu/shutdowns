@@ -32,6 +32,7 @@ from common.bot_base import (
     get_hours_str,
     get_shutdown_duration_str_by_hours,
     update_user_activity,
+    format_user_info,
 )
 from common.formatting import (
     process_single_day_schedule_compact,
@@ -59,6 +60,7 @@ FONT_PATH = os.getenv("DTEK_FONT_PATH", os.path.join(os.path.dirname(__file__), 
 # Logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Отключаем дублирование логов
 handler = logging.StreamHandler()
 formatter = logging.Formatter(
     'dtek_bot | %(levelname)s:%(name)s:%(message)s',
@@ -539,7 +541,12 @@ async def alert_checker_task(bot: Bot):
 @dp.message(Command("start", "help"))
 async def command_start_handler(message: types.Message, state: FSMContext) -> None:
     user_id = message.from_user.id
+    user_info = format_user_info(message.from_user)
+    
+    logger.info(f"Command /start by user {user_info}")
+    
     if user_id not in HUMAN_USERS:
+        logger.info(f"CAPTCHA requested for user {user_info}")
         is_human = await _handle_captcha_check(message, state)
         if not is_human:
             return
@@ -625,6 +632,7 @@ async def captcha_answer_handler(message: types.Message, state: FSMContext) -> N
         return
         
     user_id = message.from_user.id
+    user_info = format_user_info(message.from_user)
     data = await state.get_data()
     correct_answer = data.get("captcha_answer")
     
@@ -641,6 +649,7 @@ async def captcha_answer_handler(message: types.Message, state: FSMContext) -> N
     if user_answer == correct_answer:
         HUMAN_USERS[user_id] = True
         await state.clear()
+        logger.info(f"CAPTCHA passed by user {user_info}")
         await message.answer(
             "✅ **Перевірка пройдена!**\n"
             "Тепер ви можете користуватися всіма функціями бота. Введіть **/start** ще раз, щоб побачити список команд.",
@@ -648,6 +657,7 @@ async def captcha_answer_handler(message: types.Message, state: FSMContext) -> N
         )
     else:
         await state.clear()
+        logger.info(f"CAPTCHA failed by user {user_info}")
         await message.answer(
             "❌ **Неправильна відповідь.** Спробуйте ще раз, ввівши **/start**."
         )
@@ -720,6 +730,8 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
 async def command_check_handler(message: types.Message, state: FSMContext) -> None:
     global db_conn
     user_id = message.from_user.id
+    user_info = format_user_info(message.from_user)
+    
     if user_id not in HUMAN_USERS:
         await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
                              "за допомогою команди **/start**.")
@@ -728,6 +740,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
 
     text_args = message.text.replace('/check', '', 1).strip()
     if not text_args:
+        logger.info(f"Command /check (FSM) by user {user_info}")
         await state.set_state(CheckAddressState.waiting_for_city)
         await message.answer("📍 **Будь ласка, введіть назву міста** (наприклад, `м. Дніпро`):")
         return
@@ -739,6 +752,7 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
     await message.answer("⏳ Перевіряю графік за вказаною адресою. Очікуйте...")
     try:
         city, street, house = parse_address_from_text(text_args)
+        logger.info(f"Command /check by user {user_info} for address: {city}, {street}, {house}")
         
         api_data = await get_shutdowns_data(city, street, house)
         current_hash = get_schedule_hash_compact(api_data)
@@ -770,6 +784,8 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
 async def command_repeat_handler(message: types.Message, state: FSMContext) -> None:
     global db_conn
     user_id = message.from_user.id
+    user_info = format_user_info(message.from_user)
+    
     if user_id not in HUMAN_USERS:
         await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
                              "за допомогою команди **/start**.")
@@ -789,6 +805,7 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
         return
 
+    logger.info(f"Command /repeat by user {user_info} for address: {city}, {street}, {house}")
     address_str = f"`{city}, {street}, {house}`"
     await message.answer(f"🔄 **Повторюю перевірку** для: {address_str}...")
 
@@ -822,6 +839,8 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
 async def command_subscribe_handler(message: types.Message, state: FSMContext) -> None:
     global db_conn
     user_id = message.from_user.id
+    user_info = format_user_info(message.from_user)
+    
     if user_id not in HUMAN_USERS:
         await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
                              "за допомогою команди **/start**.")
@@ -841,6 +860,7 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
         return
 
+    logger.info(f"Command /subscribe by user {user_info} for address: {city}, {street}, {house}")
     text_args = message.text.replace('/subscribe', '', 1).strip()
     interval_hours = DEFAULT_INTERVAL_HOURS
     if text_args:

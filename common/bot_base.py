@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
 import json
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import User
 
 # --- FSM States ---
 class CaptchaState(StatesGroup):
@@ -298,3 +299,10 @@ def get_captcha_data() -> Tuple[str, int]:
         question = f"Скільки буде {a} - {b}?"
         answer = a - b
     return question, answer
+
+def format_user_info(user) -> str:
+    """Форматирует информацию о пользователе для логирования."""
+    user_id = user.id
+    username = user.username or "N/A"
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "N/A"
+    return f"{user_id} (@{username}) {full_name}"

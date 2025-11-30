@@ -60,7 +60,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
     house = data.get('house', DEFAULT_HOUSE)
     is_debug = data.get('is_debug', False)
     
-    logger.info(f"Режим запуска: {'Headful (отладка)' if is_debug else 'Headless'}")
+    logger.debug(f"Режим запуска: {'Headful (отладка)' if is_debug else 'Headless'}")
 
     ADDRESS_DATA = [
         {"selector": "input#city", "value": city, "autocomplete": "div#cityautocomplete-list"},
@@ -70,7 +70,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
 
     try:
         URL = "https://www.dtek-dnem.com.ua/ua/shutdowns"
-        logger.info(f"Загрузка страницы: {URL}")
+        logger.debug(f"Загрузка страницы: {URL}")
         driver.google_get(URL)
         
         # Дополнительное ожидание для загрузки всех скриптов
@@ -81,17 +81,17 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             modal_button = driver.select("button.modal__close.m-attention__close", wait=5)
             if modal_button:
                 modal_button.click()
-                logger.info("Модальное окно закрыто")
+                logger.debug("Модальное окно закрыто")
                 time.sleep(2)
         except Exception as e:
-            logger.info(f"Модальное окно не найдено: {e}")
+            logger.debug(f"Модальное окно не найдено: {e}")
         
         # Ожидание появления формы
         city_input = driver.select("input#city", wait=15)
         if not city_input:
             raise Exception("Поле ввода города не найдено")
         
-        logger.info("Форма загружена и готова к вводу")
+        logger.debug("Форма загружена и готова к вводу")
 
         # Ввод адреса - используем JavaScript для надежности
         for i, data_item in enumerate(ADDRESS_DATA):
@@ -100,7 +100,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             autocomplete = data_item["autocomplete"]
             is_last = (i == len(ADDRESS_DATA) - 1)
             
-            logger.info(f"Ввод в поле {selector}: {value}")
+            logger.debug(f"Ввод в поле {selector}: {value}")
             
             # Используем JavaScript для ввода текста и триггера событий
             js_input = f"""
@@ -137,7 +137,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             if not result:
                 raise Exception(f"Не удалось ввести текст в поле {selector}")
             
-            logger.info(f"Текст введен в {selector}")
+            logger.debug(f"Текст введен в {selector}")
             
             # Ожидание автокомплита - увеличиваем время
             time.sleep(3)
@@ -166,9 +166,9 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 """
                 result = driver.run_js(js_click)
                 if result:
-                    logger.info(f"Выбран элемент автокомплита для города")
+                    logger.debug(f"Выбран элемент автокомплита для города")
                 else:
-                    logger.warning("Автокомплит не найден для города")
+                    logger.debug("Автокомплит не найден для города")
             else:
                 # Для улицы и дома - первый элемент
                 js_click = f"""
@@ -184,16 +184,16 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 """
                 result = driver.run_js(js_click)
                 if result:
-                    logger.info(f"Выбран элемент автокомплита")
+                    logger.debug(f"Выбран элемент автокомплита")
                 else:
-                    logger.warning(f"Автокомплит не найден для {selector}")
+                    logger.debug(f"Автокомплит не найден для {selector}")
             
             # Пауза после выбора
             time.sleep(1)
             
             # Для последнего поля ждем появления таблицы
             if is_last:
-                logger.info("Ожидание таблицы результатов...")
+                logger.debug("Ожидание таблицы результатов...")
                 # Убрали time.sleep(5) - таблица должна появиться быстро
                 results_table = driver.select("#discon-fact > div.discon-fact-tables", wait=30)
                 if not results_table:
@@ -279,10 +279,10 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 logger.info(f"Дата {date_key}: найдено {len(shutdowns)} слотів, об'єднано в {len(merged_shutdowns)} періодів.")
                 # Детальное логирование каждого периода
                 for idx, slot in enumerate(merged_shutdowns, 1):
-                    logger.info(f"Період {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
+                    logger.debug(f"Період {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
             else:
                 aggregated_result["schedule"][date_key] = []
-                logger.info(f"Дата {date_key}: найдено 0 отключений.")
+                logger.debug(f"Дата {date_key}: найдено 0 отключений.")
                 
         # Логирование результата в DEBUG (только если нужно)
         # logger.debug(json.dumps(aggregated_result, ensure_ascii=False, indent=2))

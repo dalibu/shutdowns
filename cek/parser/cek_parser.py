@@ -51,24 +51,24 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
     cached_group = data.get('cached_group')
     is_debug = data.get('is_debug', False)
 
-    logger.info(f"CEK Parser (Botasaurus) - Mode: {'Headful (debug)' if is_debug else 'Headless'}")
-    logger.info(f"Address: {city}, {street}, {house}")
+    logger.debug(f"CEK Parser (Botasaurus) - Mode: {'Headful (debug)' if is_debug else 'Headless'}")
+    logger.debug(f"Address: {city}, {street}, {house}")
     if cached_group:
-        logger.info(f"Using cached group: {cached_group}")
+        logger.debug(f"Using cached group: {cached_group}")
     
     group = cached_group
     
     try:
         # === STEP 1: Get Group by Address (if not cached) ===
         if not group:
-            logger.info("Step 1: Looking up group by address...")
+            logger.debug("Step 1: Looking up group by address...")
             driver.google_get(GROUP_LOOKUP_URL)
             time.sleep(2)
             
             # CEK form has cascading fields
             try:
                 # 1. Fill city
-                logger.info("Filling city field...")
+                logger.debug("Filling city field...")
                 if not driver.select('input#city', wait=10):
                     raise Exception("City input not found")
                 
@@ -80,13 +80,13 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 suggestion = driver.select('#city-suggestions > div:first-child', wait=5)
                 if suggestion:
                     suggestion.click()
-                    logger.info("Selected city from suggestions")
+                    logger.debug("Selected city from suggestions")
                 else:
-                    logger.warning("No city suggestions appeared")
+                    logger.debug("No city suggestions appeared")
                 time.sleep(0.5)
                 
                 # 2. Fill street
-                logger.info("Filling street field...")
+                logger.debug("Filling street field...")
                 # Wait for enabled (Botasaurus select doesn't support :not([disabled]) directly easily, 
                 # but we can wait for it or just try typing)
                 time.sleep(1) 
@@ -96,13 +96,13 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 suggestion = driver.select('#street-suggestions > div:first-child', wait=5)
                 if suggestion:
                     suggestion.click()
-                    logger.info("Selected street from suggestions")
+                    logger.debug("Selected street from suggestions")
                 else:
-                    logger.warning("No street suggestions appeared")
+                    logger.debug("No street suggestions appeared")
                 time.sleep(0.5)
                 
                 # 3. Fill house
-                logger.info("Filling house field...")
+                logger.debug("Filling house field...")
                 time.sleep(1)
                 driver.type('input#house', house)
                 time.sleep(1)
@@ -110,12 +110,12 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 suggestion = driver.select('#house-suggestions > div:first-child', wait=5)
                 if suggestion:
                     suggestion.click()
-                    logger.info("Selected house from suggestions")
+                    logger.debug("Selected house from suggestions")
                 else:
-                    logger.warning("No house suggestions appeared")
+                    logger.debug("No house suggestions appeared")
                 time.sleep(1)
                 
-                logger.info("Waiting for group to be calculated...")
+                logger.debug("Waiting for group to be calculated...")
                 time.sleep(2)
                 
                 # Extract group
@@ -123,7 +123,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 group_elem = driver.select('#group')
                 if group_elem:
                     group_text = group_elem.text.strip()
-                    logger.info(f"Found group in #group element: {group_text}")
+                    logger.debug(f"Found group in #group element: {group_text}")
                 
                 if not group_text:
                     # Fallback JS search
@@ -137,7 +137,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                         return null;
                     """)
                     if group_text:
-                        logger.info(f"Found group text via JS: {group_text}")
+                        logger.debug(f"Found group text via JS: {group_text}")
 
                 if group_text:
                     match = re.search(r'(\d+\.\d+)', group_text)
@@ -154,7 +154,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 raise ValueError(f"Could not determine group for address {city}, {street}, {house}. Error: {e}")
         
         # === STEP 2: Get Schedule by Group ===
-        logger.info(f"Step 2: Getting schedule for group {group}...")
+        logger.debug(f"Step 2: Getting schedule for group {group}...")
         driver.google_get(SCHEDULE_URL)
         time.sleep(2)
         
@@ -168,7 +168,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             date_str_input = date_obj.strftime('%Y-%m-%d')
             date_str_output = date_obj.strftime('%d.%m.%y')
             
-            logger.info(f"Fetching schedule for {date_str_output} (group {group})...")
+            logger.debug(f"Fetching schedule for {date_str_output} (group {group})...")
             
             try:
                 # Select group
@@ -212,7 +212,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 schedule[date_str_output] = day_slots
                 
             except Exception as e:
-                logger.warning(f"Could not fetch schedule for {date_str_output}: {e}")
+                logger.debug(f"Could not fetch schedule for {date_str_output}: {e}")
                 schedule[date_str_output] = []
         
         # Merge slots for cleaner output
