@@ -37,9 +37,15 @@ from common.formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
 )
+from common.formatting import (
+    build_subscription_exists_message,
+    build_subscription_created_message,
+)
 from common.visualization import (
     generate_24h_schedule_image,
 )
+from common.formatting import merge_consecutive_slots
+from common.visualization import generate_48h_schedule_image
 
 # Import Data Source Factory
 from cek.data_source import get_data_source
@@ -126,26 +132,44 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Генерируем 24-часовой график (только сегодня для ЦЕК)
-        today_slots = {}
-        if sorted_dates:
-            today_date = sorted_dates[0]
-            today_slots[today_date] = schedule.get(today_date, [])
+        # 3. Генерация диаграммы (24h или 48h) - унифицировано с DTEK
+        has_shutdowns_tomorrow = False
+        if len(sorted_dates) >= 2:
+            tomorrow_date = sorted_dates[1]
+            if schedule.get(tomorrow_date):
+                has_shutdowns_tomorrow = True
         
-        if today_slots:
-            # Check if there are any shutdowns
-            has_shutdowns = any(slots for slots in today_slots.values())
-            if has_shutdowns:
-                image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                
-                if image_data:
-                    await message.answer("🕙 **Графік на 24 години**:")
-                    image_file = BufferedInputFile(image_data, filename="schedule_24h.png")
-                    await message.answer_photo(photo=image_file)
+        image_data = None
+        caption = ""
+        filename = ""
 
-        # 4. Цикл по дням (текст) - для ЦЕК показываем только сегодня
-        days_to_show = sorted_dates[:1]
-        for date in days_to_show:
+        if has_shutdowns_tomorrow:
+            # Если есть отключения на завтра -> 48 часов
+            all_slots_48h = {}
+            for date in sorted_dates[:2]:
+                all_slots_48h[date] = schedule.get(date, [])
+
+            if any(slots for slots in all_slots_48h.values()):
+                image_data = generate_48h_schedule_image(all_slots_48h, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
+                caption = "🕙 **Загальний графік на 48 годин**:"
+                filename = "schedule_48h.png"
+        else:
+            # Если нет отключений на завтра -> 24 часа (только сегодня)
+            if sorted_dates:
+                today_date = sorted_dates[0]
+                today_slots = {today_date: schedule.get(today_date, [])}
+                if schedule.get(today_date):
+                    image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
+                    caption = "🕙 **Графік на сьогодні**:"
+                    filename = "schedule_24h.png"
+
+        if image_data:
+            await message.answer(caption)
+            image_file = BufferedInputFile(image_data, filename=filename)
+            await message.answer_photo(photo=image_file)
+
+        # 4. Цикл по дням (текст) - показываем все дни, как в DTEK
+        for date in sorted_dates:
             slots = schedule.get(date, [])
             day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
             if day_text and day_text.strip():
@@ -302,24 +326,41 @@ async def subscription_checker_task(bot: Bot):
                 except ValueError:
                     sorted_dates = sorted(schedule.keys())
 
-                # Генерируем 24-часовой график (только сегодня для ЦЕК)
-                today_slots = {}
-                if sorted_dates:
-                    today_date = sorted_dates[0]
-                    today_slots[today_date] = schedule.get(today_date, [])
-                
-                if today_slots:
-                    has_shutdowns = any(slots for slots in today_slots.values())
-                    if has_shutdowns:
-                        image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                        if image_data:
-                            await bot.send_message(chat_id=user_id, text="🕙 **Графік на 24 години**:")
-                            image_file = BufferedInputFile(image_data, filename="schedule_24h_update.png")
-                            await bot.send_photo(chat_id=user_id, photo=image_file)
+                # Генерация диаграммы (24h или 48h) - унифицировано с DTEK
+                has_shutdowns_tomorrow = False
+                if len(sorted_dates) >= 2:
+                    tomorrow_date = sorted_dates[1]
+                    if schedule.get(tomorrow_date):
+                        has_shutdowns_tomorrow = True
 
-                # Текстовые данные по дням - для ЦЕК только сегодня
-                days_to_show = sorted_dates[:1]
-                for date in days_to_show:
+                image_data = None
+                caption = ""
+                filename = ""
+
+                if has_shutdowns_tomorrow:
+                    days_slots_48h = {}
+                    for date in sorted_dates[:2]:
+                        days_slots_48h[date] = schedule.get(date, [])
+                    if any(slots for slots in days_slots_48h.values()):
+                        image_data = generate_48h_schedule_image(days_slots_48h, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
+                        caption = "🕙 **Загальний графік на 48 годин**:"
+                        filename = "schedule_48h_update.png"
+                else:
+                    if sorted_dates:
+                        today_date = sorted_dates[0]
+                        today_slots = {today_date: schedule.get(today_date, [])}
+                        if schedule.get(today_date):
+                            image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
+                            caption = "🕙 **Графік на сьогодні**:"
+                            filename = "schedule_24h_update.png"
+
+                if image_data:
+                    await bot.send_message(chat_id=user_id, text=caption)
+                    image_file = BufferedInputFile(image_data, filename=filename)
+                    await bot.send_photo(chat_id=user_id, photo=image_file)
+
+                # Текстовые данные по дням - отправляем все дни
+                for date in sorted_dates:
                     slots = schedule[date]
                     day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
                     if not day_text or not day_text.strip():
@@ -835,6 +876,18 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
     interval_display = f"{hours_str} {get_hours_str(interval_hours)}"
 
     hash_to_use = hash_from_check
+    # Проверяем текущее значение notification_lead_time (вынесено сюда, чтобы быть совместимым с DTEK)
+    current_lead_time = 0
+    try:
+        cursor_tmp = await db_conn.execute("SELECT notification_lead_time FROM subscriptions WHERE user_id = ?", (user_id,))
+        row_alert_tmp = await cursor_tmp.fetchone()
+        if row_alert_tmp:
+            current_lead_time = row_alert_tmp[0] if row_alert_tmp[0] is not None else 0
+    except Exception:
+        current_lead_time = 0
+    new_lead_time = current_lead_time
+    if current_lead_time == 0:
+        new_lead_time = 15
     try:
         cursor = await db_conn.execute(
             "SELECT last_schedule_hash, interval_hours FROM subscriptions WHERE user_id = ? AND city = ? AND street = ? AND house = ?", 
@@ -844,7 +897,8 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         if sub_row:
             hash_to_use = sub_row[0]
             if sub_row[1] == interval_hours:
-                await message.answer(f"✅ Ви вже підписані на оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**.")
+                exists_msg = build_subscription_exists_message(city, street, house, interval_display,  new_lead_time if 'new_lead_time' in locals() else 0)
+                await message.answer(exists_msg)
                 await update_user_activity(db_conn, user_id, username=message.from_user.username) # Added line
                 return
 
@@ -853,17 +907,7 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
 
         next_check_time = datetime.now()
         
-        # Проверяем текущее значение notification_lead_time
-        current_lead_time = 0
-        cursor = await db_conn.execute("SELECT notification_lead_time FROM subscriptions WHERE user_id = ?", (user_id,))
-        row_alert = await cursor.fetchone()
-        if row_alert:
-            current_lead_time = row_alert[0] if row_alert[0] is not None else 0
         
-        # Если алерты выключены (0), включаем их по умолчанию (15 мин)
-        new_lead_time = current_lead_time
-        if current_lead_time == 0:
-            new_lead_time = 15
 
         # Extract group from last check
         cursor_group = await db_conn.execute(
@@ -886,11 +930,8 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
                  alert_msg += " (Ви можете змінити це командою `/alert`)"
 
         logger.info(f"User {user_id} subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Alert: {new_lead_time}m")
-        await message.answer(
-            f"✅ **Підписка оформлена!**\n"
-            f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**."
-            f"{alert_msg}"
-        )
+        created_msg = build_subscription_created_message(city, street, house, interval_display, new_lead_time, current_lead_time)
+        await message.answer(created_msg)
         await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
     except Exception as e:
         logger.error(f"Failed to write subscription to DB for user {user_id}: {e}", exc_info=True)

@@ -315,3 +315,33 @@ def get_current_status_message(schedule: dict) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error calculating current status: {e}")
         return None
+
+
+def build_subscription_exists_message(city: str, street: str, house: str, interval_display: str, lead_time: int) -> str:
+    """
+    Форматирует сообщение для случая, когда подписка уже существует.
+    """
+    return (
+        f"✅ **Підписка вже існує!**\n"
+        f"Адреса: `{city}, {street}, {house}`\n"
+        f"Інтервал: **{interval_display}**.\n"
+        f"Сповіщення за: **{lead_time} хв**."
+    )
+
+
+def build_subscription_created_message(city: str, street: str, house: str, interval_display: str, new_lead_time: int, current_lead_time: int) -> str:
+    """
+    Форматирует сообщение при успешном оформлении подписки.
+    Добавляет информацию о сповіщеннях (lead time) и подсказку по `/alert`.
+    """
+    alert_msg = ""
+    if new_lead_time > 0:
+        alert_msg = f"\n🔔 Сповіщення за **{new_lead_time} хв.** до події також увімкнено."
+        if current_lead_time == 0:
+            alert_msg += " (Ви можете змінити це командою `/alert`)"
+
+    return (
+        f"✅ **Підписка оформлена!**\n"
+        f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**."
+        f"{alert_msg}"
+    )

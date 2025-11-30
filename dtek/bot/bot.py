@@ -38,6 +38,10 @@ from common.formatting import (
     get_current_status_message,
     merge_consecutive_slots,
 )
+from common.formatting import (
+    build_subscription_exists_message,
+    build_subscription_created_message,
+)
 from common.visualization import (
     generate_48h_schedule_image,
     generate_24h_schedule_image,
@@ -879,7 +883,8 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         if sub_row:
             hash_to_use = sub_row[0]
             if sub_row[1] == interval_hours:
-                await message.answer(f"✅ **Підписка вже існує!**\nАдреса: `{city}, {street}, {house}`\nІнтервал: **{interval_display}**.\nСповіщення за: **{new_lead_time} хв**.")
+                exists_msg = build_subscription_exists_message(city, street, house, interval_display, new_lead_time)
+                await message.answer(exists_msg)
                 # Fetch group name if available
                 group = None
                 try:
@@ -926,11 +931,8 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
                  alert_msg += " (Ви можете змінити це командою `/alert`)"
 
         logger.info(f"User {user_id} subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Alert: {new_lead_time}m")
-        await message.answer(
-            f"✅ **Підписка оформлена!**\n"
-            f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**."
-            f"{alert_msg}"
-        )
+        created_msg = build_subscription_created_message(city, street, house, interval_display, new_lead_time, current_lead_time)
+        await message.answer(created_msg)
     except Exception as e:
         logger.error(f"Failed to write subscription to DB for user {user_id}: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі зберегти підписку.")
