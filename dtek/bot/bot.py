@@ -291,7 +291,11 @@ async def subscription_checker_task(bot: Bot):
             last_hash = sub_data.get('last_schedule_hash')
             new_hash = ADDRESS_CACHE[address_key]['last_schedule_hash']
 
-            if new_hash != last_hash:
+            # Проверяем, есть ли реальные изменения в расписании
+            schedule = data.get("schedule", {})
+            has_actual_schedule = any(slots for slots in schedule.values() if slots)
+            
+            if new_hash != last_hash and (has_actual_schedule or last_hash not in (None, "NO_SCHEDULE_FOUND", "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION")):
                 group = data.get("group", "Н/Д")
                 
                 header_msg = (
@@ -306,8 +310,6 @@ async def subscription_checker_task(bot: Bot):
                     text=f"{update_header}\nдля {address_str} (інтервал {interval_str}):\n{header_msg}",
                     parse_mode="Markdown"
                 )
-
-                schedule = data.get("schedule", {})
                 try:
                     sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
                 except ValueError:
