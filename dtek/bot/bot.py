@@ -857,6 +857,19 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
     interval_display = f"{hours_str} {get_hours_str(interval_hours)}"
 
     hash_to_use = hash_from_check
+    
+    # Проверяем текущее значение notification_lead_time
+    current_lead_time = 0
+    cursor = await db_conn.execute("SELECT notification_lead_time FROM subscriptions WHERE user_id = ?", (user_id,))
+    row_alert = await cursor.fetchone()
+    if row_alert:
+        current_lead_time = row_alert[0] if row_alert[0] is not None else 0
+    
+    # Если алерты выключены (0), включаем их по умолчанию (15 мин)
+    new_lead_time = current_lead_time
+    if current_lead_time == 0:
+        new_lead_time = 15
+
     try:
         cursor = await db_conn.execute(
             "SELECT last_schedule_hash, interval_hours FROM subscriptions WHERE user_id = ? AND city = ? AND street = ? AND house = ?", 
@@ -866,7 +879,7 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
         if sub_row:
             hash_to_use = sub_row[0]
             if sub_row[1] == interval_hours:
-                await message.answer(f"✅ **Підписка оформлена!\nАдреса: `{city}, {street}, {house}`\nІнтервал: **{interval_display}**.\nСповіщення за: **{new_lead_time} хв**.")
+                await message.answer(f"✅ **Підписка вже існує!**\nАдреса: `{city}, {street}, {house}`\nІнтервал: **{interval_display}**.\nСповіщення за: **{new_lead_time} хв**.")
                 # Fetch group name if available
                 group = None
                 try:
@@ -877,6 +890,14 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
                 except Exception:
                     pass
                 await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
+                
+                # Update lead time if it changed (e.g. from 0 to 15)
+                if new_lead_time != current_lead_time:
+                     await db_conn.execute(
+                        "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
+                        (new_lead_time, user_id)
+                    )
+                     await db_conn.commit()
                 return
 
         if hash_to_use is None:
@@ -884,18 +905,6 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
 
         next_check_time = datetime.now()
         
-        # Проверяем текущее значение notification_lead_time
-        current_lead_time = 0
-        cursor = await db_conn.execute("SELECT notification_lead_time FROM subscriptions WHERE user_id = ?", (user_id,))
-        row_alert = await cursor.fetchone()
-        if row_alert:
-            current_lead_time = row_alert[0] if row_alert[0] is not None else 0
-        
-        # Если алерты выключены (0), включаем их по умолчанию (15 мин)
-        new_lead_time = current_lead_time
-        if current_lead_time == 0:
-            new_lead_time = 15
-
         # Extract group from last check
         cursor_group = await db_conn.execute(
             "SELECT group_name FROM user_last_check WHERE user_id = ?",

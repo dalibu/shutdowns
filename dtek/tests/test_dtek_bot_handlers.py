@@ -89,5 +89,53 @@ class TestDtekBotHandlers:
                         mock_send.assert_called_once()
 
 
+    @pytest.mark.asyncio
+    async def test_command_subscribe_existing_subscription(self, message, state):
+        """
+        Test /subscribe when user already has a subscription.
+        Regression test for UnboundLocalError: 'new_lead_time' referenced before assignment.
+        """
+        message.text = "/subscribe 4"  # Match the 4.0 interval in mock
+        user_id = 12345
+        
+        # Mock DB connection and cursor
+        mock_db = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_db.execute.return_value = mock_cursor
+        
+        # Setup mock return values for DB queries
+        # 1. Check last_check (found)
+        # 2. Check existing subscription (found)
+        # 3. Check notification_lead_time (found)
+        # 4. Check group name (optional)
+        
+        async def mock_execute_side_effect(query, params=None):
+            cursor = AsyncMock()
+            if "SELECT city, street, house, last_hash FROM user_last_check" in query:
+                cursor.fetchone.return_value = ("Dnipro", "Street", "1", "hash123")
+            elif "SELECT last_schedule_hash, interval_hours FROM subscriptions" in query:
+                # Subscription exists!
+                cursor.fetchone.return_value = ("hash123", 4.0)
+            elif "SELECT notification_lead_time FROM subscriptions" in query:
+                cursor.fetchone.return_value = (15,)
+            elif "SELECT group_name FROM user_last_check" in query:
+                cursor.fetchone.return_value = ("Group 1",)
+            return cursor
+
+        mock_db.execute.side_effect = mock_execute_side_effect
+
+        with patch('dtek.bot.bot.HUMAN_USERS', {user_id: True}):
+            with patch('dtek.bot.bot.db_conn', mock_db):
+                with patch('dtek.bot.bot.update_user_activity', new=AsyncMock()):
+                    
+                    await command_subscribe_handler(message, state)
+                    
+                    # Verify that we sent a success message
+                    message.answer.assert_called_once()
+                    args = message.answer.call_args[0]
+                    # Check that the message contains the lead time (which was causing the error)
+                    assert "Сповіщення за: **15 хв**" in args[0]
+                    assert "Підписка вже існує" in args[0]
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
