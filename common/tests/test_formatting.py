@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from common.formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
+    merge_consecutive_slots,
 )
 
 
@@ -210,6 +211,154 @@ class TestGetCurrentStatusMessage:
             # Should find the one tomorrow
             assert msg is not None
             assert "🟡 Наступне відключення у 01:00" in msg
+
+
+# ============================================================
+# MERGE CONSECUTIVE SLOTS TESTS
+# ============================================================
+
+@pytest.mark.unit
+class TestMergeConsecutiveSlots:
+    """Tests for merge_consecutive_slots function"""
+    
+    def test_merge_three_consecutive_slots(self):
+        """Test merging 3 consecutive hourly slots into one period."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "04:00–05:00", "status": "відключення"},
+                {"shutdown": "05:00–06:00", "status": "відключення"},
+                {"shutdown": "06:00–07:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 1
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–07:00"
+        assert merged["30.11.25"][0]["status"] == "відключення"
+
+    def test_merge_with_gap(self):
+        """Test merging with a gap - should create two separate periods."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "04:00–05:00", "status": "відключення"},
+                {"shutdown": "05:00–06:00", "status": "відключення"},
+                {"shutdown": "06:00–07:00", "status": "відключення"},
+                {"shutdown": "14:00–15:00", "status": "відключення"},
+                {"shutdown": "15:00–16:00", "status": "відключення"},
+                {"shutdown": "16:00–17:00", "status": "відключення"},
+                {"shutdown": "17:00–18:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 2
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–07:00"
+        assert merged["30.11.25"][1]["shutdown"] == "14:00–18:00"
+
+    def test_single_slot_no_merge(self):
+        """Test that a single slot remains unchanged."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "14:00–15:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 1
+        assert merged["30.11.25"][0]["shutdown"] == "14:00–15:00"
+
+    def test_empty_schedule(self):
+        """Test handling of empty schedule."""
+        schedule = {}
+        merged = merge_consecutive_slots(schedule)
+        assert merged == {}
+
+    def test_empty_slots_for_date(self):
+        """Test handling of date with no slots."""
+        schedule = {
+            "30.11.25": []
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert merged["30.11.25"] == []
+
+    def test_non_consecutive_slots(self):
+        """Test slots with gaps between them - should not merge."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "04:00–05:00", "status": "відключення"},
+                {"shutdown": "07:00–08:00", "status": "відключення"},
+                {"shutdown": "10:00–11:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 3
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–05:00"
+        assert merged["30.11.25"][1]["shutdown"] == "07:00–08:00"
+        assert merged["30.11.25"][2]["shutdown"] == "10:00–11:00"
+
+    def test_unsorted_slots(self):
+        """Test that slots are correctly merged even if not sorted initially."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "06:00–07:00", "status": "відключення"},
+                {"shutdown": "04:00–05:00", "status": "відключення"},
+                {"shutdown": "05:00–06:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 1
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–07:00"
+
+    def test_multiple_dates(self):
+        """Test merging slots across multiple dates."""
+        schedule = {
+            "29.11.25": [
+                {"shutdown": "17:00–18:00", "status": "відключення"},
+                {"shutdown": "18:00–19:00", "status": "відключення"}
+            ],
+            "30.11.25": [
+                {"shutdown": "04:00–05:00", "status": "відключення"},
+                {"shutdown": "05:00–06:00", "status": "відключення"},
+                {"shutdown": "06:00–07:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert len(merged) == 2
+        assert merged["29.11.25"][0]["shutdown"] == "17:00–19:00"
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–07:00"
+
+    def test_overlapping_slots(self):
+        """Test handling of overlapping slots (edge case)."""
+        schedule = {
+            "30.11.25": [
+                {"shutdown": "04:00–06:00", "status": "відключення"},
+                {"shutdown": "05:00–07:00", "status": "відключення"}
+            ]
+        }
+        
+        merged = merge_consecutive_slots(schedule)
+        
+        assert "30.11.25" in merged
+        assert len(merged["30.11.25"]) == 1
+        # Should merge to cover entire range
+        assert merged["30.11.25"][0]["shutdown"] == "04:00–07:00"
 
 
 if __name__ == "__main__":

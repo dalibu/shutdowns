@@ -15,6 +15,128 @@ from .bot_base import (
 
 logger = logging.getLogger(__name__)
 
+
+def merge_consecutive_slots(schedule: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Merges consecutive shutdown slots into continuous periods.
+    
+    Takes a schedule dictionary where each date maps to a list of hourly slots,
+    and returns a new schedule with consecutive slots merged into single periods.
+    
+    For example, three consecutive slots:
+    - 04:00–05:00
+    - 05:00–06:00
+    - 06:00–07:00
+    
+    Will be merged into a single period:
+    - 04:00–07:00
+    
+    Args:
+        schedule: Dictionary mapping date strings (DD.MM.YY) to lists of slot dicts.
+                 Each slot dict should have 'shutdown' key with time range string.
+    
+    Returns:
+        New schedule dictionary with merged consecutive slots.
+    
+    Example:
+        >>> schedule = {
+        ...     "30.11.25": [
+        ...         {"shutdown": "04:00–05:00", "status": "відключення"},
+        ...         {"shutdown": "05:00–06:00", "status": "відключення"},
+        ...         {"shutdown": "06:00–07:00", "status": "відключення"}
+        ...     ]
+        ... }
+        >>> merged = merge_consecutive_slots(schedule)
+        >>> merged["30.11.25"]
+        [{"shutdown": "04:00–07:00", "status": "відключення"}]
+    """
+    if not schedule:
+        return {}
+    
+    merged_schedule = {}
+    
+    for date_str, slots in schedule.items():
+        if not slots:
+            merged_schedule[date_str] = []
+            continue
+        
+        # Parse slots and sort by start time
+        parsed_slots = []
+        for slot in slots:
+            try:
+                time_str = slot.get('shutdown', '00:00–00:00')
+                start_min, end_min = parse_time_range(time_str)
+                
+                if start_min == 0 and end_min == 0:
+                    logger.warning(f"Failed to parse time range: {time_str}")
+                    continue
+                
+                parsed_slots.append({
+                    'start_min': start_min,
+                    'end_min': end_min,
+                    'status': slot.get('status', 'відключення'),
+                    'original': slot
+                })
+            except Exception as e:
+                logger.error(f"Error parsing slot {slot}: {e}")
+                continue
+        
+        # Sort by start time
+        parsed_slots.sort(key=lambda x: x['start_min'])
+        
+        # Merge consecutive slots
+        merged_slots = []
+        current_group = None
+        
+        for slot in parsed_slots:
+            if current_group is None:
+                # Start new group
+                current_group = {
+                    'start_min': slot['start_min'],
+                    'end_min': slot['end_min'],
+                    'status': slot['status']
+                }
+            elif slot['start_min'] <= current_group['end_min']:
+                # Consecutive or overlapping - merge
+                current_group['end_min'] = max(current_group['end_min'], slot['end_min'])
+            else:
+                # Gap found - save current group and start new one
+                merged_slots.append(current_group)
+                current_group = {
+                    'start_min': slot['start_min'],
+                    'end_min': slot['end_min'],
+                    'status': slot['status']
+                }
+        
+        # Don't forget the last group
+        if current_group:
+            merged_slots.append(current_group)
+        
+        # Convert back to schedule format
+        result_slots = []
+        for merged in merged_slots:
+            start_h = merged['start_min'] // 60
+            start_m = merged['start_min'] % 60
+            end_h = merged['end_min'] // 60
+            end_m = merged['end_min'] % 60
+            
+            time_range = f"{start_h:02d}:{start_m:02d}–{end_h:02d}:{end_m:02d}"
+            
+            result_slots.append({
+                'shutdown': time_range,
+                'status': merged['status']
+            })
+        
+        merged_schedule[date_str] = result_slots
+        
+        # Log merging results
+        if len(result_slots) < len(slots):
+            logger.debug(
+                f"Merged {len(slots)} slots into {len(result_slots)} periods for {date_str}"
+            )
+    
+    return merged_schedule
+
 def process_single_day_schedule_compact(date: str, slots: List[Dict[str, Any]], provider: str = "ДТЕК") -> str:
     """
     Генерирует компактное текстовое представление расписания для одного дня.

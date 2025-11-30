@@ -36,6 +36,7 @@ from common.bot_base import (
 from common.formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
+    merge_consecutive_slots,
 )
 from common.visualization import (
     generate_48h_schedule_image,
@@ -403,15 +404,20 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
         logger.debug(f"Alert check user {user_id}: no schedule data")
         return None
     
+    # ВАЖНО: Объединяем последовательные слоты в непрерывные периоды
+    # Это предотвращает ложные события "включення" между последовательными
+    # почасовыми слотами одного и того же непрерывного отключения
+    merged_schedule = merge_consecutive_slots(schedule)
+    
     kiev_tz = pytz.timezone('Europe/Kiev')
     
-    # Собираем все события (начало и конец отключений)
+    # Собираем все события (начало и конец отключений) из объединенных периодов
     events = []
     
     try:
-        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+        sorted_dates = sorted(merged_schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
     except ValueError:
-        sorted_dates = sorted(schedule.keys())
+        sorted_dates = sorted(merged_schedule.keys())
     
     for date_str in sorted_dates:
         try:
@@ -421,7 +427,7 @@ async def _process_alert_for_user(bot: Bot, user_id: int, city: str, street: str
         except ValueError:
             continue
         
-        slots = schedule.get(date_str, [])
+        slots = merged_schedule.get(date_str, [])
         for slot in slots:
             from common.bot_base import parse_time_range
             time_str = slot.get('shutdown', '00:00–00:00')
