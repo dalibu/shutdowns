@@ -1,67 +1,67 @@
 # CEK Telegram Bot
 
-Незалежний Telegram бот для перевірки графіків відключень електроенергії ЦЕК (Центральна Енергетична Компанія).
+Independent Telegram bot for checking power outage schedules from CEK (Central Energy Kompany).
 
-## Особливості
+## Features
 
-- 🔍 Перевірка графіків відключень за адресою
-- 📊 Візуалізація графіку на 24 години (кругова діаграма)
-- ⚡ **Оптимізація з кешуванням групи** - швидша повторна перевірка
-- 🔔 Автоматичні оновлення при зміні графіку
-- ⚠️ Сповіщення за N хвилин до відключення/включення
-- 🤖 Захист від ботів (CAPTCHA)
-- 💾 Локальна база даних SQLite
+- 🔍 Checking outage schedules by address
+- 📊 24-hour chart visualization (pie chart)
+- ⚡ **Optimization with group caching** - faster re-verification
+- 🔔 Automatic updates when the schedule changes
+- ⚠️ Notification N minutes before shutdown/startup
+- 🤖 Protection against bots (CAPTCHA)
+- 💾 Local SQLite database
 
-## Швидкий старт
+## Quick start
 
-### 1. Отримайте токен бота
+### 1. Get a bot token
 
-1. Відкрийте [@BotFather](https://t.me/BotFather) в Telegram
-2. Створіть нового бота командою `/newbot`
-3. Скопіюйте отриманий токен
+1. Open [@BotFather](https://t.me/BotFather) in Telegram
+2. Create a new bot with the command `/newbot`
+3. Copy the token you receive
 
-### 2. Налаштуйте середовище
+### 2. Configure the environment
 
 ```bash
-# Скопіюйте приклад конфігурації
+# Copy the configuration example
 cp .env.example .env
 
-# Відредагуйте .env та вставте ваш токен
+# Edit .env and paste your token
 nano .env
 ```
 
-### 3. Запустіть бота
+### 3. Launch the bot
 
 ```bash
-# З поточної директорії (cek/bot/)
+# З current directory (cek/bot/)
 docker-compose up -d
 
-# Або з кореневої директорії проекту
+# Or from the project's root directory
 cd cek/bot && docker-compose up -d
 ```
 
-### 4. Перевірте статус
+### 4. Status check
 
 ```bash
-# Переглянути логи
+# View logs
 docker-compose logs -f cek_bot
 
-# Перевірити статус
+# Status check
 docker-compose ps
 ```
 
-## Команди бота
+## Bot commands
 
-- `/start` або `/help` - Показати довідку
-- `/check Місто, Вулиця, Будинок` - Перевірити графік
-- `/check` - Покроковий ввід адреси
-- `/repeat` - Повторити останню перевірку
-- `/subscribe [години]` - Підписатися на оновлення (за замовчуванням 1 година)
-- `/unsubscribe` - Скасувати підписку
-- `/alert [хвилини]` - Налаштувати сповіщення (0 = вимкнути)
-- `/cancel` - Скасувати поточну дію
+- `/start` or `/help` - Show reference
+- `/check Місто, Вулиця, Будинок` - Check schedule
+- `/check` - Step-by-step address entry
+- `/repeat` - Repeat last check
+- `/subscribe [години]` - Subscribe to updates (default setting 1 hour)
+- `/unsubscribe` - Cancel subscription
+- `/alert [хвилини]` - Configure notifications (0 = turn off)
+- `/cancel` - Cancel current action
 
-## Приклади використання
+## Usage example
 
 ```
 /check м. Павлоград, вул. Нова, 7
@@ -69,90 +69,90 @@ docker-compose ps
 /alert 15
 ```
 
-## Особливості CEK бота
+## CEK Bot technical features
 
-### Кешування групи
-CEK бот автоматично зберігає номер черги (групи) для кожної адреси. При повторній перевірці тієї ж адреси парсер пропускає крок визначення черги, що значно прискорює роботу.
+### Group caching
+The CEK bot automatically saves the queue (group) number for each address. When rechecking the same address, the parser skips the queue determination step, which significantly speeds up the process.
 
-### 24-годинний графік
-На відміну від ДТЕК, CEK показує графік тільки на поточний день (24 години).
+### 24-hour schedule
+CEK only displays the graph for the current day (24 hours).
 
-## Структура даних
+## Data structure
 
-База даних зберігається у `/data/cek_bot.db` (Docker volume `cek_data`).
+The database is stored in `/data/cek_bot.db` (Docker volume `cek_data`).
 
-Таблиці:
-- `subscriptions` - Підписки користувачів (включає `group_name` для кешування)
-- `user_last_check` - Остання перевірка кожного користувача (включає `group_name`)
+Tables:
+- `subscriptions` - User subscriptions (includes `group_name` for caching)
+- `user_last_check` - Last check of each user (includes `group_name`)
 
-## Оновлення
+## Updates
 
 ```bash
-# Зупинити бота
+# Stop the bot
 docker-compose down
 
-# Оновити код (git pull або інше)
+# Update the code (git pull or similar)
 git pull
 
-# Пересобрати та запустити
+# Rebuild and run
 docker-compose up -d --build
 ```
 
-## Резервне копіювання
+## Backup
 
 ```bash
-# Створити backup бази даних
+# Create database backup
 docker cp cek_bot:/data/cek_bot.db ./backup_$(date +%Y%m%d).db
 
-# Відновити з backup
+# Restore from backup
 docker cp ./backup_20231122.db cek_bot:/data/cek_bot.db
 ```
 
-## Налагодження
+## Debugging
 
-### Переглянути логи
+### Review logs
 ```bash
 docker-compose logs -f cek_bot
 ```
 
-### Запустити в режимі розробки
+### Run in development mode
 ```bash
-# Зупинити Docker версію
+# Stop Docker version
 docker-compose down
 
-# Встановити залежності
+# Establish dependencies
 pip install -r ../../requirements.txt
 
-# Запустити локально
+# Run locally
 export CEK_BOT_TOKEN="your_token"
 export CEK_DB_PATH="./cek_bot.db"
 export CEK_FONT_PATH="../../resources/DejaVuSans.ttf"
 python -m cek.bot.bot
 ```
 
-## Технічні деталі
+## Technical details
 
 - **Python**: 3.12
-- **Фреймворк**: aiogram 3.x
-- **База даних**: SQLite (aiosqlite)
-- **Парсер**: Playwright (headless Chrome)
-- **Візуалізація**: Pillow (PIL)
-- **Оптимізація**: Кешування номера черги для швидкої повторної перевірки
+- **Framework**: aiogram 3.x
+- **Database**: SQLite (aiosqlite)
+- **Parser**: Playwright (headless Chrome)
+- **Visualization**: Pillow (PIL)
+- **Optimization**: Queue number caching for quick rechecking
 
-## Відмінності від ДТЕК бота
+## Differences from DTEK bot
 
-| Функція | DTEK | CEK |
-|---------|------|-----|
-| Візуалізація | 48 годин (2 дні) | 24 години (сьогодні) |
-| Кешування | Ні | Так (номер черги) |
-| Текстовий графік | Всі дні | Тільки сьогодні |
-| Парсер | dtek_parser | cek_parser |
+| Function | DTEK | CEK |
+|----------|------|-----|
+| Visualization | 48 hours (2 days) | 24 hours (today) |
+| Caching | No | Yes (queue number) |
+| Text graph | All days | Today only |
+| Parser | dtek_parser | cek_parser |
 
-## Підтримка
+## Support
 
-Якщо виникли проблеми:
-1. Перевірте логи: `docker-compose logs -f cek_bot`
-2. Перевірте `.env` файл
-3. Переконайтеся, що токен бота правильний
-4. Перезапустіть бота: `docker-compose restart cek_bot`
-5. Якщо парсер не працює, можливо змінилася структура сайту ЦЕК
+If you encounter problems:
+1. Check the logs: `docker-compose logs -f cek_bot`
+2. Check the `.env` file
+3. Make sure the bot token is correct
+4. Restart the bot: `docker-compose restart cek_bot`
+5. If the parser does not work, the structure of the CEK website may have changed
