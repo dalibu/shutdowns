@@ -625,7 +625,7 @@ async def command_stats_handler(message: types.Message) -> None:
          await message.answer("⛔ **Відмовлено в доступі.** У вас недостатньо прав для перегляду статистики.")
          return
 
-    await message.answer("📊 **Збираю статистику...**")
+    await message.answer("⏳ **Збираю статистику...**")
     
     try:
         # 1. Summary
