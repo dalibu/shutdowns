@@ -363,9 +363,9 @@ async def subscription_checker_task(bot: Bot):
                             filename = "schedule_24h_update.png"
 
                 if image_data:
-                    await bot.send_message(chat_id=user_id, text=caption)
+                    await bot.send_message(chat_id=user_id, text=caption, disable_notification=True)
                     image_file = BufferedInputFile(image_data, filename=filename)
-                    await bot.send_photo(chat_id=user_id, photo=image_file)
+                    await bot.send_photo(chat_id=user_id, photo=image_file, disable_notification=True)
 
                 # Текстовые данные по дням
                 for date in sorted_dates:
@@ -377,7 +377,8 @@ async def subscription_checker_task(bot: Bot):
                         await bot.send_message(
                             chat_id=user_id,
                             text=day_text.strip(),
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            disable_notification=True
                         )
                     except Exception as e:
                         logger.error(f"Failed to send update message to user {user_id}: {e}")
@@ -386,7 +387,7 @@ async def subscription_checker_task(bot: Bot):
                 status_msg = get_current_status_message(schedule)
                 if status_msg:
                     try:
-                        await bot.send_message(chat_id=user_id, text=status_msg)
+                        await bot.send_message(chat_id=user_id, text=status_msg, disable_notification=True)
                     except Exception as e:
                         logger.error(f"Failed to send status message to user {user_id}: {e}")
 
