@@ -50,7 +50,8 @@ DEFAULT_HOUSE = "6"
     block_images=False,
     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     reuse_driver=False,
-    output=None  # Disable default JSON file output
+    output=None,  # Disable default JSON file output
+    cache=False   # Explicitly disable caching
 )
 def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[str, Any]:
     """Основная логика парсинга с использованием Botasaurus."""
@@ -229,39 +230,96 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             
             # Парсинг таблицы через JavaScript
             js_parse_table = f"""
-                var tables = document.querySelectorAll('#discon-fact > div.discon-fact-tables > div.discon-fact-table');
-                var table = tables[{i}];
-                var rows = table.querySelectorAll('tbody > tr');
-                var shutdowns = [];
+                var container = document.querySelector('#discon-fact > div.discon-fact-tables');
+                var tables = container ? container.querySelectorAll('div.discon-fact-table') : [];
+                var tableDiv = tables[{i}];
                 
-                for (var row of rows) {{
-                    var cells = row.querySelectorAll('td');
-                    if (cells.length >= 2) {{
-                        var timeRange = cells[0].textContent.trim();
-                        var statusCell = cells[1];
-                        var statusClass = statusCell.className;
+                if (!tableDiv) {{
+                    return [];
+                }}
+                
+                // --- ПОПЫТКА 1: Горизонтальная таблица (Desktop) ---
+                // Получаем заголовки с часами
+                var hours = [];
+                var hourHeaders = Array.from(tableDiv.querySelectorAll('thead th')).slice(1);
+                hourHeaders.forEach(function(th) {{
+                    hours.push(th.textContent.trim());
+                }});
+                
+                var shutdowns = [];
+                // Горизонтальная таблица должна иметь 24 часа. Если меньше - это вертикальная таблица с заголовками.
+                var isHorizontal = hours.length >= 24;
+                
+                if (isHorizontal) {{
+                    // Логика для горизонтальной таблицы
+                    var rows = tableDiv.querySelectorAll('tbody tr');
+                    if (rows.length > 0) {{
+                        var statusRow = rows[0];
+                        var statusCells = Array.from(statusRow.querySelectorAll('td')).slice(1);
                         
-                        var statusText = "";
-                        if (statusClass.includes('cell-scheduled')) {{
-                            statusText = "відключення";
-                        }} else if (statusClass.includes('cell-maybe')) {{
-                            statusText = "можливе відключення";
-                        }}
-                        
-                        // Если есть статус (отключение или возможное), добавляем в список
-                        if (statusText && timeRange && timeRange !== '—') {{
-                            // Преобразуем формат времени из "08-09" в "08:00–09:00"
-                            if (timeRange.match(/^\\d{{2}}-\\d{{2}}$/)) {{
-                                var parts = timeRange.split('-');
-                                timeRange = parts[0] + ":00–" + parts[1] + ":00";
-                            }}
+                        for (var cellIndex = 0; cellIndex < statusCells.length; cellIndex++) {{
+                            if (cellIndex >= hours.length) break;
                             
-                            shutdowns.push({{
-                                shutdown: timeRange,
-                                status: statusText
-                            }});
+                            var cell = statusCells[cellIndex];
+                            var hourRange = hours[cellIndex];
+                            var classes = Array.from(cell.classList);
+                            
+                            var statusText = getStatusFromClasses(classes);
+                            if (!statusText) continue;
+                            
+                            var timeRange = parseTimeRange(hourRange, classes);
+                            if (timeRange) {{
+                                shutdowns.push({{ shutdown: timeRange, status: statusText }});
+                            }}
                         }}
                     }}
+                }} else {{
+                    // --- ПОПЫТКА 2: Вертикальная таблица (Mobile/Legacy) ---
+                    // Если заголовков нет, возможно это вертикальная таблица, где время в первой ячейке
+                    var rows = tableDiv.querySelectorAll('tbody tr');
+                    for (var row of rows) {{
+                        var cells = row.querySelectorAll('td');
+                        if (cells.length >= 2) {{
+                            var timeRangeText = cells[0].textContent.trim();
+                            var statusCell = cells[1];
+                            var classes = Array.from(statusCell.classList);
+                            
+                            var statusText = getStatusFromClasses(classes);
+                            if (!statusText) continue;
+                            
+                            // Для вертикальной таблицы классы могут быть на второй ячейке
+                            var timeRange = parseTimeRange(timeRangeText, classes);
+                            if (timeRange) {{
+                                shutdowns.push({{ shutdown: timeRange, status: statusText }});
+                            }}
+                        }}
+                    }}
+                }}
+                
+                // Вспомогательные функции
+                function getStatusFromClasses(classes) {{
+                    if (classes.includes('cell-scheduled')) return "відключення";
+                    if (classes.includes('cell-maybe')) return "можливе відключення";
+                    if (classes.includes('cell-first-half') || classes.includes('cell-second-half')) return "відключення";
+                    return "";
+                }}
+                
+                function parseTimeRange(rangeText, classes) {{
+                    var hourMatch = rangeText.match(/^(\\d{{1,2}})-(\\d{{1,2}})$/);
+                    if (!hourMatch) return null;
+                    
+                    var startHour = hourMatch[1].padStart(2, '0');
+                    var endHour = hourMatch[2].padStart(2, '0');
+                    var startMinute = "00";
+                    var endMinute = "00";
+                    
+                    if (classes.includes('cell-second-half')) startMinute = "30";
+                    if (classes.includes('cell-first-half')) {{
+                        endMinute = "30";
+                        endHour = startHour; // Конец в :30 текущего часа
+                    }}
+                    
+                    return startHour + ":" + startMinute + "–" + endHour + ":" + endMinute;
                 }}
                 
                 return shutdowns;
@@ -277,9 +335,6 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 
                 aggregated_result["schedule"][date_key] = merged_shutdowns
                 logger.info(f"Дата {date_key}: найдено {len(shutdowns)} слотів, об'єднано в {len(merged_shutdowns)} періодів.")
-                # Детальное логирование каждого периода
-                for idx, slot in enumerate(merged_shutdowns, 1):
-                    logger.debug(f"Період {idx}: {slot.get('shutdown', 'N/A')} ({slot.get('status', 'N/A')})")
             else:
                 aggregated_result["schedule"][date_key] = []
                 logger.debug(f"Дата {date_key}: найдено 0 отключений.")
