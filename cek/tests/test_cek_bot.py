@@ -88,10 +88,15 @@ class TestCekBotFunctions:
             
             await send_schedule_response(message, api_data, is_subscribed=False)
             
-            # Should send header, image, text, status, footer
-            assert message.answer.call_count >= 4
-            # Check if image was sent
+            # Should send a single photo with caption containing all information
             message.answer_photo.assert_called_once()
+            call_kwargs = message.answer_photo.call_args[1]
+            assert "caption" in call_kwargs
+            # Verify caption contains key information
+            caption = call_kwargs["caption"]
+            assert "Дніпро" in caption
+            assert "Сонячна" in caption
+            assert "6" in caption
 
 
 if __name__ == "__main__":

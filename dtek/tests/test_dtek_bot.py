@@ -73,10 +73,11 @@ class TestDtekBotFunctions:
             mock_48h.assert_called_once()
             mock_24h.assert_not_called()
             
-            # Verify caption
-            args, _ = message.answer.call_args_list[1] # 0 is header, 1 is caption (if image sent)
-            assert "48 годин" in args[0]
+            # Verify that answer_photo was called with caption containing "48 годин"
             message.answer_photo.assert_called_once()
+            call_kwargs = message.answer_photo.call_args[1]
+            assert "caption" in call_kwargs
+            assert "48 годин" in call_kwargs["caption"]
 
     @pytest.mark.asyncio
     async def test_send_schedule_response_24h(self):
@@ -104,10 +105,11 @@ class TestDtekBotFunctions:
             mock_48h.assert_not_called()
             mock_24h.assert_called_once()
             
-            # Verify caption
-            args, _ = message.answer.call_args_list[1]
-            assert "сьогодні" in args[0]
+            # Verify that answer_photo was called with caption containing "сьогодні"
             message.answer_photo.assert_called_once()
+            call_kwargs = message.answer_photo.call_args[1]
+            assert "caption" in call_kwargs
+            assert "сьогодні" in call_kwargs["caption"]
 
 
 if __name__ == "__main__":

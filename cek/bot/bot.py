@@ -109,17 +109,10 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
     Отправляет пользователю форматированный ответ с графиком ЦЕК.
     """
     try:
-        # 1. Отправляем "шапку"
         city = api_data.get("city", "Н/Д")
         street = api_data.get("street", "Н/Д")
         house = api_data.get("house_num", "Н/Д")
         group = api_data.get("group", "Н/Д")
-
-        header = (
-            f"🏠 Адреса: `{city}, {street}, {house}`\n"
-            f"👥 Черга: `{group}`"
-        )
-        await message.answer(header)
 
         schedule = api_data.get("schedule", {})
         if not schedule:
@@ -128,13 +121,13 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
                 await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
             return
 
-        # 2. Сортируем даты
+        # Сортируем даты
         try:
             sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
         except ValueError:
             sorted_dates = sorted(schedule.keys())
 
-        # 3. Генерация диаграммы (24h или 48h) - унифицировано с DTEK
+        # Генерация диаграммы (24h или 48h) - унифицировано с DTEK
         has_shutdowns_tomorrow = False
         if len(sorted_dates) >= 2:
             tomorrow_date = sorted_dates[1]
@@ -142,49 +135,80 @@ async def send_schedule_response(message: types.Message, api_data: dict, is_subs
                 has_shutdowns_tomorrow = True
         
         image_data = None
-        caption = ""
+        diagram_caption = ""
         filename = ""
 
         if has_shutdowns_tomorrow:
-            # Если есть отключения на завтра -> 48 часов
+            # 48 часов
             all_slots_48h = {}
             for date in sorted_dates[:2]:
                 all_slots_48h[date] = schedule.get(date, [])
 
             if any(slots for slots in all_slots_48h.values()):
                 image_data = generate_48h_schedule_image(all_slots_48h, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                caption = "🕙 **Загальний графік на 48 годин**:"
+                diagram_caption = "🕙 **Загальний графік на 48 годин**"
                 filename = "schedule_48h.png"
         else:
-            # Если нет отключений на завтра -> 24 часа (только сегодня)
+            # 24 часа
             if sorted_dates:
                 today_date = sorted_dates[0]
                 today_slots = {today_date: schedule.get(today_date, [])}
                 if schedule.get(today_date):
                     image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                    caption = "🕙 **Графік на сьогодні**:"
+                    diagram_caption = "🕙 **Графік на сьогодні**"
                     filename = "schedule_24h.png"
 
-        if image_data:
-            await message.answer(caption)
-            image_file = BufferedInputFile(image_data, filename=filename)
-            await message.answer_photo(photo=image_file)
-
-        # 4. Цикл по дням (текст) - показываем все дни, как в DTEK
+        # Собираем все части в один блок
+        message_parts = []
+        message_parts.append(f"🏠 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+        
+        if diagram_caption:
+            message_parts.append(diagram_caption)
+        
+        # Текстовые данные по дням - показываем все дни
         for date in sorted_dates:
             slots = schedule.get(date, [])
             day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
             if day_text and day_text.strip():
-                await message.answer(day_text.strip())
+                message_parts.append(day_text.strip())
 
-        # 5. Добавляем сообщение о текущем статусе
+        # Статусное сообщение
         status_msg = get_current_status_message(schedule)
         if status_msg:
-            await message.answer(status_msg)
-
-        # 6. Отправляем "подвал"
+            message_parts.append(status_msg)
+        
+        # Подвал
         if not is_subscribed:
-            await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+            message_parts.append("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+        
+        # Объединяем все части
+        full_message = "\n\n".join(message_parts)
+        
+        # Отправляем одно сообщение с фото и полной подписью
+        if image_data:
+            # Telegram позволяет до 1024 символов в caption
+            if len(full_message) <= 1024:
+                image_file = BufferedInputFile(image_data, filename=filename)
+                await message.answer_photo(
+                    photo=image_file,
+                    caption=full_message,
+                    parse_mode="Markdown"
+                )
+            else:
+                # Отправляем фото с коротким caption и текст отдельно
+                short_caption = "\n\n".join(message_parts[:2])  # Адрес + диаграмма
+                remaining_text = "\n\n".join(message_parts[2:])  # Остальное
+                
+                image_file = BufferedInputFile(image_data, filename=filename)
+                await message.answer_photo(
+                    photo=image_file,
+                    caption=short_caption,
+                    parse_mode="Markdown"
+                )
+                await message.answer(remaining_text, parse_mode="Markdown")
+        else:
+            # Нет диаграммы - просто отправляем текст
+            await message.answer(full_message, parse_mode="Markdown")
     
     except Exception as e:
         logger.error(f"Error in send_schedule_response for user {message.from_user.id}: {e}", exc_info=True)
@@ -327,19 +351,9 @@ async def subscription_checker_task(bot: Bot):
             if should_notify:
                 group = data.get("group", "Н/Д")
                 
-                header_msg = (
-                    f"🏠 Адреса: `{city}, {street}, {house}`\n"
-                    f"👥 Черга: `{group}`"
-                )
                 interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
                 update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
                 
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"{update_header}\nдля {address_str} (інтервал {interval_str}):\n{header_msg}",
-                    parse_mode="Markdown"
-                )
-
                 try:
                     sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
                 except ValueError:
@@ -353,7 +367,7 @@ async def subscription_checker_task(bot: Bot):
                         has_shutdowns_tomorrow = True
 
                 image_data = None
-                caption = ""
+                diagram_caption = ""
                 filename = ""
 
                 if has_shutdowns_tomorrow:
@@ -362,7 +376,7 @@ async def subscription_checker_task(bot: Bot):
                         days_slots_48h[date] = schedule.get(date, [])
                     if any(slots for slots in days_slots_48h.values()):
                         image_data = generate_48h_schedule_image(days_slots_48h, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                        caption = "🕙 **Загальний графік на 48 годин**:"
+                        diagram_caption = "🕙 **Загальний графік на 48 годин**"
                         filename = "schedule_48h_update.png"
                 else:
                     if sorted_dates:
@@ -370,37 +384,72 @@ async def subscription_checker_task(bot: Bot):
                         today_slots = {today_date: schedule.get(today_date, [])}
                         if schedule.get(today_date):
                             image_data = generate_24h_schedule_image(today_slots, FONT_PATH, current_time=datetime.now(pytz.timezone('Europe/Kiev')))
-                            caption = "🕙 **Графік на сьогодні**:"
+                            diagram_caption = "🕙 **Графік на сьогодні**"
                             filename = "schedule_24h_update.png"
 
-                if image_data:
-                    await bot.send_message(chat_id=user_id, text=caption, disable_notification=True)
-                    image_file = BufferedInputFile(image_data, filename=filename)
-                    await bot.send_photo(chat_id=user_id, photo=image_file, disable_notification=True)
-
+                # Собираем все текстовые части в один блок
+                message_parts = []
+                message_parts.append(f"{update_header}\nдля {address_str} (інтервал {interval_str})")
+                message_parts.append(f"🏠 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+                
+                if diagram_caption:
+                    message_parts.append(diagram_caption)
+                
                 # Текстовые данные по дням - отправляем все дни
                 for date in sorted_dates:
                     slots = schedule[date]
                     day_text = process_single_day_schedule_compact(date, slots, PROVIDER)
-                    if not day_text or not day_text.strip():
-                        continue
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=day_text.strip(),
-                            parse_mode="Markdown",
-                            disable_notification=True
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to send update message to user {user_id}: {e}")
+                    if day_text and day_text.strip():
+                        message_parts.append(day_text.strip())
 
                 # Статусное сообщение
                 status_msg = get_current_status_message(schedule)
                 if status_msg:
-                    try:
-                        await bot.send_message(chat_id=user_id, text=status_msg, disable_notification=True)
-                    except Exception as e:
-                        logger.error(f"Failed to send status message to user {user_id}: {e}")
+                    message_parts.append(status_msg)
+                
+                # Объединяем все части
+                full_message = "\n\n".join(message_parts)
+                
+                # Отправляем одно сообщение с фото и полной подписью
+                try:
+                    if image_data:
+                        # Telegram позволяет до 1024 символов в caption
+                        # Если текст длиннее, отправляем фото с коротким caption и текст отдельно
+                        if len(full_message) <= 1024:
+                            image_file = BufferedInputFile(image_data, filename=filename)
+                            await bot.send_photo(
+                                chat_id=user_id,
+                                photo=image_file,
+                                caption=full_message,
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            # Отправляем фото с коротким caption и текст отдельно
+                            short_caption = "\n\n".join(message_parts[:3])  # Заголовок + адрес + диаграмма
+                            remaining_text = "\n\n".join(message_parts[3:])  # Остальное
+                            
+                            image_file = BufferedInputFile(image_data, filename=filename)
+                            await bot.send_photo(
+                                chat_id=user_id,
+                                photo=image_file,
+                                caption=short_caption,
+                                parse_mode="Markdown"
+                            )
+                            await bot.send_message(
+                                chat_id=user_id,
+                                text=remaining_text,
+                                parse_mode="Markdown",
+                                disable_notification=True
+                            )
+                    else:
+                        # Нет диаграммы - просто отправляем текст
+                        await bot.send_message(
+                            chat_id=user_id,
+                            text=full_message,
+                            parse_mode="Markdown"
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to send update notification to user {user_id}: {e}")
 
                 # Get user info for logging
                 try:
