@@ -42,8 +42,10 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             return None
 
         # 3. Настройка рисования
-        size = 300
-        padding = 30
+        SCALE = 2  # 2x scale = 600x600
+        base_size = 300
+        size = base_size * SCALE
+        padding = 30 * SCALE
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
         bbox = [padding, padding, size - padding, size - padding]
@@ -51,7 +53,8 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         draw = ImageDraw.Draw(image)
 
         # 4. Шрифт
-        font_size = 9
+        # Slightly smaller than direct scaling (9 * 3 = 27) for a finer look
+        font_size = 18
         font = None
         try:
             font = ImageFont.truetype(font_path, font_size)
@@ -105,7 +108,8 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
-            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=2)
+            # Thicker lines for better visibility
+            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=4)
 
         # 7. Белый центральный круг
         inner_radius = int(radius * 0.50)
@@ -118,13 +122,15 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline=None)
         
         # --- Разделительная линия (0-24) - Вертикальная ---
+        # Thinner line: 2px instead of 3px (1 * SCALE)
         draw.line(
             [(center[0], padding), (center[0], size - padding)],
-            fill="#000000", width=1
+            fill="#000000", width=3
         )
 
         # 8. Даты
-        date_font_size = 11
+        # Slightly smaller than direct scaling (11 * 3 = 33)
+        date_font_size = 22
         date_font = None
         try:
             date_font = ImageFont.truetype(font_path, date_font_size)
@@ -136,9 +142,9 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             if len(sorted_dates) >= 1:
                 date1 = sorted_dates[0]
                 
-                temp_img = Image.new('RGBA', (100, 50), (255, 255, 255, 0))
+                temp_img = Image.new('RGBA', (100 * SCALE, 50 * SCALE), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50, 25), date1, fill='#000000', font=date_font, anchor="mm")
+                temp_draw.text((50 * SCALE, 25 * SCALE), date1, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
@@ -146,7 +152,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     # Поворачиваем на -90 (по часовой) для чтения сверху-вниз
                     rotated_date = cropped_date.rotate(-90, expand=True)
                     
-                    paste_x = int(center[0] + 10)
+                    paste_x = int(center[0] + 10 * SCALE)
                     paste_y = int(center[1] - rotated_date.height // 2)
                     image.paste(rotated_date, (paste_x, paste_y), rotated_date)
             
@@ -154,9 +160,9 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             if len(sorted_dates) >= 2:
                 date2 = sorted_dates[1]
                 
-                temp_img = Image.new('RGBA', (100, 50), (255, 255, 255, 0))
+                temp_img = Image.new('RGBA', (100 * SCALE, 50 * SCALE), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50, 25), date2, fill='#000000', font=date_font, anchor="mm")
+                temp_draw.text((50 * SCALE, 25 * SCALE), date2, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
@@ -164,7 +170,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     # Поворачиваем на 90 (против часовой) для чтения снизу-вверх
                     rotated_date = cropped_date.rotate(90, expand=True)
                     
-                    paste_x = int(center[0] - rotated_date.width - 10)
+                    paste_x = int(center[0] - rotated_date.width - 10 * SCALE)
                     paste_y = int(center[1] - rotated_date.height // 2)
                     image.paste(rotated_date, (paste_x, paste_y), rotated_date)
 
@@ -254,8 +260,8 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     # Используем ранее рассчитанный inner_radius (радиус белого круга)
                     
                     # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
-                    gap = 2
-                    dot_radius = 2  # px (диаметр = 4)
+                    gap = 3 * SCALE
+                    dot_radius = 4  # Adjusted for visibility
                     # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей от края белого круга
                     outer = inner_radius - gap - dot_radius
                     dot_cx = center[0] + outer * math.cos(angle_rad)
@@ -274,6 +280,9 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         buf.seek(0)
         return buf.getvalue()
 
+    except Exception as e:
+        logger.error(f"Failed to generate 48h schedule image: {e}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"Failed to generate 48h schedule image: {e}", exc_info=True)
         return None
@@ -304,8 +313,10 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
             return None
         
         # 2. Настройка рисования
-        size = 300
-        padding = 30
+        SCALE = 2  # 2x scale = 600x600
+        base_size = 300
+        size = base_size * SCALE
+        padding = 30 * SCALE
         center = (size // 2, size // 2)
         radius = (size // 2) - padding
         bbox = [padding, padding, size - padding, size - padding]
@@ -313,7 +324,7 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         draw = ImageDraw.Draw(image)
 
         # 3. Загрузка шрифта
-        font_size = 9
+        font_size = 18
         font = None
         try:
             font = ImageFont.truetype(font_path, font_size)
@@ -362,7 +373,8 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
-            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=2)
+            # Thicker lines for better visibility
+            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=4)
 
         # 7. Белый центральный круг
         inner_radius = int(radius * 0.50)
@@ -376,9 +388,9 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         
         # 8. Дата в центре
         try:
-            temp_img = Image.new('RGBA', (100, 100), (255, 255, 255, 0))
+            temp_img = Image.new('RGBA', (100 * SCALE, 100 * SCALE), (255, 255, 255, 0))
             temp_draw = ImageDraw.Draw(temp_img)
-            temp_draw.text((50, 50), today_date, fill='#000000', font=font, anchor="mm")
+            temp_draw.text((50 * SCALE, 50 * SCALE), today_date, fill='#000000', font=font, anchor="mm")
             
             bbox_date = temp_img.getbbox()
             if bbox_date:
@@ -425,17 +437,17 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                     angle_rad = math.radians(marker_angle)
                     # Рисуем маркер внутри белого центрального круга (маленький прямоугольник по радиусу)
                     # Используем ранее рассчитанный inner_radius (радиус белого круга)
-                    marker_len = 8
-                    marker_width = 3
+                    marker_len = 8 * SCALE
+                    marker_width = 3 * SCALE
 
                     # Разместим маркер внутри белого круга, чуть ближе к его краю
-                    outer = inner_radius - 2
+                    outer = inner_radius - 2 * SCALE
                     inner = outer - marker_len
 
                     # Нарисуем маленький чёрный кружок диаметром 2 px на краю белого круга
                     # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
-                    gap = 2
-                    dot_radius = 2  # px (диаметр = 4)
+                    gap = 3 * SCALE
+                    dot_radius = 4  # Slightly smaller marker
                     # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей
                     outer = inner_radius - gap - dot_radius
                     dot_cx = center[0] + outer * math.cos(angle_rad)
@@ -453,7 +465,6 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         image.save(buf, format='PNG')
         buf.seek(0)
         return buf.getvalue()
-
     except Exception as e:
         logger.error(f"Failed to generate 24h CEK diagram: {e}", exc_info=True)
         return None

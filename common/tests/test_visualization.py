@@ -48,8 +48,8 @@ class TestVisualization:
             import io
             img = Image.open(io.BytesIO(image_bytes))
             assert img.format == "PNG"
-            assert img.width == 300
-            assert img.height == 300
+            assert img.width == 600
+            assert img.height == 600
             
         except OSError:
             pytest.skip("Font not found, skipping visualization test")
@@ -73,8 +73,8 @@ class TestVisualization:
             import io
             img = Image.open(io.BytesIO(image_bytes))
             assert img.format == "PNG"
-            assert img.width == 300
-            assert img.height == 300
+            assert img.width == 600
+            assert img.height == 600
             
         except OSError:
             pytest.skip("Font not found, skipping visualization test")
