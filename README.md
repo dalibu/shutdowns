@@ -142,6 +142,36 @@ For detailed implementation guide, see [DATA_SOURCES.md](DATA_SOURCES.md).
 
 ## Development
 
+### Python Version
+
+This project requires **Python 3.13 or 3.14** (recommended: 3.14.1).
+
+The Python version is managed via:
+- `.python-version` - Used by pyenv and other version managers
+- `pyproject.toml` - Specifies `requires-python = ">=3.13,<3.15"`
+
+### Quick Setup
+
+**Automated setup (recommended):**
+```bash
+# Create conda environment
+conda create -n shutdowns python=3.14
+conda activate shutdowns
+
+# Run automated setup script
+./setup_dev.sh
+```
+
+**Manual setup:**
+```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements-dev.txt
+```
+
 ### Project Structure Benefits
 
 1. **DRY Principle** - Common logic in one place
@@ -153,9 +183,6 @@ For detailed implementation guide, see [DATA_SOURCES.md](DATA_SOURCES.md).
 ### Running Locally
 
 ```bash
-# Install dependencies
-pip install -r requirements-dev.txt
-
 # Run DTEK bot
 export DTEK_BOT_TOKEN="your_token"
 export DTEK_DB_PATH="./dtek_bot.db"
@@ -170,23 +197,31 @@ python -m cek.bot.bot
 ### Testing
 
 ```bash
-# Run all tests
-pytest
+# Run all tests for all components
+./run_tests.sh
 
-# Run provider-specific tests
-pytest dtek/tests/
-pytest cek/tests/
+# Run tests for specific provider
+./run_tests.sh all dtek
+./run_tests.sh all cek
 
-# Run common library tests
-pytest tests/test_common/
+# Run specific test types
+./run_tests.sh unit all      # Unit tests only
+./run_tests.sh coverage all  # With coverage report
+./run_tests.sh quick all     # Skip slow tests
+
+# Or use pytest directly
+pytest                        # All tests
+pytest dtek/tests/           # DTEK tests only
+pytest cek/tests/            # CEK tests only
+pytest common/tests/         # Common library tests
 ```
 
 ## Technical Stack
 
-- **Python**: 3.12
+- **Python**: 3.14 (compatible with 3.13-3.14)
 - **Bot Framework**: aiogram 3.x
 - **Database**: SQLite (aiosqlite)
-- **Web Scraping**: Playwright (headless Chrome)
+- **Web Scraping**: Botasaurus (headless Chrome)
 - **Image Generation**: Pillow (PIL)
 - **Deployment**: Docker + Docker Compose
 

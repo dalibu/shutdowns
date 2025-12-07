@@ -1,9 +1,21 @@
+# Core dependencies
 aiogram>=3.7.0
 python-dotenv
 pytz
 aiosqlite
 Pillow>=9.0.0
 aiohttp
+httpx
+
+# Web framework dependencies (needed for bot modules)
+fastapi
+uvicorn
+requests
+
+# Parser dependencies
+botasaurus==4.0.94
+
+# Testing dependencies
 pytest
 pytest-asyncio
 pytest-mock

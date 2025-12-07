@@ -19,10 +19,22 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║     Multi-Bot Test Runner              ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
 
+# Detect Python command
+if [[ -n "$CONDA_DEFAULT_ENV" ]] || [[ -n "$VIRTUAL_ENV" ]]; then
+    # Inside conda or venv, use 'python' directly
+    PYTHON_CMD="python"
+else
+    # Not in virtual environment, use python3
+    PYTHON_CMD="python3"
+fi
+
+echo -e "${CYAN}Using Python: $($PYTHON_CMD --version)${NC}\n"
+
 # Check pytest installation
-if ! python3 -m pytest --version &> /dev/null; then
+if ! $PYTHON_CMD -m pytest --version &> /dev/null; then
     echo -e "${RED}✗ pytest not installed!${NC}"
     echo "Install: pip install -r requirements-dev.txt"
+    echo "Or run: ./setup_dev.sh"
     exit 1
 fi
 
@@ -50,27 +62,27 @@ run_tests() {
     
     case "$test_type" in
         all)
-            python3 -m pytest "$test_dir" -v --tb=short
+            $PYTHON_CMD -m pytest "$test_dir" -v --tb=short
             ;;
         unit)
-            python3 -m pytest "$test_dir" -m "unit" -v --tb=short
+            $PYTHON_CMD -m pytest "$test_dir" -m "unit" -v --tb=short
             ;;
         integration)
-            python3 -m pytest "$test_dir" -m "integration" -v --tb=short
+            $PYTHON_CMD -m pytest "$test_dir" -m "integration" -v --tb=short
             ;;
         quick)
-            python3 -m pytest "$test_dir" -m "not slow" -v --tb=short
+            $PYTHON_CMD -m pytest "$test_dir" -m "not slow" -v --tb=short
             ;;
         coverage)
             local cov_source="${component%%/*}"  # Get first part (common, dtek, cek)
-            python3 -m pytest "$test_dir" \
+            $PYTHON_CMD -m pytest "$test_dir" \
                 --cov="$cov_source" \
                 --cov-report=html:"htmlcov/${component}" \
                 --cov-report=term-missing \
                 -v
             ;;
         failed)
-            python3 -m pytest "$test_dir" --lf -v --tb=short
+            $PYTHON_CMD -m pytest "$test_dir" --lf -v --tb=short
             ;;
         *)
             echo -e "${RED}✗ Unknown test type: $test_type${NC}"

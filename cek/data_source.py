@@ -1,7 +1,7 @@
 from typing import Dict, Any
 import logging
 from common.data_source import ShutdownDataSource, ScheduleData
-from cek.parser.cek_parser import run_parser_service as cek_run
+
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,9 @@ class CekParserDataSource(ShutdownDataSource):
     async def get_schedule(self, city: str, street: str, house: str, **kwargs) -> ScheduleData:
         logger.info(f"Fetching CEK data via parser for {city}, {street}, {house}")
         try:
+            # Lazy import to avoid hard dependency on botasaurus for tests
+            from cek.parser.cek_parser import run_parser_service as cek_run
+            
             cached_group = kwargs.get("cached_group")
             result = await cek_run(city=city, street=street, house=house, is_debug=False, cached_group=cached_group)
             data = result.get("data", {})
