@@ -74,8 +74,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
         logger.debug(f"Загрузка страницы: {URL}")
         driver.google_get(URL)
         
-        # Дополнительное ожидание для загрузки всех скриптов
-        time.sleep(3)
+
         
         # Попытка закрыть модальное окно
         try:
@@ -140,8 +139,8 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             
             logger.debug(f"Текст введен в {selector}")
             
-            # Ожидание автокомплита - увеличиваем время
-            time.sleep(3)
+            # Ожидание автокомплита
+            driver.select(f"{autocomplete} div", wait=10)
             
             # Клик по автокомплиту через JavaScript
             if i == 0:
@@ -189,7 +188,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 else:
                     logger.debug(f"Автокомплит не найден для {selector}")
             
-            # Пауза после выбора
+            # Пауза после выбора для обработки зависимых полей
             time.sleep(1)
             
             # Для последнего поля ждем появления таблицы
