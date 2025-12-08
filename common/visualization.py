@@ -81,6 +81,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     current_minutes = 0
                 
                 # Поворачиваем диаграмму так, чтобы текущее время было наверху
+                # Вращение ПРОТИВ часовой стрелки (отрицательный угол в системе координат)
                 rotation_offset = -(current_minutes / (48.0 * 60.0)) * 360.0
             except Exception as e:
                 logger.warning(f"Failed to calculate rotation offset: {e}")
@@ -152,7 +153,7 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         divider_y2 = center[1] - radius * math.sin(divider_rad)
         draw.line(
             [(divider_x1, divider_y1), (divider_x2, divider_y2)],
-            fill="#000000", width=3
+            fill="#000000", width=2
         )
 
         # 8. Даты
@@ -194,16 +195,27 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     perp1_angle = divider_angle + 90
                     perp2_angle = divider_angle - 90
                     
-                    # Вычисляем Y-координаты для обоих направлений
-                    offset_distance = 15 * SCALE
+                    # Небольшое расстояние от центра перпендикулярно линии
+                    offset_distance = 12 * SCALE
+                    x1 = center[0] + offset_distance * math.cos(math.radians(perp1_angle))
                     y1 = center[1] + offset_distance * math.sin(math.radians(perp1_angle))
+                    x2 = center[0] + offset_distance * math.cos(math.radians(perp2_angle))
                     y2 = center[1] + offset_distance * math.sin(math.radians(perp2_angle))
                     
                     # День 1 (сегодня) должен быть СВЕРХУ - выбираем направление с меньшей Y
-                    if y1 < y2:
-                        perpendicular_angle = perp1_angle
+                    # Если Y одинаковые (вертикальная линия), используем X
+                    if abs(y1 - y2) > 1:
+                        # Используем Y-координату
+                        if y1 < y2:
+                            perpendicular_angle = perp1_angle
+                        else:
+                            perpendicular_angle = perp2_angle
                     else:
-                        perpendicular_angle = perp2_angle
+                        # Y одинаковые, используем X (правая сторона для дня 1 - меньшая дата)
+                        if x1 > x2:
+                            perpendicular_angle = perp1_angle
+                        else:
+                            perpendicular_angle = perp2_angle
                     
                     perpendicular_rad = math.radians(perpendicular_angle)
                     date1_x = center[0] + offset_distance * math.cos(perpendicular_rad)
@@ -242,15 +254,26 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     perp2_angle = divider_angle - 90
                     
                     # Вычисляем Y-координаты для обоих направлений
-                    offset_distance = 15 * SCALE
+                    offset_distance = 12 * SCALE
+                    x1 = center[0] + offset_distance * math.cos(math.radians(perp1_angle))
                     y1 = center[1] + offset_distance * math.sin(math.radians(perp1_angle))
+                    x2 = center[0] + offset_distance * math.cos(math.radians(perp2_angle))
                     y2 = center[1] + offset_distance * math.sin(math.radians(perp2_angle))
                     
                     # День 2 (завтра) должен быть СНИЗУ - выбираем направление с большей Y
-                    if y1 > y2:
-                        perpendicular_angle = perp1_angle
+                    # Если Y одинаковые (вертикальная линия), используем X
+                    if abs(y1 - y2) > 1:
+                        # Используем Y-координату
+                        if y1 > y2:
+                            perpendicular_angle = perp1_angle
+                        else:
+                            perpendicular_angle = perp2_angle
                     else:
-                        perpendicular_angle = perp2_angle
+                        # Y одинаковые, используем X (левая сторона для дня 2 - большая дата)
+                        if x1 < x2:
+                            perpendicular_angle = perp1_angle
+                        else:
+                            perpendicular_angle = perp2_angle
                     
                     perpendicular_rad = math.radians(perpendicular_angle)
                     date2_x = center[0] + offset_distance * math.cos(perpendicular_rad)
@@ -398,6 +421,7 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 if current_date_str == today_date:
                     current_minutes = current_time.hour * 60 + current_time.minute
                     # Поворачиваем диаграмму так, чтобы текущее время было наверху
+                    # Вращение ПРОТИВ часовой стрелки (отрицательный угол в системе координат)
                     rotation_offset = -(current_minutes / (24.0 * 60.0)) * 360.0
             except Exception as e:
                 logger.warning(f"Failed to calculate rotation offset: {e}")
