@@ -65,7 +65,28 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         # 5. Рисуем фон (свет есть везде) - Желтый круг
         draw.ellipse(bbox, fill="#FFD700", outline=None)
 
-        # 6. Рисуем отключения (черные сектора) с точностью до минут
+        # 6. Вычисляем угол поворота диаграммы (если указано текущее время)
+        rotation_offset = 0.0
+        if current_time:
+            try:
+                current_date_str = current_time.strftime('%d.%m.%y')
+                # Определяем, какой это день (1-й или 2-й)
+                if len(sorted_dates) >= 1 and current_date_str == sorted_dates[0]:
+                    # День 1
+                    current_minutes = current_time.hour * 60 + current_time.minute
+                elif len(sorted_dates) >= 2 and current_date_str == sorted_dates[1]:
+                    # День 2
+                    current_minutes = (24 * 60) + (current_time.hour * 60 + current_time.minute)
+                else:
+                    current_minutes = 0
+                
+                # Поворачиваем диаграмму так, чтобы текущее время было наверху
+                rotation_offset = -(current_minutes / (48.0 * 60.0)) * 360.0
+            except Exception as e:
+                logger.warning(f"Failed to calculate rotation offset: {e}")
+                rotation_offset = 0.0
+
+        # 7. Рисуем отключения (черные сектора) с точностью до минут
         degrees_per_minute = 360.0 / (48.0 * 60.0)  # 0.125 градуса на минуту
 
         for day_idx, date in enumerate(sorted_dates[:2]):
@@ -90,10 +111,10 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     if end_h < start_h:
                         end_abs += 24 * 60
                     
-                    # Рисуем сектор
-                    # 00:00 День 1 = 270 градусов (Верх)
-                    start_angle = 270 + (start_abs * degrees_per_minute)
-                    end_angle = 270 + (end_abs * degrees_per_minute)
+                    # Рисуем сектор с учетом поворота диаграммы
+                    # 00:00 День 1 = 270 градусов (Верх) + rotation_offset
+                    start_angle = 270 + (start_abs * degrees_per_minute) + rotation_offset
+                    end_angle = 270 + (end_abs * degrees_per_minute) + rotation_offset
                     
                     draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
 
@@ -101,10 +122,10 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     logger.warning(f"Error processing DTEK slot '{slot}': {e}")
                     continue
 
-        # 6. Белые разделительные линии (каждый час)
+        # 8. Белые разделительные линии (каждый час) с учетом поворота
         degrees_per_hour = 360.0 / 48.0
         for hour in range(48):
-            angle_deg = 270 + (hour * degrees_per_hour)
+            angle_deg = 270 + (hour * degrees_per_hour) + rotation_offset
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
@@ -121,16 +142,22 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         ]
         draw.ellipse(inner_bbox, fill='#FFFFFF', outline=None)
         
-        # --- Разделительная линия (0-24) - Вертикальная ---
-        # Thinner line: 2px instead of 3px (1 * SCALE)
+        # --- Разделительная линия (0-24) - Вертикальная с учетом поворота ---
+        # Линия разделяет День 1 и День 2 (на 24 часа = 180 градусов от начала)
+        divider_angle = 270 + 180 + rotation_offset  # 90 градусов (горизонтальная линия влево)
+        divider_rad = math.radians(divider_angle)
+        divider_x1 = center[0] + radius * math.cos(divider_rad)
+        divider_y1 = center[1] + radius * math.sin(divider_rad)
+        divider_x2 = center[0] - radius * math.cos(divider_rad)
+        divider_y2 = center[1] - radius * math.sin(divider_rad)
         draw.line(
-            [(center[0], padding), (center[0], size - padding)],
+            [(divider_x1, divider_y1), (divider_x2, divider_y2)],
             fill="#000000", width=3
         )
 
         # 8. Даты
-        # Slightly smaller than direct scaling (11 * 3 = 33)
-        date_font_size = 22
+        # Используем тот же размер шрифта, что и для часов на циферблате
+        date_font_size = 18
         date_font = None
         try:
             date_font = ImageFont.truetype(font_path, date_font_size)
@@ -138,138 +165,169 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             date_font = ImageFont.load_default()
 
         try:
-            # День 1 (Правая половина)
+            # День 1 (Сегодня) - размещаем в центре над разделительной линией
             if len(sorted_dates) >= 1:
                 date1 = sorted_dates[0]
                 
-                temp_img = Image.new('RGBA', (100 * SCALE, 50 * SCALE), (255, 255, 255, 0))
+                temp_img = Image.new('RGBA', (200 * SCALE, 50 * SCALE), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50 * SCALE, 25 * SCALE), date1, fill='#000000', font=date_font, anchor="mm")
+                temp_draw.text((100 * SCALE, 25 * SCALE), date1, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
                     cropped_date = temp_img.crop(bbox_date)
-                    # Поворачиваем на -90 (по часовой) для чтения сверху-вниз
-                    rotated_date = cropped_date.rotate(-90, expand=True)
                     
-                    paste_x = int(center[0] + 10 * SCALE)
-                    paste_y = int(center[1] - rotated_date.height // 2)
+                    # Размещаем в центре круга, НАД разделительной линией (перпендикулярно к ней)
+                    # Разделительная линия: 270 + 180 + rotation_offset
+                    divider_angle = 270 + 180 + rotation_offset
+                    
+                    # Поворачиваем текст вдоль разделительной линии
+                    text_rotation_angle = -divider_angle
+                    # Проверяем, не перевернут ли текст вверх ногами
+                    normalized_angle = divider_angle % 360
+                    if 90 < normalized_angle < 270:
+                        # Добавляем 180 градусов, чтобы текст был читаемым
+                        text_rotation_angle += 180
+                    rotated_date = cropped_date.rotate(text_rotation_angle, expand=True)
+                    
+                    # Определяем два перпендикулярных направления
+                    perp1_angle = divider_angle + 90
+                    perp2_angle = divider_angle - 90
+                    
+                    # Вычисляем Y-координаты для обоих направлений
+                    offset_distance = 15 * SCALE
+                    y1 = center[1] + offset_distance * math.sin(math.radians(perp1_angle))
+                    y2 = center[1] + offset_distance * math.sin(math.radians(perp2_angle))
+                    
+                    # День 1 (сегодня) должен быть СВЕРХУ - выбираем направление с меньшей Y
+                    if y1 < y2:
+                        perpendicular_angle = perp1_angle
+                    else:
+                        perpendicular_angle = perp2_angle
+                    
+                    perpendicular_rad = math.radians(perpendicular_angle)
+                    date1_x = center[0] + offset_distance * math.cos(perpendicular_rad)
+                    date1_y = center[1] + offset_distance * math.sin(perpendicular_rad)
+                    
+                    paste_x = int(date1_x - rotated_date.width // 2)
+                    paste_y = int(date1_y - rotated_date.height // 2)
                     image.paste(rotated_date, (paste_x, paste_y), rotated_date)
             
-            # День 2 (Левая половина)
+            # День 2 (Завтра) - размещаем в центре под разделительной линией
             if len(sorted_dates) >= 2:
                 date2 = sorted_dates[1]
                 
-                temp_img = Image.new('RGBA', (100 * SCALE, 50 * SCALE), (255, 255, 255, 0))
+                temp_img = Image.new('RGBA', (200 * SCALE, 50 * SCALE), (255, 255, 255, 0))
                 temp_draw = ImageDraw.Draw(temp_img)
-                temp_draw.text((50 * SCALE, 25 * SCALE), date2, fill='#000000', font=date_font, anchor="mm")
+                temp_draw.text((100 * SCALE, 25 * SCALE), date2, fill='#000000', font=date_font, anchor="mm")
                 
                 bbox_date = temp_img.getbbox()
                 if bbox_date:
                     cropped_date = temp_img.crop(bbox_date)
-                    # Поворачиваем на 90 (против часовой) для чтения снизу-вверх
-                    rotated_date = cropped_date.rotate(90, expand=True)
                     
-                    paste_x = int(center[0] - rotated_date.width - 10 * SCALE)
-                    paste_y = int(center[1] - rotated_date.height // 2)
+                    # Размещаем в центре круга, ПОД разделительной линией (перпендикулярно к ней)
+                    divider_angle = 270 + 180 + rotation_offset
+                    
+                    # Поворачиваем текст вдоль разделительной линии
+                    text_rotation_angle = -divider_angle
+                    # Проверяем, не перевернут ли текст вверх ногами
+                    normalized_angle = divider_angle % 360
+                    if 90 < normalized_angle < 270:
+                        # Добавляем 180 градусов, чтобы текст был читаемым
+                        text_rotation_angle += 180
+                    rotated_date = cropped_date.rotate(text_rotation_angle, expand=True)
+                    
+                    # Определяем два перпендикулярных направления
+                    perp1_angle = divider_angle + 90
+                    perp2_angle = divider_angle - 90
+                    
+                    # Вычисляем Y-координаты для обоих направлений
+                    offset_distance = 15 * SCALE
+                    y1 = center[1] + offset_distance * math.sin(math.radians(perp1_angle))
+                    y2 = center[1] + offset_distance * math.sin(math.radians(perp2_angle))
+                    
+                    # День 2 (завтра) должен быть СНИЗУ - выбираем направление с большей Y
+                    if y1 > y2:
+                        perpendicular_angle = perp1_angle
+                    else:
+                        perpendicular_angle = perp2_angle
+                    
+                    perpendicular_rad = math.radians(perpendicular_angle)
+                    date2_x = center[0] + offset_distance * math.cos(perpendicular_rad)
+                    date2_y = center[1] + offset_distance * math.sin(perpendicular_rad)
+                    
+                    paste_x = int(date2_x - rotated_date.width // 2)
+                    paste_y = int(date2_y - rotated_date.height // 2)
                     image.paste(rotated_date, (paste_x, paste_y), rotated_date)
 
         except Exception as e:
             logger.warning(f"Failed to add dates: {e}")
 
-        # 9. Метки (начало/конец отключений + 00:00 и 24:00)
+        # 9. Метки часов (все часы для обоих дней)
         label_radius = radius + (padding * 0.35)
-        label_points = set()
         
-        # Добавляем фиксированные метки
-        label_points.add(0.0)
-        label_points.add(24.0)
-        
-        for day_idx, date in enumerate(sorted_dates[:2]):
-            slots = days_slots[date]
-            day_offset = day_idx * 24
-            
-            for slot in slots:
-                try:
-                    time_str = slot.get('shutdown', '00:00–00:00')
-                    time_parts = time_str.split('–')
-                    if len(time_parts) != 2:
-                        continue
-                        
-                    start_h, start_m = map(int, time_parts[0].split(':'))
-                    end_h, end_m = map(int, time_parts[1].split(':'))
-                    
-                    start_point = day_offset + start_h + (start_m / 60.0)
-                    end_point = day_offset + end_h + (end_m / 60.0)
-                    
-                    if end_point < start_point:
-                        end_point += 24
-                        
-                    label_points.add(start_point)
-                    label_points.add(end_point)
-                    
-                except Exception:
-                    continue
-        
-        # Рисуем метки
-        for point in label_points:
-            angle_deg = 270 + (point * degrees_per_hour)
+        # Рисуем метки для всех часов (0-23 для каждого дня)
+        # Всего 48 меток
+        for hour in range(48):
+            angle_deg = 270 + (hour * degrees_per_hour) + rotation_offset
             angle_rad = math.radians(angle_deg)
             
             x_pos = center[0] + label_radius * math.cos(angle_rad)
             y_pos = center[1] + label_radius * math.sin(angle_rad)
             
-            # Текст метки: "HH" если минут 0, иначе "HH:MM"
-            if abs(point - 24.0) < 0.001:
-                label = "24"
-            else:
-                hours = int(point) % 24
-                minutes = int(round((point - int(point)) * 60))
-                if minutes == 0:
-                    label = f"{hours:02d}"
-                else:
-                    label = f"{hours:02d}:{minutes:02d}"
+            # Метка вида "00", "01", ..., "23" (повторяется для второго дня)
+            hour_label = hour % 24
+            label = f"{hour_label:02d}"
             
             try:
                 draw.text((x_pos, y_pos), label, fill="black", font=font, anchor="mm")
             except Exception:
+                # Fallback для старых версий Pillow
                 bbox_text = draw.textbbox((0, 0), label, font=font)
                 text_width = bbox_text[2] - bbox_text[0]
                 text_height = bbox_text[3] - bbox_text[1]
                 draw.text((x_pos - text_width / 2, y_pos - text_height / 2), label, fill="black", font=font)
 
-        # 10. Маркер текущего времени
+        # 10. Маркер текущего времени (треугольник всегда наверху)
         if current_time:
             try:
-                marker_angle = None
-                current_date_str = current_time.strftime('%d.%m.%y')
+                # Треугольник всегда указывает наверх (270 градусов)
+                marker_angle = 270
+                angle_rad = math.radians(marker_angle)
                 
-                # Определяем, какой это день (1-й или 2-й)
-                if len(sorted_dates) >= 1 and current_date_str == sorted_dates[0]:
-                    # День 1
-                    minutes = current_time.hour * 60 + current_time.minute
-                    marker_angle = 270 + (minutes * degrees_per_minute)
-                elif len(sorted_dates) >= 2 and current_date_str == sorted_dates[1]:
-                    # День 2
-                    minutes = (24 * 60) + (current_time.hour * 60 + current_time.minute)
-                    marker_angle = 270 + (minutes * degrees_per_minute)
-                
-                if marker_angle is not None:
-                    angle_rad = math.radians(marker_angle)
-                    # Рисуем маркер внутри белого центрального круга (черный кружок)
+                if True:  # Всегда рисуем, если есть current_time
+                    # Рисуем маркер внутри белого центрального круга (черный треугольник)
                     # Используем ранее рассчитанный inner_radius (радиус белого круга)
                     
-                    # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
-                    gap = 3 * SCALE
-                    dot_radius = 4  # Adjusted for visibility
-                    # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей от края белого круга
-                    outer = inner_radius - gap - dot_radius
-                    dot_cx = center[0] + outer * math.cos(angle_rad)
-                    dot_cy = center[1] + outer * math.sin(angle_rad)
-
-                    draw.ellipse([
-                        (dot_cx - dot_radius, dot_cy - dot_radius),
-                        (dot_cx + dot_radius, dot_cy + dot_radius)
+                    # Отступ (gap) между краем белого круга и вершиной треугольника в пикселях
+                    gap = 2 * SCALE
+                    triangle_height = 8 * SCALE  # Высота треугольника (длина от вершины к основанию)
+                    triangle_base_width = 6 * SCALE  # Ширина основания треугольника
+                    
+                    # Вершина треугольника (apex) указывает на текущий сектор
+                    # Располагаем вершину близко к краю белого круга
+                    apex_distance = inner_radius - gap
+                    apex_x = center[0] + apex_distance * math.cos(angle_rad)
+                    apex_y = center[1] + apex_distance * math.sin(angle_rad)
+                    
+                    # Два других угла треугольника (основание)
+                    # Основание находится ближе к центру
+                    base_distance = apex_distance - triangle_height
+                    base_center_x = center[0] + base_distance * math.cos(angle_rad)
+                    base_center_y = center[1] + base_distance * math.sin(angle_rad)
+                    
+                    # Перпендикулярный угол для разнесения углов основания
+                    perp_angle = angle_rad + math.radians(90)
+                    base_x1 = base_center_x + (triangle_base_width / 2) * math.cos(perp_angle)
+                    base_y1 = base_center_y + (triangle_base_width / 2) * math.sin(perp_angle)
+                    base_x2 = base_center_x - (triangle_base_width / 2) * math.cos(perp_angle)
+                    base_y2 = base_center_y - (triangle_base_width / 2) * math.sin(perp_angle)
+                    
+                    # Рисуем треугольник
+                    draw.polygon([
+                        (apex_x, apex_y),
+                        (base_x1, base_y1),
+                        (base_x2, base_y2)
                     ], fill="black")
             except Exception as e:
                 logger.warning(f"Failed to draw current time marker: {e}")
@@ -332,10 +390,23 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
             logger.warning(f"Font not found at '{font_path}', using default")
             font = ImageFont.load_default()
 
-        # 4. Рисуем фон (свет есть везде) - Желтый круг
+        # 4. Вычисляем угол поворота диаграммы (если указано текущее время)
+        rotation_offset = 0.0
+        if current_time:
+            try:
+                current_date_str = current_time.strftime('%d.%m.%y')
+                if current_date_str == today_date:
+                    current_minutes = current_time.hour * 60 + current_time.minute
+                    # Поворачиваем диаграмму так, чтобы текущее время было наверху
+                    rotation_offset = -(current_minutes / (24.0 * 60.0)) * 360.0
+            except Exception as e:
+                logger.warning(f"Failed to calculate rotation offset: {e}")
+                rotation_offset = 0.0
+
+        # 5. Рисуем фон (свет есть везде) - Желтый круг
         draw.ellipse(bbox, fill="#FFD700", outline=None)
 
-        # 5. Рисуем отключения (черные сектора) с точностью до минут
+        # 6. Рисуем отключения (черные сектора) с точностью до минут
         for slot in today_slots:
             try:
                 time_str = slot.get('shutdown', '00:00–00:00')
@@ -354,11 +425,11 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 if end_minutes < start_minutes:
                     end_minutes = 24 * 60  # Рисуем до конца дня
                 
-                # Переводим минуты в углы
-                # 00:00 = 270 градусов (Верх)
-                # 1 минута = 0.25 градуса (360 / 1440)
-                start_angle = 270 + (start_minutes * 0.25)
-                end_angle = 270 + (end_minutes * 0.25)
+                # Переводим минуты в углы с учетом поворота
+                # 00:00 = 270 градусов (Верх) + rotation_offset
+                # 1 минута = 0.25 градуса
+                start_angle = 270 + (start_minutes * 0.25) + rotation_offset
+                end_angle = 270 + (end_minutes * 0.25) + rotation_offset
                 
                 draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
                         
@@ -366,10 +437,10 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 logger.warning(f"Error processing shutdown slot '{slot}': {e}")
                 continue
 
-        # 6. Рисуем белые разделительные линии (каждый час)
+        # 7. Рисуем белые разделительные линии (каждый час) с учетом поворота
         degrees_per_hour = 360.0 / 24.0
         for hour in range(24):
-            angle_deg = 270 + (hour * degrees_per_hour)
+            angle_deg = 270 + (hour * degrees_per_hour) + rotation_offset
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
@@ -401,12 +472,12 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         except Exception as e:
             logger.warning(f"Failed to add date: {e}")
 
-        # 9. Метки часов напротив разделительных линий
+        # 9. Метки часов напротив разделительных линий с учетом поворота
         label_radius = radius + (padding * 0.35)
 
         for hour in range(0, 24):  # Все 24 hours
-            # Угол разделительной линии
-            angle_deg = 270 + (hour * degrees_per_hour)
+            # Угол разделительной линии с учетом поворота
+            angle_deg = 270 + (hour * degrees_per_hour) + rotation_offset
             angle_rad = math.radians(angle_deg)
             
             x_pos = center[0] + label_radius * math.cos(angle_rad)
@@ -424,38 +495,47 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 text_height = bbox_text[3] - bbox_text[1]
                 draw.text((x_pos - text_width / 2, y_pos - text_height / 2), label, fill="black", font=font)
 
-        # 10. Маркер текущего времени
+        # 10. Маркер текущего времени (треугольник всегда наверху)
         if current_time:
             try:
                 current_date_str = current_time.strftime('%d.%m.%y')
                 if current_date_str == today_date:
-                    minutes = current_time.hour * 60 + current_time.minute
-                    # 00:00 = 270 градусов
-                    # 1 минута = 0.25 градуса
-                    marker_angle = 270 + (minutes * 0.25)
+                    # Треугольник всегда указывает наверх (270 градусов)
+                    marker_angle = 270
                     
                     angle_rad = math.radians(marker_angle)
-                    # Рисуем маркер внутри белого центрального круга (маленький прямоугольник по радиусу)
+                    # Рисуем маркер внутри белого центрального круга (черный треугольник)
                     # Используем ранее рассчитанный inner_radius (радиус белого круга)
-                    marker_len = 8 * SCALE
-                    marker_width = 3 * SCALE
-
-                    # Разместим маркер внутри белого круга, чуть ближе к его краю
-                    outer = inner_radius - 2 * SCALE
-                    inner = outer - marker_len
-
-                    # Нарисуем маленький чёрный кружок диаметром 2 px на краю белого круга
-                    # Отступ (gap) между краем белого круга и внешним краем кружка в пикселях
-                    gap = 3 * SCALE
-                    dot_radius = 4  # Slightly smaller marker
-                    # Центр кружка располагаем так, чтобы внешний край кружка был на `gap` пикселей
-                    outer = inner_radius - gap - dot_radius
-                    dot_cx = center[0] + outer * math.cos(angle_rad)
-                    dot_cy = center[1] + outer * math.sin(angle_rad)
-
-                    draw.ellipse([
-                        (dot_cx - dot_radius, dot_cy - dot_radius),
-                        (dot_cx + dot_radius, dot_cy + dot_radius)
+                    
+                    # Отступ (gap) между краем белого круга и вершиной треугольника в пикселях
+                    gap = 2 * SCALE
+                    triangle_height = 8 * SCALE  # Высота треугольника (длина от вершины к основанию)
+                    triangle_base_width = 6 * SCALE  # Ширина основания треугольника
+                    
+                    # Вершина треугольника (apex) указывает на текущий сектор
+                    # Располагаем вершину близко к краю белого круга
+                    apex_distance = inner_radius - gap
+                    apex_x = center[0] + apex_distance * math.cos(angle_rad)
+                    apex_y = center[1] + apex_distance * math.sin(angle_rad)
+                    
+                    # Два других угла треугольника (основание)
+                    # Основание находится ближе к центру
+                    base_distance = apex_distance - triangle_height
+                    base_center_x = center[0] + base_distance * math.cos(angle_rad)
+                    base_center_y = center[1] + base_distance * math.sin(angle_rad)
+                    
+                    # Перпендикулярный угол для разнесения углов основания
+                    perp_angle = angle_rad + math.radians(90)
+                    base_x1 = base_center_x + (triangle_base_width / 2) * math.cos(perp_angle)
+                    base_y1 = base_center_y + (triangle_base_width / 2) * math.sin(perp_angle)
+                    base_x2 = base_center_x - (triangle_base_width / 2) * math.cos(perp_angle)
+                    base_y2 = base_center_y - (triangle_base_width / 2) * math.sin(perp_angle)
+                    
+                    # Рисуем треугольник
+                    draw.polygon([
+                        (apex_x, apex_y),
+                        (base_x1, base_y1),
+                        (base_x2, base_y2)
                     ], fill="black")
             except Exception as e:
                 logger.warning(f"Failed to draw current time marker: {e}")

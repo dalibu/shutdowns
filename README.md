@@ -87,7 +87,7 @@ See [cek/bot/README.md](cek/bot/README.md) for detailed instructions.
 Both bots support:
 
 - 🔍 **Address Lookup** - Check shutdown schedules by address
-- 📊 **Visual Diagrams** - Circular clock-face schedule visualization
+- 📊 **Visual Diagrams** - Rotating circular clock-face visualization with triangle hour marker
 - 🔔 **Subscriptions** - Automatic updates when schedule changes
 - ⚠️ **Alerts** - Notifications N minutes before power events
 - 🤖 **CAPTCHA Protection** - Bot protection
@@ -125,9 +125,10 @@ The `common/` directory contains shared logic used by both bots:
   - Current status messages
   - Time slot merging
 
-- **`visualization.py`** (406 lines)
-  - 48-hour circular diagram (DTEK)
-  - 24-hour circular diagram (CEK)
+- **`visualization.py`** (522 lines)
+  - Rotating circular diagrams (48h and 24h)
+  - Triangle hour marker pointing upward
+  - Smart date positioning in center
   - PIL/Pillow image generation
 
 ## Data Sources (Pluggable Architecture)
