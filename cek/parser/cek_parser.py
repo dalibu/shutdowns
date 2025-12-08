@@ -63,7 +63,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
         if not group:
             logger.debug("Step 1: Looking up group by address...")
             driver.google_get(GROUP_LOOKUP_URL)
-            time.sleep(2)
+            # Page load is handled by driver
             
             # CEK form has cascading fields
             try:
@@ -74,7 +74,8 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 
                 # Type city
                 driver.type('input#city', city)
-                time.sleep(1)
+                # Wait for suggestions to appear
+                driver.select('#city-suggestions > div', wait=5)
                 
                 # Select suggestion
                 suggestion = driver.select('#city-suggestions > div:first-child', wait=5)
@@ -89,9 +90,10 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 logger.debug("Filling street field...")
                 # Wait for enabled (Botasaurus select doesn't support :not([disabled]) directly easily, 
                 # but we can wait for it or just try typing)
-                time.sleep(1) 
+                time.sleep(0.5)  # Brief delay for field to become enabled
                 driver.type('input#street', street)
-                time.sleep(1)
+                # Wait for suggestions to appear
+                driver.select('#street-suggestions > div', wait=5)
                 
                 suggestion = driver.select('#street-suggestions > div:first-child', wait=5)
                 if suggestion:
@@ -103,9 +105,10 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                 
                 # 3. Fill house
                 logger.debug("Filling house field...")
-                time.sleep(1)
+                time.sleep(0.5)  # Brief delay for field to become enabled
                 driver.type('input#house', house)
-                time.sleep(1)
+                # Wait for suggestions to appear
+                driver.select('#house-suggestions > div', wait=5)
                 
                 suggestion = driver.select('#house-suggestions > div:first-child', wait=5)
                 if suggestion:
@@ -113,10 +116,11 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
                     logger.debug("Selected house from suggestions")
                 else:
                     logger.debug("No house suggestions appeared")
-                time.sleep(1)
+                time.sleep(0.5)
                 
                 logger.debug("Waiting for group to be calculated...")
-                time.sleep(2)
+                # Wait for group element to appear with result
+                driver.select('#group', wait=5)
                 
                 # Extract group
                 group_text = None
@@ -156,7 +160,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
         # === STEP 2: Get Schedule by Group ===
         logger.debug(f"Step 2: Getting schedule for group {group}...")
         driver.google_get(SCHEDULE_URL)
-        time.sleep(2)
+        # Page load is handled by driver
         
         kiev_tz = pytz.timezone('Europe/Kiev')
         today = datetime.now(kiev_tz)
