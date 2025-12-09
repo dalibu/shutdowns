@@ -10,11 +10,28 @@ import logging
 import random
 import hashlib
 import aiosqlite
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Callable, Awaitable
 import json
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import User, InlineKeyboardMarkup, InlineKeyboardButton
+
+
+@dataclass
+class BotContext:
+    """
+    Configuration context for parametrized bot handlers.
+    Allows the same handler code to work with different providers.
+    """
+    provider_name: str          # Display name: "ДТЕК" or "ЦЕК"
+    provider_code: str          # Code for logs/files: "dtek" or "cek"
+    visualization_hours: int    # 48 for DTEK, 24 for CEK
+    db_conn: Any = None         # aiosqlite.Connection
+    font_path: str = ""
+    get_data_func: Optional[Callable[..., Awaitable[dict]]] = None  # Provider data fetcher
+    generate_image_func: Optional[Callable] = None  # Visualization function
+    logger: Optional[logging.Logger] = None
 
 # --- FSM States ---
 class CaptchaState(StatesGroup):
