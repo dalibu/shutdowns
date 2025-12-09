@@ -34,6 +34,8 @@ from common.bot_base import (
     get_shutdown_duration_str_by_hours,
     update_user_activity,
     format_user_info,
+    is_human_user,
+    set_human_user,
     # Multi-address functions
     save_user_address,
     get_user_addresses,
@@ -92,8 +94,16 @@ db_conn = None
 # --- Helper Functions ---
 async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bool:
     """Проверяет, прошел ли пользователь CAPTCHA. Возвращает True, если прошел."""
+    global db_conn
     user_id = message.from_user.id
+    
+    # First check memory cache
     if user_id in HUMAN_USERS:
+        return True
+    
+    # Then check database
+    if await is_human_user(db_conn, user_id):
+        HUMAN_USERS[user_id] = True  # Cache for future calls
         return True
 
     await state.set_state(CaptchaState.waiting_for_answer)
@@ -763,7 +773,8 @@ async def captcha_answer_handler(message: types.Message, state: FSMContext) -> N
         user_answer = -1
 
     if user_answer == correct_answer:
-        HUMAN_USERS[user_id] = True
+        HUMAN_USERS[user_id] = True  # Cache in memory
+        await set_human_user(db_conn, user_id, username)  # Persist to DB
         await state.clear()
         logger.info(f"CAPTCHA passed by user {user_id} (@{username}) {full_name}")
         await message.answer(

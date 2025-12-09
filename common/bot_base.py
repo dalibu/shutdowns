@@ -130,6 +130,53 @@ async def update_user_activity(
     except Exception as e:
         logging.error(f"Failed to update user activity: {e}")
 
+
+async def is_human_user(conn: aiosqlite.Connection, user_id: int) -> bool:
+    """Check if user has passed CAPTCHA verification (persistent in DB)."""
+    if not conn:
+        return False
+    
+    try:
+        async with conn.execute(
+            "SELECT is_human FROM user_activity WHERE user_id = ?", 
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and row[0])
+    except Exception as e:
+        # Column might not exist yet (before migration 004)
+        logging.debug(f"is_human_user check failed (may need migration): {e}")
+        return False
+
+
+async def set_human_user(conn: aiosqlite.Connection, user_id: int, username: Optional[str] = None) -> None:
+    """Mark user as verified human (persistent in DB)."""
+    if not conn:
+        return
+    
+    now = datetime.now()
+    
+    try:
+        # Try to update existing record
+        result = await conn.execute(
+            "UPDATE user_activity SET is_human = 1 WHERE user_id = ?",
+            (user_id,)
+        )
+        
+        if result.rowcount == 0:
+            # User doesn't exist, create new record
+            await conn.execute(
+                """INSERT INTO user_activity 
+                   (user_id, first_seen, last_seen, username, is_human) 
+                   VALUES (?, ?, ?, ?, 1)""",
+                (user_id, now, now, username)
+            )
+        
+        await conn.commit()
+        logging.info(f"User {user_id} marked as human in database")
+    except Exception as e:
+        logging.error(f"Failed to set human user: {e}")
+
 # --- Address Book Functions ---
 async def save_user_address(
     conn: aiosqlite.Connection,
