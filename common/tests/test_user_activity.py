@@ -3,12 +3,16 @@ import aiosqlite
 import os
 from datetime import datetime, timedelta
 from common.bot_base import init_db, update_user_activity
+from common.migrate import migrate
 
 @pytest.mark.asyncio
 async def test_update_user_activity():
     db_path = "test_activity.db"
     if os.path.exists(db_path):
         os.remove(db_path)
+    
+    # Run migrations first (since init_db no longer creates tables)
+    migrate(db_path)
     
     conn = await init_db(db_path)
     

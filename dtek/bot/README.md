@@ -5,11 +5,12 @@ Independent Telegram bot for checking DTEK power outage schedules.
 ## Features
 
 - 🔍 Checking outage schedules by address
+- 📖 **Address Book** - save multiple addresses for quick access
 - 📊 Visualization of the schedule for 48 hours (pie chart)
-- 🔔 Automatic updates when the schedule changes
+- 🔔 **Multi-Subscriptions** - subscribe to multiple addresses
 - ⚠️ Notifications N minutes before shutdown/startup
 - 🤖 Protection against bots (CAPTCHA)
-- 💾 Local SQLite database
+- 💾 Local SQLite database with migrations
 
 ## Quick Start
 
@@ -53,10 +54,11 @@ docker-compose ps
 
 - `/start` or `/help` - Show help
 - `/check City, Street, House` - Check schedule
-- `/check` - Step-by-step address entry
-- `/repeat` - Repeat last check
+- `/check` - Step-by-step address entry (or select from address book)
+- `/repeat` - Repeat last check (or select from address book)
+- `/addresses` - Manage saved addresses
 - `/subscribe [hours]` - Subscribe to updates (default is 1 hour)
-- `/unsubscribe` - Unsubscribe
+- `/unsubscribe` - Unsubscribe (supports multiple subscriptions)
 - `/alert [minutes]` - Set up notifications (0 = turn off)
 - `/cancel` - Cancel the current action
 
@@ -73,8 +75,23 @@ docker-compose ps
 The database is stored in `/data/dtek_bot.db` (Docker volume `dtek_data`).
 
 Tables:
-- `subscriptions` - User subscriptions
+- `subscriptions` - User subscriptions (supports multiple per user)
 - `user_last_check` - Last check for each user
+- `user_addresses` - Address book
+- `user_activity` - User activity tracking
+- `schema_version` - Migration version tracking
+
+## Database Migrations
+
+Before first run (or after updates), apply migrations:
+
+```bash
+# From project root
+python -m common.migrate --db-path dtek/data/dtek_bot.db
+
+# Check status
+python -m common.migrate --db-path dtek/data/dtek_bot.db --status
+```
 
 ## Updates
 

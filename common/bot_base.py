@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
 import json
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import User
+from aiogram.types import User, InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- FSM States ---
 class CaptchaState(StatesGroup):
@@ -27,6 +27,10 @@ class CheckAddressState(StatesGroup):
     waiting_for_street = State()
     waiting_for_house = State()
 
+class AddressRenameState(StatesGroup):
+    """Состояния для переименования адреса в адресной книге"""
+    waiting_for_new_name = State()
+
 # --- Global Caches ---
 HUMAN_USERS: Dict[int, bool] = {}
 ADDRESS_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -37,94 +41,33 @@ CHECKER_LOOP_INTERVAL_SECONDS = 5 * 60
 
 # --- Database Functions ---
 async def init_db(db_path: str) -> aiosqlite.Connection:
-    """Инициализирует соединение с SQLite и создает таблицы, если их нет."""
+    """
+    Initialize database connection.
+    
+    NOTE: This function only creates a connection. Schema creation and migrations
+    should be done using the migrate.py CLI tool:
+        python -m common.migrate --db-path <path>
+    
+    For new deployments, run migrations before starting the bot.
+    """
     db_dir = os.path.dirname(db_path)
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
+    
     conn = await aiosqlite.connect(db_path)
     await conn.execute("PRAGMA journal_mode=WAL;")
     
-    await conn.execute("""
-    CREATE TABLE IF NOT EXISTS subscriptions (
-        user_id INTEGER PRIMARY KEY,
-        city TEXT NOT NULL,
-        street TEXT NOT NULL,
-        house TEXT NOT NULL,
-        interval_hours REAL NOT NULL,
-        next_check TIMESTAMP NOT NULL,
-        last_schedule_hash TEXT,
-        notification_lead_time INTEGER DEFAULT 0,
-        last_alert_event_start TIMESTAMP,
-        group_name TEXT
-    )
-    """)
+    # Verify database has been migrated
+    try:
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        version = (await cursor.fetchone())[0]
+        if version:
+            logging.info(f"Database connected at {db_path} (schema version: {version})")
+        else:
+            logging.warning(f"Database at {db_path} has no migrations applied. Run: python -m common.migrate --db-path {db_path}")
+    except Exception:
+        logging.warning(f"Database at {db_path} may not be migrated. Run: python -m common.migrate --db-path {db_path}")
     
-    # --- Миграция: Добавляем колонки, если их нет (для существующих БД) ---
-    try:
-        await conn.execute("ALTER TABLE subscriptions ADD COLUMN notification_lead_time INTEGER DEFAULT 0")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-
-    try:
-        await conn.execute("ALTER TABLE subscriptions ADD COLUMN last_alert_event_start TIMESTAMP")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-    
-    try:
-        await conn.execute("ALTER TABLE subscriptions ADD COLUMN group_name TEXT")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-    
-    await conn.execute("""
-    CREATE TABLE IF NOT EXISTS user_last_check (
-        user_id INTEGER PRIMARY KEY,
-        city TEXT NOT NULL,
-        street TEXT NOT NULL,
-        house TEXT NOT NULL,
-        last_hash TEXT,
-        group_name TEXT
-    )
-    """)
-    
-    # --- Миграция: Добавляем group_name в user_last_check ---
-    try:
-        await conn.execute("ALTER TABLE user_last_check ADD COLUMN group_name TEXT")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-
-    # --- Создание таблицы активности пользователей ---
-    await conn.execute("""
-    CREATE TABLE IF NOT EXISTS user_activity (
-        user_id INTEGER PRIMARY KEY,
-        first_seen TIMESTAMP,
-        last_seen TIMESTAMP,
-        last_city TEXT,
-        last_street TEXT,
-        last_house TEXT,
-        username TEXT,
-        last_group TEXT
-    )
-    """)
-    
-    # --- Миграция: Добавляем last_group в user_activity ---
-    try:
-        await conn.execute("ALTER TABLE user_activity ADD COLUMN last_group TEXT")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-    
-    # --- Миграция: Добавляем first_name и last_name в user_activity ---
-    try:
-        await conn.execute("ALTER TABLE user_activity ADD COLUMN first_name TEXT")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-        
-    try:
-        await conn.execute("ALTER TABLE user_activity ADD COLUMN last_name TEXT")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже существует
-
-    await conn.commit()
-    logging.info(f"Database initialized and connected at {db_path}")
     return conn
 
 async def update_user_activity(
@@ -186,6 +129,298 @@ async def update_user_activity(
         await conn.commit()
     except Exception as e:
         logging.error(f"Failed to update user activity: {e}")
+
+# --- Address Book Functions ---
+async def save_user_address(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    city: str,
+    street: str,
+    house: str,
+    group_name: Optional[str] = None
+) -> int:
+    """
+    Saves address to user's address book. Updates last_used_at if exists.
+    Returns the address ID.
+    """
+    if not conn:
+        return -1
+    
+    now = datetime.now()
+    try:
+        # Try to insert, on conflict update last_used_at
+        await conn.execute("""
+            INSERT INTO user_addresses (user_id, city, street, house, group_name, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, city, street, house) DO UPDATE SET
+                last_used_at = excluded.last_used_at,
+                group_name = COALESCE(excluded.group_name, group_name)
+        """, (user_id, city, street, house, group_name, now))
+        await conn.commit()
+        
+        # Get the ID
+        cursor = await conn.execute(
+            "SELECT id FROM user_addresses WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
+            (user_id, city, street, house)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else -1
+    except Exception as e:
+        logging.error(f"Failed to save user address: {e}")
+        return -1
+
+async def get_user_addresses(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Gets user's saved addresses, ordered by last_used_at (most recent first).
+    Returns list of dicts with id, alias, city, street, house, group_name.
+    """
+    if not conn:
+        return []
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT id, alias, city, street, house, group_name, last_used_at
+            FROM user_addresses
+            WHERE user_id = ?
+            ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+            LIMIT ?
+        """, (user_id, limit))
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'alias': row[1],
+                'city': row[2],
+                'street': row[3],
+                'house': row[4],
+                'group_name': row[5],
+                'last_used_at': row[6]
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Failed to get user addresses: {e}")
+        return []
+
+async def get_address_by_id(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    address_id: int
+) -> Optional[Dict[str, Any]]:
+    """Gets a specific address by ID, ensuring it belongs to the user."""
+    if not conn:
+        return None
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT id, alias, city, street, house, group_name
+            FROM user_addresses
+            WHERE id = ? AND user_id = ?
+        """, (address_id, user_id))
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'id': row[0],
+                'alias': row[1],
+                'city': row[2],
+                'street': row[3],
+                'house': row[4],
+                'group_name': row[5]
+            }
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get address by id: {e}")
+        return None
+
+async def delete_user_address(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    address_id: int
+) -> bool:
+    """Deletes an address from user's address book."""
+    if not conn:
+        return False
+    
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM user_addresses WHERE id = ? AND user_id = ?",
+            (address_id, user_id)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logging.error(f"Failed to delete user address: {e}")
+        return False
+
+async def rename_user_address(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    address_id: int,
+    alias: str
+) -> bool:
+    """Sets or updates alias for an address."""
+    if not conn:
+        return False
+    
+    try:
+        cursor = await conn.execute(
+            "UPDATE user_addresses SET alias = ? WHERE id = ? AND user_id = ?",
+            (alias, address_id, user_id)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logging.error(f"Failed to rename user address: {e}")
+        return False
+
+# --- Multi-Subscription Functions ---
+async def get_user_subscriptions(
+    conn: aiosqlite.Connection,
+    user_id: int
+) -> List[Dict[str, Any]]:
+    """Gets all subscriptions for a user."""
+    if not conn:
+        return []
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT id, city, street, house, interval_hours, notification_lead_time, group_name
+            FROM subscriptions
+            WHERE user_id = ?
+            ORDER BY id
+        """, (user_id,))
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'city': row[1],
+                'street': row[2],
+                'house': row[3],
+                'interval_hours': row[4],
+                'notification_lead_time': row[5],
+                'group_name': row[6]
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Failed to get user subscriptions: {e}")
+        return []
+
+async def get_subscription_count(conn: aiosqlite.Connection, user_id: int) -> int:
+    """Returns number of subscriptions for a user."""
+    if not conn:
+        return 0
+    try:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM subscriptions WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        logging.error(f"Failed to count subscriptions: {e}")
+        return 0
+
+async def is_address_subscribed(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    city: str,
+    street: str,
+    house: str
+) -> bool:
+    """Checks if user is already subscribed to this address."""
+    if not conn:
+        return False
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT 1 FROM subscriptions
+            WHERE user_id = ? AND city = ? AND street = ? AND house = ?
+        """, (user_id, city, street, house))
+        row = await cursor.fetchone()
+        return row is not None
+    except Exception as e:
+        logging.error(f"Failed to check subscription: {e}")
+        return False
+
+async def remove_subscription(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    city: str,
+    street: str,
+    house: str
+) -> bool:
+    """Removes a specific subscription."""
+    if not conn:
+        return False
+    
+    try:
+        cursor = await conn.execute("""
+            DELETE FROM subscriptions
+            WHERE user_id = ? AND city = ? AND street = ? AND house = ?
+        """, (user_id, city, street, house))
+        await conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logging.error(f"Failed to remove subscription: {e}")
+        return False
+
+async def remove_subscription_by_id(
+    conn: aiosqlite.Connection,
+    user_id: int,
+    subscription_id: int
+) -> Optional[Tuple[str, str, str]]:
+    """Removes subscription by ID. Returns (city, street, house) if success."""
+    if not conn:
+        return None
+    
+    try:
+        # First get the address info
+        cursor = await conn.execute(
+            "SELECT city, street, house FROM subscriptions WHERE id = ? AND user_id = ?",
+            (subscription_id, user_id)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        
+        city, street, house = row
+        
+        # Delete
+        await conn.execute(
+            "DELETE FROM subscriptions WHERE id = ? AND user_id = ?",
+            (subscription_id, user_id)
+        )
+        await conn.commit()
+        return (city, street, house)
+    except Exception as e:
+        logging.error(f"Failed to remove subscription by id: {e}")
+        return None
+
+async def remove_all_subscriptions(
+    conn: aiosqlite.Connection,
+    user_id: int
+) -> int:
+    """Removes all subscriptions for a user. Returns count of removed."""
+    if not conn:
+        return 0
+    
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM subscriptions WHERE user_id = ?",
+            (user_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount
+    except Exception as e:
+        logging.error(f"Failed to remove all subscriptions: {e}")
+        return 0
 
 # --- Utility Functions ---
 def parse_time_range(time_str: str) -> tuple:
@@ -327,3 +562,76 @@ def format_user_info(user) -> str:
     username = user.username or "N/A"
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "N/A"
     return f"{user_id} (@{username}) {full_name}"
+
+# --- Keyboard Builders ---
+def _format_address_label(addr: Dict[str, Any], max_length: int = 35) -> str:
+    """Formats address for button label, using alias if available."""
+    if addr.get('alias'):
+        label = addr['alias']
+    else:
+        label = f"{addr['city']}, {addr['street']}, {addr['house']}"
+    
+    if len(label) > max_length:
+        label = label[:max_length - 3] + "..."
+    return label
+
+def build_address_selection_keyboard(
+    addresses: List[Dict[str, Any]],
+    action: str,
+    include_new_button: bool = False
+) -> InlineKeyboardMarkup:
+    """
+    Build keyboard with address buttons.
+    action: 'check', 'repeat' - prefix for callback_data
+    """
+    buttons = []
+    for addr in addresses:
+        label = _format_address_label(addr)
+        callback_data = f"{action}:{addr['id']}"
+        buttons.append([InlineKeyboardButton(text=f"📍 {label}", callback_data=callback_data)])
+    
+    if include_new_button:
+        buttons.append([InlineKeyboardButton(text="➕ Новий адреса", callback_data=f"{action}:new")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def build_subscription_selection_keyboard(
+    subscriptions: List[Dict[str, Any]],
+    action: str = "unsub"
+) -> InlineKeyboardMarkup:
+    """
+    Build keyboard for unsubscribe selection.
+    action: 'unsub' - prefix for callback_data
+    """
+    buttons = []
+    for sub in subscriptions:
+        label = _format_address_label(sub)
+        callback_data = f"{action}:{sub['id']}"
+        buttons.append([InlineKeyboardButton(text=f"📍 {label}", callback_data=callback_data)])
+    
+    # Add "unsubscribe all" button
+    if len(subscriptions) > 1:
+        buttons.append([InlineKeyboardButton(text="🚫 Відписатися від усіх", callback_data=f"{action}:all")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def build_address_management_keyboard(
+    addresses: List[Dict[str, Any]]
+) -> InlineKeyboardMarkup:
+    """
+    Build keyboard for address book management (delete/rename).
+    """
+    buttons = []
+    for addr in addresses:
+        label = _format_address_label(addr, max_length=25)
+        # Two buttons per address: rename and delete
+        buttons.append([
+            InlineKeyboardButton(text=f"📍 {label}", callback_data=f"addr_info:{addr['id']}"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="✏️ Перейменувати", callback_data=f"addr_rename:{addr['id']}"),
+            InlineKeyboardButton(text="🗑️ Видалити", callback_data=f"addr_delete:{addr['id']}")
+        ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+

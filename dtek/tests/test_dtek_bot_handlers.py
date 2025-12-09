@@ -82,11 +82,13 @@ class TestDtekBotHandlers:
                 mock_get_data.return_value = {"schedule": {}}
                 with patch('dtek.bot.bot.db_conn', new=AsyncMock()):
                     with patch('dtek.bot.bot.send_schedule_response', new=AsyncMock()) as mock_send:
+                        with patch('dtek.bot.bot.save_user_address', new=AsyncMock()):
+                            with patch('dtek.bot.bot.get_subscription_count', new=AsyncMock(return_value=0)):
                         
-                        await command_check_handler(message, state)
+                                await command_check_handler(message, state)
                         
-                        mock_get_data.assert_called_once()
-                        mock_send.assert_called_once()
+                                mock_get_data.assert_called_once()
+                                mock_send.assert_called_once()
 
 
     @pytest.mark.asyncio

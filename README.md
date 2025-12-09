@@ -87,12 +87,13 @@ See [cek/bot/README.md](cek/bot/README.md) for detailed instructions.
 Both bots support:
 
 - 🔍 **Address Lookup** - Check shutdown schedules by address
+- 📖 **Address Book** - Save multiple addresses for quick access (`/addresses` command)
 - 📊 **Visual Diagrams** - Rotating circular clock-face visualization with triangle hour marker
-- 🔔 **Subscriptions** - Automatic updates when schedule changes
+- 🔔 **Multi-Subscriptions** - Subscribe to multiple addresses simultaneously
 - ⚠️ **Alerts** - Notifications N minutes before power events
 - 🤖 **CAPTCHA Protection** - Bot protection
-- 💾 **Local Database** - SQLite for user data
-- 📈 **Statistics** - Admin-only `/stats` command provides usage summary and CSV export with last group information
+- 💾 **Local Database** - SQLite with migration support
+- 📈 **Statistics** - Admin-only `/stats` command provides usage summary and CSV export
 
 ### Provider-Specific Features
 
@@ -112,13 +113,17 @@ The bots are already deployed, running on Telegram, and can be found under the f
 
 The `common/` directory contains shared logic used by both bots:
 
-- **`bot_base.py`** (229 lines)
-  - Database initialization (SQLite)
+- **`bot_base.py`**
+  - Database connection (SQLite)
   - FSM states for user interaction
   - CAPTCHA logic
-  - Address parsing
+  - Address parsing & Address Book CRUD
   - Schedule hashing for change detection
-  - Utility functions
+  - Multi-subscription management
+
+- **`migrate.py`** - Database migration CLI
+  - Version-tracked schema migrations
+  - Run before bot startup for new schemas
 
 - **`formatting.py`** (187 lines)
   - Schedule text formatting
@@ -181,17 +186,31 @@ pip install -r requirements-dev.txt
 4. **Maintainability** - Bug fixes apply to all bots
 5. **Client-Specific** - Deploy separate instances per client
 
+### Database Migrations
+
+Before running bots for the first time (or after schema changes), apply migrations:
+
+```bash
+# Apply migrations to database
+python -m common.migrate --db-path ./data/bot.db
+
+# Check migration status
+python -m common.migrate --db-path ./data/bot.db --status
+```
+
 ### Running Locally
 
 ```bash
 # Run DTEK bot
 export DTEK_BOT_TOKEN="your_token"
 export DTEK_DB_PATH="./dtek_bot.db"
+python -m common.migrate --db-path ./dtek_bot.db  # First time only
 python -m dtek.bot.bot
 
 # Run CEK bot
 export CEK_BOT_TOKEN="your_token"
 export CEK_DB_PATH="./cek_bot.db"
+python -m common.migrate --db-path ./cek_bot.db  # First time only
 python -m cek.bot.bot
 ```
 

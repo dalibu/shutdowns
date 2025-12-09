@@ -262,6 +262,8 @@ class TestInitDB:
     
     @pytest.mark.asyncio
     async def test_creates_database(self, tmp_path):
+        from common.migrate import migrate
+        
         db_path = tmp_path / "test.db"
         
         # Handle mocked aiosqlite
@@ -273,6 +275,9 @@ class TestInitDB:
             mock_cursor = AsyncMock()
             mock_cursor.fetchall.return_value = [('subscriptions',), ('user_last_check',)]
             mock_conn.execute.return_value = mock_cursor
+        else:
+            # Run migrations first (since init_db no longer creates tables)
+            migrate(str(db_path))
         
         conn = await init_db(str(db_path))
         
