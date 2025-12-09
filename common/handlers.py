@@ -657,10 +657,10 @@ async def handle_stats_command(
         # 2. User export CSV
         csv_buffer = io.StringIO()
         writer = csv.writer(csv_buffer)
-        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'checks_count', 'last_city', 'last_street', 'last_house'])
+        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'last_city', 'last_street', 'last_house'])
         
         async with db_conn.execute(
-            "SELECT user_id, username, first_seen, last_seen, checks_count, last_city, last_street, last_house FROM user_activity ORDER BY last_seen DESC"
+            "SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house FROM user_activity ORDER BY last_seen DESC"
         ) as cursor:
             async for row in cursor:
                 writer.writerow(row)
@@ -675,7 +675,9 @@ async def handle_stats_command(
 
     except Exception as e:
         logger.error(f"Error generating stats: {e}", exc_info=True)
-        await message.answer(f"❌ Помилка при формуванні статистики: {e}")
+        # Escape error message to avoid Telegram parsing issues
+        error_str = str(e).replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
+        await message.answer(f"❌ Помилка при формуванні статистики: {error_str}")
 
 
 async def handle_process_house(
