@@ -19,6 +19,7 @@ import pytz
 # Import from common library
 from common.bot_base import (
     init_db,
+    BotContext,
     CaptchaState,
     CheckAddressState,
     AddressRenameState,
@@ -59,6 +60,22 @@ from common.formatting import (
     build_subscription_exists_message,
     build_subscription_created_message,
 )
+# Common handlers
+from common.handlers import (
+    handle_captcha_check,
+    handle_captcha_answer,
+    handle_cancel,
+    handle_alert,
+    handle_unsubscribe,
+    handle_process_city,
+    handle_process_street,
+    handle_callback_unsubscribe,
+    handle_addresses_command,
+    handle_callback_address_info,
+    handle_callback_address_delete,
+    handle_callback_address_rename_start,
+    handle_process_address_rename,
+)
 from common.visualization import (
     generate_24h_schedule_image,
 )
@@ -91,30 +108,29 @@ if not logger.handlers:
 dp = Dispatcher()
 db_conn = None
 
+# BotContext for common handlers
+ctx: BotContext = None
+
+def get_ctx() -> BotContext:
+    """Get current BotContext with updated db_conn."""
+    global ctx, db_conn
+    if ctx is None:
+        ctx = BotContext(
+            provider_name="ЦЕК",
+            provider_code="cek",
+            visualization_hours=24,
+            db_conn=db_conn,
+            font_path=FONT_PATH,
+            logger=logger,
+        )
+    else:
+        ctx.db_conn = db_conn
+    return ctx
+
 # --- Helper Functions ---
 async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bool:
-    """Проверяет, прошел ли пользователь CAPTCHA. Возвращает True, если прошел."""
-    global db_conn
-    user_id = message.from_user.id
-    
-    # First check memory cache
-    if user_id in HUMAN_USERS:
-        return True
-    
-    # Then check database
-    if await is_human_user(db_conn, user_id):
-        HUMAN_USERS[user_id] = True  # Cache for future calls
-        return True
-
-    await state.set_state(CaptchaState.waiting_for_answer)
-    question, correct_answer = get_captcha_data()
-    await state.update_data(captcha_answer=correct_answer)
-    await message.answer(
-        "⚠️ **Увага! Для захисту від ботів, пройдіть просту перевірку.**\n"
-        f"**{question}**\n"
-        "Введіть лише число-відповідь."
-    )
-    return False
+    """Wrapper for common handler."""
+    return await handle_captcha_check(message, state, get_ctx())
 
 async def get_shutdowns_data(city: str, street: str, house: str, cached_group: str = None) -> dict:
     """Отримує дані через абстракцію DataSource."""
@@ -753,66 +769,24 @@ async def command_stats_handler(message: types.Message) -> None:
 
 @dp.message(CaptchaState.waiting_for_answer)
 async def captcha_answer_handler(message: types.Message, state: FSMContext) -> None:
-    if not message.text:
-        return
-        
-    user_id = message.from_user.id
-    username = message.from_user.username or "N/A"
-    full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip() or "N/A"
-    data = await state.get_data()
-    correct_answer = data.get("captcha_answer")
-    
-    text = message.text.strip()
-    if not text.isdigit():
-        await message.answer("⚠️ Будь ласка, введіть лише число-відповідь.")
-        return
-
-    try:
-        user_answer = int(text)
-    except ValueError:
-        user_answer = -1
-
-    if user_answer == correct_answer:
-        HUMAN_USERS[user_id] = True  # Cache in memory
-        await set_human_user(db_conn, user_id, username)  # Persist to DB
-        await state.clear()
-        logger.info(f"CAPTCHA passed by user {user_id} (@{username}) {full_name}")
-        await message.answer(
-            "✅ **Перевірка пройдена!**\n"
-            "Тепер ви можете користуватися всіма функціями бота. Введіть **/start** ще раз, щоб побачити список команд.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-    else:
-        await state.clear()
-        logger.info(f"CAPTCHA failed by user {user_id} (@{username}) {full_name}")
-        await message.answer(
-            "❌ **Неправильна відповідь.** Спробуйте ще раз, ввівши **/start**."
-        )
+    """Wrapper for common handler."""
+    await handle_captcha_answer(message, state, get_ctx())
 
 @dp.message(Command("cancel"))
 async def command_cancel_handler(message: types.Message, state: FSMContext) -> None:
-    """Обработчик команды /cancel."""
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Немає активних дій для скасування.")
-        return
-    await state.clear()
-    await message.answer("Дію скасовано. Введіть /check [адреса], щоб почати перевірку, або /check для покрокового вводу.")
+    """Wrapper for common handler."""
+    await handle_cancel(message, state)
 
 # FSM handlers for step-by-step address input
 @dp.message(CheckAddressState.waiting_for_city, F.text)
 async def process_city(message: types.Message, state: FSMContext) -> None:
-    city = message.text.strip()
-    await state.update_data(city=city)
-    await state.set_state(CheckAddressState.waiting_for_street)
-    await message.answer(f"📍 Місто: `{city}`\n**Будь ласка, введіть назву вулиці** (наприклад, `вул. Нова`):")
+    """Wrapper for common handler."""
+    await handle_process_city(message, state)
 
 @dp.message(CheckAddressState.waiting_for_street, F.text)
 async def process_street(message: types.Message, state: FSMContext) -> None:
-    street = message.text.strip()
-    await state.update_data(street=street)
-    await state.set_state(CheckAddressState.waiting_for_house)
-    await message.answer(f"📍 Вулиця: `{street}`\n**Будь ласка, введіть номер будинку** (наприклад, `7`):")
+    """Wrapper for common handler."""
+    await handle_process_street(message, state)
 
 @dp.message(CheckAddressState.waiting_for_house, F.text)
 async def process_house(message: types.Message, state: FSMContext) -> None:

@@ -45,7 +45,8 @@ class TestDtekBotHandlers:
         """Test /start command"""
         # Mock HUMAN_USERS to be empty
         with patch('dtek.bot.bot.HUMAN_USERS', {}):
-            with patch('dtek.bot.bot.get_captcha_data') as mock_captcha:
+            # Patch in common.handlers where it's actually imported
+            with patch('common.handlers.get_captcha_data') as mock_captcha:
                 mock_captcha.return_value = ("2 + 2?", 4)
                 
                 await command_start_handler(message, state)
