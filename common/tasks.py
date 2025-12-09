@@ -116,13 +116,16 @@ async def _process_alert_for_user(
         event_dt_str = event_dt.isoformat()
         
         if last_alert_event_start_str != event_dt_str:
+            # Format address for display
+            address_display = f"`{city}, {street}, {house}`"
+            
             # Send alert!
             time_str = event_dt.strftime('%H:%M')
             minutes_left = int(time_to_event)
             
-            msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла."
+            msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
             
-            logger.info(f"Sending alert to user {user_info}: {msg_type} at {time_str} in {minutes_left} min")
+            logger.info(f"Sending alert to user {user_info}: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
             
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown")
