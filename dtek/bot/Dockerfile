@@ -30,6 +30,8 @@ COPY dtek/data_source.py ./dtek/
 
 # Copy DTEK bot
 COPY dtek/bot/bot.py ./dtek/bot/
+COPY dtek/bot/entrypoint.sh ./dtek/bot/
+RUN chmod +x ./dtek/bot/entrypoint.sh
 
 # Copy resources
 COPY dtek/resources/ ./resources/
@@ -40,5 +42,5 @@ RUN mkdir -p /data
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Run the bot
-CMD ["python", "-m", "dtek.bot.bot"]
+# Run migrations and start the bot
+ENTRYPOINT ["./dtek/bot/entrypoint.sh"]

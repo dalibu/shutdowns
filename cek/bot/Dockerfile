@@ -45,6 +45,8 @@ COPY cek/data_source.py ./cek/
 
 # Copy CEK bot
 COPY cek/bot/bot.py ./cek/bot/
+COPY cek/bot/entrypoint.sh ./cek/bot/
+RUN chmod +x ./cek/bot/entrypoint.sh
 
 # Copy resources
 COPY cek/resources/ ./resources/
@@ -55,5 +57,5 @@ RUN mkdir -p /data
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Run the bot
-CMD ["python", "-m", "cek.bot.bot"]
+# Run migrations and start the bot
+ENTRYPOINT ["./cek/bot/entrypoint.sh"]
