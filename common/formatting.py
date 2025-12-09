@@ -345,3 +345,38 @@ def build_subscription_created_message(city: str, street: str, house: str, inter
         f"Ви будете отримувати оновлення для адреси: `{city}, {street}, {house}` з інтервалом **{interval_display}**."
         f"{alert_msg}"
     )
+
+
+def build_address_error_message(example_address: str) -> str:
+    """
+    Builds user-friendly error message for address lookup failures.
+    
+    Args:
+        example_address: Example address for this provider (e.g., "м. Дніпро, вул. Сонячна набережна, 6")
+    
+    Returns:
+        Formatted error message with input guidance
+    """
+    return (
+        f"Не вдалося отримати графік для адреси.\n\n"
+        f"💡 *Перевірте формат вводу:*\n"
+        f"`/check м. Місто, вул. Вулиця, Будинок`\n"
+        f"або\n"
+        f"`/check сел. Село, вул. Вулиця, Будинок`\n"
+        f"*Наприклад:* `/check {example_address}`"
+    )
+
+
+def build_group_error_message(city: str, street: str, house: str) -> str:
+    """
+    Builds error message when group cannot be determined for address.
+    
+    Args:
+        city: City name
+        street: Street name
+        house: House number
+    
+    Returns:
+        Formatted error message
+    """
+    return f"Не вдалося знайти групу для адреси: {city}, {street}, {house}"

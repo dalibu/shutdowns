@@ -143,6 +143,7 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
 
 async def get_shutdowns_data(city: str, street: str, house: str, cached_group: str = None) -> dict:
     """Отримує дані через абстракцію DataSource."""
+    from common.formatting import build_address_error_message, build_group_error_message
     try:
         source = get_data_source()
         return await source.get_schedule(city, street, house, cached_group=cached_group)
@@ -150,15 +151,8 @@ async def get_shutdowns_data(city: str, street: str, house: str, cached_group: s
         logger.error(f"Data source error: {e}", exc_info=True)
         error_str = str(e)
         if "Could not determine group for address" in error_str:
-            raise ValueError(f"Не вдалося знайти групу для адреси: {city}, {street}, {house}")
-        raise ValueError(
-            f"Не вдалося отримати графік для адреси.\n\n"
-            f"💡 *Перевірте формат вводу:*\n"
-            f"`/check м. Місто, вул. Вулиця, Будинок`\n"
-            f"або\n"
-            f"`/check сел. Село, вул. Вулиця, Будинок`\n"
-            f"*Наприклад:* `/check {EXAMPLE_ADDRESS}`"
-        )
+            raise ValueError(build_group_error_message(city, street, house))
+        raise ValueError(build_address_error_message(EXAMPLE_ADDRESS))
 
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
     """Wrapper for common handler - sends formatted schedule response."""
