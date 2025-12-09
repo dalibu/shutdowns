@@ -177,20 +177,41 @@ pip install -r requirements-dev.txt
 ```
 shutdowns/
 ├── .python-version          # Python version for pyenv
-├── pyproject.toml          # Project metadata, dependencies, pytest config
-├── requirements-dev.txt    # All dependencies (runtime + dev)
-├── setup_dev.sh           # Automated setup script
-├── run_tests.sh           # Test runner with auto-detection
-├── common/                # Shared library
-│   ├── migrations/        # SQL migration files
+├── pyproject.toml           # Project metadata, dependencies, pytest config
+├── requirements-dev.txt     # All dependencies (runtime + dev)
+├── setup_dev.sh             # Automated setup script
+├── run_tests.sh             # Test runner with auto-detection
+│
+├── common/                  # Shared library (core logic)
+│   ├── bot_base.py          # BotContext, states, DB functions (~700 lines)
+│   ├── handlers.py          # All command handlers (~1170 lines)
+│   ├── tasks.py             # Background tasks (~505 lines)
+│   ├── formatting.py        # Schedule formatting utilities
+│   ├── visualization.py     # Schedule diagram generation
+│   ├── migrate.py           # Migration CLI tool
+│   ├── migrations/          # SQL migration files
 │   │   ├── 001_initial_schema.sql
 │   │   ├── 002_user_addresses.sql
 │   │   └── 003_multi_subscriptions.sql
-│   ├── migrate.py         # Migration CLI tool
-│   └── bot_base.py        # Core bot functionality
-├── dtek/                  # DTEK provider
-└── cek/                   # CEK provider
+│   └── tests/               # Common library tests
+│
+├── dtek/                    # DTEK provider (~400 lines)
+│   ├── bot/bot.py           # Thin wrappers + provider config
+│   ├── parser/              # DTEK-specific parser
+│   └── tests/
+│
+└── cek/                     # CEK provider (~400 lines)
+    ├── bot/bot.py           # Thin wrappers + provider config
+    ├── parser/              # CEK-specific parser
+    └── tests/
 ```
+
+### Architecture
+
+Both bots use a **thin wrapper pattern**:
+- Provider-specific `bot.py` files contain only configuration and wrappers (~400 lines each)
+- All business logic is in `common/handlers.py` and `common/tasks.py`
+- Wrappers call common handlers with `BotContext` for provider-specific settings
 
 ---
 

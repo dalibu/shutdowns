@@ -17,35 +17,27 @@ The project uses a **multi-bot architecture** with shared common logic:
 
 ```
 shutdowns/
-├── common/                 # Shared library (DRY principle)
-│   ├── bot_base.py        # Database, FSM, utilities, CAPTCHA
-│   ├── data_source.py     # Abstract Data Source Interface
-│   ├── formatting.py      # Schedule text formatting
-│   └── visualization.py   # Schedule image generation
+├── common/                 # Shared library (~70% of logic)
+│   ├── bot_base.py         # Database, FSM, utilities, CAPTCHA
+│   ├── handlers.py         # All command/callback handlers
+│   ├── tasks.py            # Background tasks (subscriptions, alerts)
+│   ├── data_source.py      # Abstract Data Source Interface
+│   ├── formatting.py       # Schedule text formatting
+│   └── visualization.py    # Schedule image generation
 │
-├── dtek/                   # DTEK Provider
-│   ├── parser/            # DTEK web scraper
-│   │   └── dtek_parser.py
-│   ├── data_source.py     # DTEK Data Source Implementation
-│   ├── bot/               # DTEK bot deployment
-│   │   ├── bot.py
-│   │   ├── Dockerfile
-│   │   ├── docker-compose.yml
-│   │   ├── .env.example
-│   │   └── README.md
-│   └── tests/             # DTEK tests
+├── dtek/                   # DTEK Provider (~400 lines)
+│   ├── parser/             # DTEK web scraper
+│   ├── data_source.py      # DTEK Data Source Implementation
+│   └── bot/                # Thin wrappers + config
+│       ├── bot.py
+│       └── docker-compose.yml
 │
-├── cek/                    # CEK Provider
-│   ├── parser/            # CEK web scraper
-│   │   └── cek_parser.py
-│   ├── data_source.py     # CEK Data Source Implementation
-│   ├── bot/               # CEK bot deployment
-│   │   ├── bot.py
-│   │   ├── Dockerfile
-│   │   ├── docker-compose.yml
-│   │   ├── .env.example
-│   │   └── README.md
-│   └── tests/             # CEK tests
+├── cek/                    # CEK Provider (~400 lines)  
+│   ├── parser/             # CEK web scraper
+│   ├── data_source.py      # CEK Data Source Implementation
+│   └── bot/                # Thin wrappers + config
+│       ├── bot.py
+│       └── docker-compose.yml
 │
 └── resources/              # Shared fonts and assets
 ```
@@ -113,7 +105,7 @@ The bots are already deployed, running on Telegram, and can be found under the f
 
 The `common/` directory contains shared logic used by both bots:
 
-- **`bot_base.py`**
+- **`bot_base.py`** (~700 lines)
   - Database connection (SQLite)
   - FSM states for user interaction
   - CAPTCHA logic
@@ -121,16 +113,26 @@ The `common/` directory contains shared logic used by both bots:
   - Schedule hashing for change detection
   - Multi-subscription management
 
+- **`handlers.py`** (~1170 lines)
+  - All command handlers (start, check, subscribe, repeat, stats, etc.)
+  - Callback handlers for address selection
+  - Response formatting and sending
+  - Parametrized for provider-specific settings via `BotContext`
+
+- **`tasks.py`** (~505 lines)
+  - Background tasks (subscription_checker, alert_checker)
+  - Alert processing logic
+
 - **`migrate.py`** - Database migration CLI
   - Version-tracked schema migrations
   - Run before bot startup for new schemas
 
-- **`formatting.py`** (187 lines)
+- **`formatting.py`** (~350 lines)
   - Schedule text formatting
   - Current status messages
   - Time slot merging
 
-- **`visualization.py`** (522 lines)
+- **`visualization.py`** (~800 lines)
   - Rotating circular diagrams (48h and 24h)
   - Triangle hour marker pointing upward
   - Smart date positioning in center
