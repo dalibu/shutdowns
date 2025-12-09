@@ -150,9 +150,15 @@ async def get_shutdowns_data(city: str, street: str, house: str, cached_group: s
         logger.error(f"Data source error: {e}", exc_info=True)
         error_str = str(e)
         if "Could not determine group for address" in error_str:
-            # Extract address from error message if possible, or just use the input args
-            raise ValueError(f"Не вдалося отримати групу для адреси: {city}, {street}, {house}")
-        raise ValueError(f"Не вдалося отримати графік для адреси. Помилка: {error_str[:100]}")
+            raise ValueError(f"Не вдалося знайти групу для адреси: {city}, {street}, {house}")
+        raise ValueError(
+            f"Не вдалося отримати графік для адреси.\n\n"
+            f"💡 *Перевірте формат вводу:*\n"
+            f"`/check м. Місто, вул. Вулиця, Будинок`\n"
+            f"або\n"
+            f"`/check сел. Село, вул. Вулиця, Будинок`\n"
+            f"*Наприклад:* `/check {EXAMPLE_ADDRESS}`"
+        )
 
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
     """Wrapper for common handler - sends formatted schedule response."""

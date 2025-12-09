@@ -29,7 +29,7 @@ async def test_cek_group_determination_error():
         with pytest.raises(ValueError) as excinfo:
             await cek_get_shutdowns_data(CITY, STREET, HOUSE)
         # The error message should be user‑friendly and not contain the raw parser traceback
-        assert "Не вдалося отримати групу для адреси" in str(excinfo.value)
+        assert "Не вдалося знайти групу для адреси" in str(excinfo.value)
         assert CITY in str(excinfo.value) and STREET in str(excinfo.value) and HOUSE in str(excinfo.value)
 
 @pytest.mark.asyncio
@@ -43,5 +43,5 @@ async def test_dtek_group_determination_error():
         
         with pytest.raises(ValueError) as excinfo:
             await dtek_get_shutdowns_data(CITY, STREET, HOUSE)
-        assert "Не вдалося отримати групу для адреси" in str(excinfo.value)
+        assert "Не вдалося знайти групу для адреси" in str(excinfo.value)
         assert CITY in str(excinfo.value) and STREET in str(excinfo.value) and HOUSE in str(excinfo.value)
