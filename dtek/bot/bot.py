@@ -1119,87 +1119,13 @@ async def command_subscribe_handler(message: types.Message, state: FSMContext) -
 
 @dp.message(Command("alert"))
 async def cmd_alert(message: types.Message):
-    """Встановлює час попередження перед відключенням/включенням (у хвилинах)."""
-    user_id = message.from_user.id
-    args = message.text.split()
-
-    if len(args) != 2:
-        await message.answer(
-            "⚠️ **Використання:** `/alert <хвилини>`\n"
-            "Наприклад: `/alert 15` - щоб отримувати сповіщення за 15 хвилин до події.\n"
-            "Введіть `0`, щоб вимкнути сповіщення."
-        )
-        return
-
-    try:
-        minutes = int(args[1])
-        if minutes < 0 or minutes > 120:
-            await message.answer("⚠️ Будь ласка, вкажіть час від 0 до 120 хвилин.")
-            return
-    except ValueError:
-        await message.answer("⚠️ Будь ласка, вкажіть число (кількість хвилин).")
-        return
-
-    global db_conn
-    if db_conn is None:
-        await message.answer("❌ Помилка бази даних.")
-        return
-
-    try:
-        cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if not row:
-            await message.answer("❌ Ви ще не підписані на оновлення. Спочатку використайте `/subscribe`.")
-            return
-
-        await db_conn.execute(
-            "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
-            (minutes, user_id)
-        )
-        await db_conn.commit()
-
-        if minutes == 0:
-            await message.answer("🔕 Сповіщення про наближення подій вимкнено.")
-        else:
-            await message.answer(f"🔔 Сповіщення встановлено! Ви отримаєте повідомлення за **{minutes} хв.** до зміни статусу світла.")
-
-    except Exception as e:
-        logger.error(f"Error setting alert for user {user_id}: {e}")
-        await message.answer("❌ Сталася помилка при збереженні налаштувань.")
+    """Wrapper for common handler."""
+    await handle_alert(message, get_ctx())
 
 @dp.message(Command("unsubscribe"))
 async def command_unsubscribe_handler(message: types.Message) -> None:
-    global db_conn
-    user_id = message.from_user.id
-    
-    try:
-        subscriptions = await get_user_subscriptions(db_conn, user_id)
-        
-        if not subscriptions:
-            await message.answer("❌ **Помилка.** Ви не підписані на оновлення.")
-            return
-        
-        if len(subscriptions) == 1:
-            # Single subscription - unsubscribe immediately
-            sub = subscriptions[0]
-            city, street, house = sub['city'], sub['street'], sub['house']
-            await remove_subscription_by_id(db_conn, user_id, sub['id'])
-            logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
-            await message.answer(
-                f"🚫 **Підписку скасовано.** Ви більше не будете отримувати автоматичні оновлення для адреси: `{city}, {street}, {house}`.\n"
-                "Ви можете підписатися знову, скориставшися командою `/subscribe` після перевірки графіку."
-            )
-        else:
-            # Multiple subscriptions - show selection
-            logger.info(f"Command /unsubscribe (selection) by user {user_id}, {len(subscriptions)} subscriptions")
-            keyboard = build_subscription_selection_keyboard(subscriptions, action="unsub")
-            await message.answer(
-                f"📋 **У вас {len(subscriptions)} активних підписок.** Оберіть, від якої відписатися:",
-                reply_markup=keyboard
-            )
-    except Exception as e:
-        logger.error(f"Failed to unsubscribe user {user_id}: {e}", exc_info=True)
-        await message.answer("❌ **Помилка БД** при спробі скасувати підписку.")
+    """Wrapper for common handler."""
+    await handle_unsubscribe(message, get_ctx())
 
 # --- Callback Handlers for Inline Buttons ---
 @dp.callback_query(F.data.startswith("check:"))

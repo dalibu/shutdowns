@@ -135,23 +135,31 @@ async def handle_alert(message: types.Message, ctx: BotContext) -> None:
         await message.answer(
             "⚠️ **Використання:** `/alert <хвилини>`\n"
             "Наприклад: `/alert 15` - щоб отримувати сповіщення за 15 хвилин до події.\n"
-            "`/alert 0` - вимкнути сповіщення."
+            "Введіть `0`, щоб вимкнути сповіщення."
         )
         return
 
     try:
         minutes = int(args[1])
-        if minutes < 0:
-            await message.answer("❌ Значення не може бути від'ємним.")
-            return
-        if minutes > 120:
-            await message.answer("❌ Максимальне значення - 120 хвилин.")
+        if minutes < 0 or minutes > 120:
+            await message.answer("⚠️ Будь ласка, вкажіть час від 0 до 120 хвилин.")
             return
     except ValueError:
-        await message.answer("❌ Невірний формат. Введіть ціле число хвилин.")
+        await message.answer("⚠️ Будь ласка, вкажіть число (кількість хвилин).")
+        return
+
+    if ctx.db_conn is None:
+        await message.answer("❌ Помилка бази даних.")
         return
 
     try:
+        # Check if user has any subscription
+        cursor = await ctx.db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await message.answer("❌ Ви ще не підписані на оновлення. Спочатку використайте `/subscribe`.")
+            return
+
         await ctx.db_conn.execute(
             "UPDATE subscriptions SET notification_lead_time = ? WHERE user_id = ?",
             (minutes, user_id)
