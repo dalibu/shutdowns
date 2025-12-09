@@ -1198,169 +1198,34 @@ async def callback_repeat_address(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("unsub:"))
 async def callback_unsubscribe(callback: CallbackQuery) -> None:
-    """Handle unsubscribe selection."""
-    global db_conn
-    user_id = callback.from_user.id
-    data = callback.data.split(":", 1)[1]
-    
-    await callback.answer()
-    
-    try:
-        if data == "all":
-            # Unsubscribe from all
-            count = await remove_all_subscriptions(db_conn, user_id)
-            logger.info(f"User {user_id} unsubscribed from all {count} subscriptions.")
-            await callback.message.edit_text(
-                f"🚫 **Всі підписки скасовано.** Було видалено {count} підписок.\n"
-                "Ви можете підписатися знову, скориставшися командою `/subscribe` після перевірки графіку."
-            )
-        else:
-            # Unsubscribe from specific address
-            subscription_id = int(data)
-            result = await remove_subscription_by_id(db_conn, user_id, subscription_id)
-            if result:
-                city, street, house = result
-                logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
-                
-                # Check remaining subscriptions
-                remaining = await get_subscription_count(db_conn, user_id)
-                remaining_text = f"\n📋 Залишилося активних підписок: {remaining}" if remaining > 0 else ""
-                
-                await callback.message.edit_text(
-                    f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}"
-                )
-            else:
-                await callback.message.edit_text("❌ Підписку не знайдено.")
-                
-    except ValueError:
-        await callback.message.edit_text("❌ Невірний формат даних.")
-    except Exception as e:
-        logger.error(f"Error in callback_unsubscribe: {e}", exc_info=True)
-        await callback.message.edit_text("❌ Виникла помилка при відписці.")
+    """Wrapper for common handler."""
+    await handle_callback_unsubscribe(callback, get_ctx())
 
 # --- Address Book Command and Callbacks ---
 @dp.message(Command("addresses"))
 async def command_addresses_handler(message: types.Message) -> None:
-    """Show user's saved addresses with management options."""
-    global db_conn
-    user_id = message.from_user.id
-    
-    if user_id not in HUMAN_USERS:
-        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
-                             "за допомогою команди **/start**.")
-        return
-    
-    addresses = await get_user_addresses(db_conn, user_id, limit=10)
-    
-    if not addresses:
-        await message.answer(
-            "📖 **Адресна книга пуста.**\n"
-            "Використайте `/check Місто, Вулиця, Будинок`, щоб додати адресу."
-        )
-        return
-    
-    keyboard = build_address_management_keyboard(addresses)
-    await message.answer(
-        f"📖 **Ваші збережені адреси** ({len(addresses)}):\n"
-        "Оберіть адресу для перейменування або видалення:",
-        reply_markup=keyboard
-    )
+    """Wrapper for common handler."""
+    await handle_addresses_command(message, get_ctx())
 
 @dp.callback_query(F.data.startswith("addr_info:"))
 async def callback_address_info(callback: CallbackQuery) -> None:
-    """Show address info."""
-    global db_conn
-    user_id = callback.from_user.id
-    address_id = int(callback.data.split(":", 1)[1])
-    
-    await callback.answer()
-    
-    address = await get_address_by_id(db_conn, user_id, address_id)
-    if not address:
-        await callback.message.edit_text("❌ Адреса не знайдена.")
-        return
-    
-    alias_text = f"(**{address['alias']}**)" if address.get('alias') else ""
-    await callback.message.answer(
-        f"📍 **Адреса:** `{address['city']}, {address['street']}, {address['house']}` {alias_text}\n"
-        f"👥 **Черга:** {address.get('group_name') or 'Н/Д'}"
-    )
+    """Wrapper for common handler."""
+    await handle_callback_address_info(callback, get_ctx())
 
 @dp.callback_query(F.data.startswith("addr_delete:"))
 async def callback_address_delete(callback: CallbackQuery) -> None:
-    """Delete address from address book."""
-    global db_conn
-    user_id = callback.from_user.id
-    address_id = int(callback.data.split(":", 1)[1])
-    
-    await callback.answer()
-    
-    address = await get_address_by_id(db_conn, user_id, address_id)
-    if not address:
-        await callback.message.edit_text("❌ Адреса не знайдена.")
-        return
-    
-    city, street, house = address['city'], address['street'], address['house']
-    success = await delete_user_address(db_conn, user_id, address_id)
-    
-    if success:
-        logger.info(f"User {user_id} deleted address: {city}, {street}, {house}")
-        await callback.message.edit_text(
-            f"🗑️ **Адресу видалено:** `{city}, {street}, {house}`"
-        )
-    else:
-        await callback.message.edit_text("❌ Не вдалося видалити адресу.")
+    """Wrapper for common handler."""
+    await handle_callback_address_delete(callback, get_ctx())
 
 @dp.callback_query(F.data.startswith("addr_rename:"))
 async def callback_address_rename_start(callback: CallbackQuery, state: FSMContext) -> None:
-    """Start address rename flow."""
-    global db_conn
-    user_id = callback.from_user.id
-    address_id = int(callback.data.split(":", 1)[1])
-    
-    await callback.answer()
-    
-    address = await get_address_by_id(db_conn, user_id, address_id)
-    if not address:
-        await callback.message.edit_text("❌ Адреса не знайдена.")
-        return
-    
-    await state.set_state(AddressRenameState.waiting_for_new_name)
-    await state.update_data(address_id=address_id)
-    
-    city, street, house = address['city'], address['street'], address['house']
-    current_alias = address.get('alias') or 'немає'
-    
-    await callback.message.edit_text(
-        f"✏️ **Перейменування адреси**\n"
-        f"📍 `{city}, {street}, {house}`\n"
-        f"Поточна назва: *{current_alias}*\n\n"
-        "Введіть нову назву (наприклад, `Мама`, `Робота`, `Дача`):"
-    )
+    """Wrapper for common handler."""
+    await handle_callback_address_rename_start(callback, state, get_ctx())
 
 @dp.message(AddressRenameState.waiting_for_new_name, F.text)
 async def process_address_rename(message: types.Message, state: FSMContext) -> None:
-    """Process new address name."""
-    global db_conn
-    user_id = message.from_user.id
-    new_name = message.text.strip()[:50]  # Limit to 50 chars
-    
-    data = await state.get_data()
-    address_id = data.get('address_id')
-    
-    if not address_id:
-        await state.clear()
-        await message.answer("❌ Помилка. Спробуйте ще раз через /addresses.")
-        return
-    
-    success = await rename_user_address(db_conn, user_id, address_id, new_name)
-    await state.clear()
-    
-    if success:
-        logger.info(f"User {user_id} renamed address {address_id} to: {new_name}")
-        await message.answer(f"✅ **Адресу перейменовано** на: *{new_name}*")
-    else:
-        await message.answer("❌ Не вдалося перейменувати адресу.")
+    """Wrapper for common handler."""
+    await handle_process_address_rename(message, state, get_ctx())
 
 # --- Bot Setup and Main ---
 async def set_default_commands(bot: Bot):
