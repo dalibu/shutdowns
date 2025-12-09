@@ -56,11 +56,14 @@ class TestCekBotHandlers:
         """Test /check command without arguments"""
         message.text = "/check"
         
+        # Mock HUMAN_USERS in BOTH cek.bot.bot AND common.handlers where it's checked
         with patch('cek.bot.bot.HUMAN_USERS', {12345: True}):
-            await command_check_handler(message, state)
+            with patch('common.handlers.HUMAN_USERS', {12345: True}):
+                with patch('common.handlers.get_user_addresses', new=AsyncMock(return_value=[])):
+                    await command_check_handler(message, state)
             
-            message.answer.assert_called_once()
-            state.set_state.assert_called_with(CheckAddressState.waiting_for_city)
+                    message.answer.assert_called_once()
+                    state.set_state.assert_called_with(CheckAddressState.waiting_for_city)
 
     @pytest.mark.asyncio
     async def test_command_check_with_args(self, message, state):
@@ -68,17 +71,19 @@ class TestCekBotHandlers:
         message.text = "/check Дніпро, Сонячна, 6"
         
         with patch('cek.bot.bot.HUMAN_USERS', {12345: True}):
-            with patch('cek.bot.bot.get_shutdowns_data', new=AsyncMock()) as mock_get_data:
-                mock_get_data.return_value = {"schedule": {}}
-                with patch('cek.bot.bot.db_conn', new=AsyncMock()):
-                    with patch('cek.bot.bot.send_schedule_response', new=AsyncMock()) as mock_send:
-                        with patch('cek.bot.bot.save_user_address', new=AsyncMock()):
-                            with patch('cek.bot.bot.get_subscription_count', new=AsyncMock(return_value=0)):
+            with patch('common.handlers.HUMAN_USERS', {12345: True}):
+                with patch('cek.bot.bot.get_shutdowns_data', new=AsyncMock()) as mock_get_data:
+                    mock_get_data.return_value = {"schedule": {}, "group": "1"}
+                    with patch('cek.bot.bot.db_conn', new=AsyncMock()):
+                        with patch('common.handlers.save_user_address', new=AsyncMock()):
+                            with patch('common.handlers.get_subscription_count', new=AsyncMock(return_value=0)):
+                                with patch('common.handlers.update_user_activity', new=AsyncMock()):
+                                    with patch('cek.bot.bot.send_schedule_response', new=AsyncMock()) as mock_send:
                         
-                                await command_check_handler(message, state)
+                                        await command_check_handler(message, state)
                         
-                                mock_get_data.assert_called_once()
-                                mock_send.assert_called_once()
+                                        mock_get_data.assert_called_once()
+                                        mock_send.assert_called_once()
 
 
 if __name__ == "__main__":

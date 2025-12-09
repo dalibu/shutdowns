@@ -65,13 +65,15 @@ class TestDtekBotHandlers:
         """Test /check command without arguments"""
         message.text = "/check"
         
-        # Mock HUMAN_USERS to include user
+        # Mock HUMAN_USERS in BOTH dtek.bot.bot AND common.handlers where it's checked
         with patch('dtek.bot.bot.HUMAN_USERS', {12345: True}):
-            await command_check_handler(message, state)
+            with patch('common.handlers.HUMAN_USERS', {12345: True}):
+                with patch('common.handlers.get_user_addresses', new=AsyncMock(return_value=[])):
+                    await command_check_handler(message, state)
             
-            message.answer.assert_called_once()
-            assert "Введіть назву міста" in message.answer.call_args[0][0] or "введіть назву міста" in message.answer.call_args[0][0]
-            state.set_state.assert_called_with(CheckAddressState.waiting_for_city)
+                    message.answer.assert_called_once()
+                    assert "введіть назву міста" in message.answer.call_args[0][0].lower()
+                    state.set_state.assert_called_with(CheckAddressState.waiting_for_city)
 
     @pytest.mark.asyncio
     async def test_command_check_with_args(self, message, state):
@@ -79,17 +81,19 @@ class TestDtekBotHandlers:
         message.text = "/check Дніпро, Сонячна, 6"
         
         with patch('dtek.bot.bot.HUMAN_USERS', {12345: True}):
-            with patch('dtek.bot.bot.get_shutdowns_data', new=AsyncMock()) as mock_get_data:
-                mock_get_data.return_value = {"schedule": {}}
-                with patch('dtek.bot.bot.db_conn', new=AsyncMock()):
-                    with patch('dtek.bot.bot.send_schedule_response', new=AsyncMock()) as mock_send:
-                        with patch('dtek.bot.bot.save_user_address', new=AsyncMock()):
-                            with patch('dtek.bot.bot.get_subscription_count', new=AsyncMock(return_value=0)):
+            with patch('common.handlers.HUMAN_USERS', {12345: True}):
+                with patch('dtek.bot.bot.get_shutdowns_data', new=AsyncMock()) as mock_get_data:
+                    mock_get_data.return_value = {"schedule": {}, "group": "1"}
+                    with patch('dtek.bot.bot.db_conn', new=AsyncMock()):
+                        with patch('common.handlers.save_user_address', new=AsyncMock()):
+                            with patch('common.handlers.get_subscription_count', new=AsyncMock(return_value=0)):
+                                with patch('common.handlers.update_user_activity', new=AsyncMock()):
+                                    with patch('dtek.bot.bot.send_schedule_response', new=AsyncMock()) as mock_send:
                         
-                                await command_check_handler(message, state)
+                                        await command_check_handler(message, state)
                         
-                                mock_get_data.assert_called_once()
-                                mock_send.assert_called_once()
+                                        mock_get_data.assert_called_once()
+                                        mock_send.assert_called_once()
 
 
     @pytest.mark.asyncio
@@ -128,17 +132,18 @@ class TestDtekBotHandlers:
         mock_db.execute.side_effect = mock_execute_side_effect
 
         with patch('dtek.bot.bot.HUMAN_USERS', {user_id: True}):
-            with patch('dtek.bot.bot.db_conn', mock_db):
-                with patch('dtek.bot.bot.update_user_activity', new=AsyncMock()):
+            with patch('common.handlers.HUMAN_USERS', {user_id: True}):
+                with patch('dtek.bot.bot.db_conn', mock_db):
+                    with patch('common.handlers.update_user_activity', new=AsyncMock()):
                     
-                    await command_subscribe_handler(message, state)
+                        await command_subscribe_handler(message, state)
                     
-                    # Verify that we sent a success message
-                    message.answer.assert_called_once()
-                    args = message.answer.call_args[0]
-                    # Check that the message contains the lead time (which was causing the error)
-                    assert "Сповіщення за: **15 хв**" in args[0]
-                    assert "Підписка вже існує" in args[0]
+                        # Verify that we sent a success message
+                        message.answer.assert_called_once()
+                        args = message.answer.call_args[0]
+                        # Check that the message contains the lead time (which was causing the error)
+                        assert "Сповіщення за: **15 хв**" in args[0]
+                        assert "Підписка вже існує" in args[0]
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
