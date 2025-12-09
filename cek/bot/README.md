@@ -5,12 +5,13 @@ Independent Telegram bot for checking power outage schedules from CEK (Central E
 ## Features
 
 - 🔍 Checking outage schedules by address
+- 📖 **Address Book** - save multiple addresses for quick access
 - 📊 24-hour chart visualization (pie chart)
 - ⚡ **Optimization with group caching** - faster re-verification
-- 🔔 Automatic updates when the schedule changes
+- 🔔 **Multi-Subscriptions** - subscribe to multiple addresses
 - ⚠️ Notification N minutes before shutdown/startup
 - 🤖 Protection against bots (CAPTCHA)
-- 💾 Local SQLite database
+- 💾 Local SQLite database with migrations
 
 ## Quick start
 
@@ -54,10 +55,11 @@ docker-compose ps
 
 - `/start` or `/help` - Show reference
 - `/check Місто, Вулиця, Будинок` - Check schedule
-- `/check` - Step-by-step address entry
-- `/repeat` - Repeat last check
+- `/check` - Step-by-step address entry (or select from address book)
+- `/repeat` - Repeat last check (or select from address book)
+- `/addresses` - Manage saved addresses
 - `/subscribe [години]` - Subscribe to updates (default setting 1 hour)
-- `/unsubscribe` - Cancel subscription
+- `/unsubscribe` - Cancel subscription (supports multiple subscriptions)
 - `/alert [хвилини]` - Configure notifications (0 = turn off)
 - `/cancel` - Cancel current action
 
@@ -82,8 +84,23 @@ CEK only displays the graph for the current day (24 hours).
 The database is stored in `/data/cek_bot.db` (Docker volume `cek_data`).
 
 Tables:
-- `subscriptions` - User subscriptions (includes `group_name` for caching)
+- `subscriptions` - User subscriptions (supports multiple per user, includes `group_name`)
 - `user_last_check` - Last check of each user (includes `group_name`)
+- `user_addresses` - Address book
+- `user_activity` - User activity tracking
+- `schema_version` - Migration version tracking
+
+## Database Migrations
+
+Before first run (or after updates), apply migrations:
+
+```bash
+# From project root
+python -m common.migrate --db-path cek/data/cek_bot.db
+
+# Check status
+python -m common.migrate --db-path cek/data/cek_bot.db --status
+```
 
 ## Updates
 

@@ -89,15 +89,31 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 ./run_tests.sh coverage all
 ```
 
+### Database Migrations
+
+Before running bots locally, apply database migrations:
+
+```bash
+# Apply migrations (creates tables if needed)
+python -m common.migrate --db-path ./data/bot.db
+
+# Check current schema version
+python -m common.migrate --db-path ./data/bot.db --status
+```
+
+Migration files are in `common/migrations/` as versioned SQL files.
+
 ### Run Bots Locally
 
 ```bash
 # DTEK bot
 export DTEK_BOT_TOKEN="your_token_here"
+python -m common.migrate --db-path ./dtek_bot.db  # First time
 python -m dtek.bot.bot
 
 # CEK bot
 export CEK_BOT_TOKEN="your_token_here"
+python -m common.migrate --db-path ./cek_bot.db  # First time
 python -m cek.bot.bot
 ```
 
@@ -166,6 +182,12 @@ shutdowns/
 ├── setup_dev.sh           # Automated setup script
 ├── run_tests.sh           # Test runner with auto-detection
 ├── common/                # Shared library
+│   ├── migrations/        # SQL migration files
+│   │   ├── 001_initial_schema.sql
+│   │   ├── 002_user_addresses.sql
+│   │   └── 003_multi_subscriptions.sql
+│   ├── migrate.py         # Migration CLI tool
+│   └── bot_base.py        # Core bot functionality
 ├── dtek/                  # DTEK provider
 └── cek/                   # CEK provider
 ```

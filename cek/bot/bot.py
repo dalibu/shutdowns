@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Tuple
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import BotCommand, ReplyKeyboardRemove, BufferedInputFile
+from aiogram.types import BotCommand, ReplyKeyboardRemove, BufferedInputFile, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 import pytz
@@ -21,6 +21,7 @@ from common.bot_base import (
     init_db,
     CaptchaState,
     CheckAddressState,
+    AddressRenameState,
     HUMAN_USERS,
     ADDRESS_CACHE,
     SCHEDULE_DATA_CACHE,
@@ -33,6 +34,20 @@ from common.bot_base import (
     get_shutdown_duration_str_by_hours,
     update_user_activity,
     format_user_info,
+    # Multi-address functions
+    save_user_address,
+    get_user_addresses,
+    get_address_by_id,
+    delete_user_address,
+    rename_user_address,
+    get_user_subscriptions,
+    get_subscription_count,
+    is_address_subscribed,
+    remove_subscription_by_id,
+    remove_all_subscriptions,
+    build_address_selection_keyboard,
+    build_subscription_selection_keyboard,
+    build_address_management_keyboard,
 )
 from common.formatting import (
     process_single_day_schedule_compact,
@@ -821,8 +836,11 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
         await db_conn.commit()
         await state.clear()
         
-        cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = bool(await cursor.fetchone())
+        # Auto-save to address book
+        await save_user_address(db_conn, user_id, city, street, house, group)
+        
+        sub_count = await get_subscription_count(db_conn, user_id)
+        is_subscribed = sub_count > 0
         
         await send_schedule_response(message, api_data, is_subscribed)
         await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
@@ -853,10 +871,21 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
 
     text_args = message.text.replace('/check', '', 1).strip()
     if not text_args:
-        logger.info(f"Command /check (FSM) by user {user_id} (@{username}) {full_name}")
-        await state.set_state(CheckAddressState.waiting_for_city)
-        await message.answer("📍 **Будь ласка, введіть назву міста** (наприклад, `м. Павлоград`):")
-        return
+        # Check if user has saved addresses
+        addresses = await get_user_addresses(db_conn, user_id, limit=10)
+        if addresses:
+            logger.info(f"Command /check (address selection) by user {user_id} (@{username}), {len(addresses)} addresses")
+            keyboard = build_address_selection_keyboard(addresses, action="check", include_new_button=True)
+            await message.answer(
+                "📍 **Оберіть адресу для перевірки** або додайте нову:",
+                reply_markup=keyboard
+            )
+            return
+        else:
+            logger.info(f"Command /check (FSM) by user {user_id} (@{username}) {full_name}")
+            await state.set_state(CheckAddressState.waiting_for_city)
+            await message.answer("📍 **Будь ласка, введіть назву міста** (наприклад, `м. Павлоград`):")
+            return
 
     current_state = await state.get_state()
     if current_state:
@@ -887,8 +916,11 @@ async def command_check_handler(message: types.Message, state: FSMContext) -> No
         )
         await db_conn.commit()
         
-        cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = bool(await cursor.fetchone())
+        # Auto-save to address book
+        await save_user_address(db_conn, user_id, city, street, house, group)
+        
+        sub_count = await get_subscription_count(db_conn, user_id)
+        is_subscribed = sub_count > 0
         
         await send_schedule_response(message, api_data, is_subscribed)
         await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
@@ -917,6 +949,18 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         await _handle_captcha_check(message, state)
         return
 
+    # Check if user has multiple saved addresses
+    addresses = await get_user_addresses(db_conn, user_id, limit=10)
+    if len(addresses) > 1:
+        logger.info(f"Command /repeat (address selection) by user {user_id}, {len(addresses)} addresses")
+        keyboard = build_address_selection_keyboard(addresses, action="repeat", include_new_button=False)
+        await message.answer(
+            "📍 **Оберіть адресу для повторної перевірки:**",
+            reply_markup=keyboard
+        )
+        return
+
+    # Single or no address - use last checked
     city, street, house, group = None, None, None, None
     try:
         cursor = await db_conn.execute("SELECT city, street, house, group_name FROM user_last_check WHERE user_id = ?", (user_id,))
@@ -930,41 +974,60 @@ async def command_repeat_handler(message: types.Message, state: FSMContext) -> N
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
         return
 
-    logger.info(f"Command /repeat by user {user_id} (@{username}) {full_name} for address: {city}, {street}, {house}")
-    address_str = f"`{city}, {street}, {house}`"
-    await message.answer(f"🔄 **Повторюю перевірку** для адреси:\n{address_str}\n⏳ Очікуйте...")
+    await _perform_address_check(message, user_id, city, street, house, group, is_repeat=True)
+
+async def _perform_address_check(message: types.Message, user_id: int, city: str, street: str, house: str, group: str = None, is_repeat: bool = False) -> None:
+    """Helper function to perform address check (used by repeat and callback handlers)."""
+    global db_conn
+    user_info = format_user_info(message.from_user) if hasattr(message, 'from_user') and message.from_user else str(user_id)
     
+    action = "repeat" if is_repeat else "check"
+    logger.info(f"Performing {action} for user {user_id} address: {city}, {street}, {house}")
+    
+    address_str = f"`{city}, {street}, {house}`"
+    prefix = "🔄 **Повторюю перевірку**" if is_repeat else "⏳ **Перевіряю графік**"
+    await message.answer(f"{prefix} для: {address_str}...")
+
     try:
         # Try to get cached group for CEK optimization
-        cached_group = None
-        cursor_cached = await db_conn.execute(
-            "SELECT group_name FROM user_last_check WHERE user_id = ?",
-            (user_id,)
-        )
-        row_cached = await cursor_cached.fetchone()
-        if row_cached and row_cached[0]:
-            cached_group = row_cached[0]
-            logger.info(f"Using cached group for /repeat: {cached_group}")
+        cached_group = group
+        if not cached_group:
+            try:
+                cursor_cached = await db_conn.execute(
+                    "SELECT group_name FROM user_last_check WHERE user_id = ?", (user_id,)
+                )
+                row_cached = await cursor_cached.fetchone()
+                if row_cached and row_cached[0]:
+                    cached_group = row_cached[0]
+            except:
+                pass
         
         data = await get_shutdowns_data(city, street, house, cached_group)
         current_hash = get_schedule_hash_compact(data)
+        new_group = data.get('group', group)
+        
         await db_conn.execute(
-            "UPDATE user_last_check SET last_hash = ? WHERE user_id = ?", 
-            (current_hash, user_id)
+            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, city, street, house, current_hash, new_group)
         )
         await db_conn.commit()
         
-        cursor = await db_conn.execute("SELECT 1 FROM subscriptions WHERE user_id = ?", (user_id,))
-        is_subscribed = bool(await cursor.fetchone())
+        # Update last_used_at in address book
+        await save_user_address(db_conn, user_id, city, street, house, new_group)
+        
+        sub_count = await get_subscription_count(db_conn, user_id)
+        is_subscribed = sub_count > 0
         
         await send_schedule_response(message, data, is_subscribed)
-        await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
+        
+        if hasattr(message, 'from_user') and message.from_user:
+            await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=new_group)
 
     except (ValueError, ConnectionError) as e:
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         await message.answer(f"❌ **{error_type}:** {e}")
     except Exception as e:
-        logger.error(f"Critical error during repeat check for user {message.from_user.id}: {e}", exc_info=True)
+        logger.error(f"Critical error during {action} check for user {user_id}: {e}", exc_info=True)
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 @dp.message(Command("subscribe"))
@@ -1129,23 +1192,264 @@ async def cmd_alert(message: types.Message):
 async def command_unsubscribe_handler(message: types.Message) -> None:
     global db_conn
     user_id = message.from_user.id
+    
     try:
-        cursor = await db_conn.execute("SELECT city, street, house FROM subscriptions WHERE user_id = ?", (user_id,))
-        row = await cursor.fetchone()
-        if not row:
+        subscriptions = await get_user_subscriptions(db_conn, user_id)
+        
+        if not subscriptions:
             await message.answer("❌ **Помилка.** Ви не підписані на оновлення.")
             return
-        city, street, house = row
-        await db_conn.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
-        await db_conn.commit()
-        logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
-        await message.answer(
-            f"🚫 **Підписку скасовано.** Ви більше не будете отримувати автоматичні оновлення для адреси: `{city}, {street}, {house}`.\n"
-            "Ви можете підписатися знову, скориставшися командою `/subscribe` після перевірки графіку."
-        )
+        
+        if len(subscriptions) == 1:
+            # Single subscription - unsubscribe immediately
+            sub = subscriptions[0]
+            city, street, house = sub['city'], sub['street'], sub['house']
+            await remove_subscription_by_id(db_conn, user_id, sub['id'])
+            logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
+            await message.answer(
+                f"🚫 **Підписку скасовано.** Ви більше не будете отримувати автоматичні оновлення для адреси: `{city}, {street}, {house}`.\n"
+                "Ви можете підписатися знову, скориставшися командою `/subscribe` після перевірки графіку."
+            )
+        else:
+            # Multiple subscriptions - show selection
+            logger.info(f"Command /unsubscribe (selection) by user {user_id}, {len(subscriptions)} subscriptions")
+            keyboard = build_subscription_selection_keyboard(subscriptions, action="unsub")
+            await message.answer(
+                f"📋 **У вас {len(subscriptions)} активних підписок.** Оберіть, від якої відписатися:",
+                reply_markup=keyboard
+            )
     except Exception as e:
         logger.error(f"Failed to unsubscribe user {user_id}: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі скасувати підписку.")
+
+# --- Callback Handlers for Inline Buttons ---
+@dp.callback_query(F.data.startswith("check:"))
+async def callback_check_address(callback: CallbackQuery, state: FSMContext) -> None:
+    """Handle address selection for /check."""
+    global db_conn
+    user_id = callback.from_user.id
+    data = callback.data.split(":", 1)[1]
+    
+    await callback.answer()  # Acknowledge the callback
+    
+    if data == "new":
+        # Start step-by-step address input
+        await state.set_state(CheckAddressState.waiting_for_city)
+        await callback.message.edit_text("📍 **Будь ласка, введіть назву міста** (наприклад, `м. Павлоград`):")
+        return
+    
+    try:
+        address_id = int(data)
+        address = await get_address_by_id(db_conn, user_id, address_id)
+        if not address:
+            await callback.message.edit_text("❌ Адреса не знайдена.")
+            return
+        
+        city, street, house = address['city'], address['street'], address['house']
+        group = address.get('group_name')
+        
+        # Note: _perform_address_check will send status message
+        await _perform_address_check(callback.message, user_id, city, street, house, group, is_repeat=False)
+        
+    except ValueError:
+        await callback.message.edit_text("❌ Невірний формат даних.")
+    except Exception as e:
+        logger.error(f"Error in callback_check_address: {e}", exc_info=True)
+        await callback.message.edit_text("❌ Виникла помилка.")
+
+@dp.callback_query(F.data.startswith("repeat:"))
+async def callback_repeat_address(callback: CallbackQuery) -> None:
+    """Handle address selection for /repeat."""
+    global db_conn
+    user_id = callback.from_user.id
+    data = callback.data.split(":", 1)[1]
+    
+    await callback.answer()
+    
+    try:
+        address_id = int(data)
+        address = await get_address_by_id(db_conn, user_id, address_id)
+        if not address:
+            await callback.message.edit_text("❌ Адреса не знайдена.")
+            return
+        
+        city, street, house = address['city'], address['street'], address['house']
+        group = address.get('group_name')
+        
+        # Note: _perform_address_check will send status message
+        await _perform_address_check(callback.message, user_id, city, street, house, group, is_repeat=True)
+        
+    except ValueError:
+        await callback.message.edit_text("❌ Невірний формат даних.")
+    except Exception as e:
+        logger.error(f"Error in callback_repeat_address: {e}", exc_info=True)
+        await callback.message.edit_text("❌ Виникла помилка.")
+
+@dp.callback_query(F.data.startswith("unsub:"))
+async def callback_unsubscribe(callback: CallbackQuery) -> None:
+    """Handle unsubscribe selection."""
+    global db_conn
+    user_id = callback.from_user.id
+    data = callback.data.split(":", 1)[1]
+    
+    await callback.answer()
+    
+    try:
+        if data == "all":
+            # Unsubscribe from all
+            count = await remove_all_subscriptions(db_conn, user_id)
+            logger.info(f"User {user_id} unsubscribed from all {count} subscriptions.")
+            await callback.message.edit_text(
+                f"🚫 **Всі підписки скасовано.** Було видалено {count} підписок.\n"
+                "Ви можете підписатися знову, скориставшися командою `/subscribe` після перевірки графіку."
+            )
+        else:
+            # Unsubscribe from specific address
+            subscription_id = int(data)
+            result = await remove_subscription_by_id(db_conn, user_id, subscription_id)
+            if result:
+                city, street, house = result
+                logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}.")
+                
+                # Check remaining subscriptions
+                remaining = await get_subscription_count(db_conn, user_id)
+                remaining_text = f"\n📋 Залишилося активних підписок: {remaining}" if remaining > 0 else ""
+                
+                await callback.message.edit_text(
+                    f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}"
+                )
+            else:
+                await callback.message.edit_text("❌ Підписку не знайдено.")
+                
+    except ValueError:
+        await callback.message.edit_text("❌ Невірний формат даних.")
+    except Exception as e:
+        logger.error(f"Error in callback_unsubscribe: {e}", exc_info=True)
+        await callback.message.edit_text("❌ Виникла помилка при відписці.")
+
+# --- Address Book Command and Callbacks ---
+@dp.message(Command("addresses"))
+async def command_addresses_handler(message: types.Message) -> None:
+    """Show user's saved addresses with management options."""
+    global db_conn
+    user_id = message.from_user.id
+    
+    if user_id not in HUMAN_USERS:
+        await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
+                             "за допомогою команди **/start**.")
+        return
+    
+    addresses = await get_user_addresses(db_conn, user_id, limit=10)
+    
+    if not addresses:
+        await message.answer(
+            "📖 **Адресна книга пуста.**\n"
+            "Використайте `/check Місто, Вулиця, Будинок`, щоб додати адресу."
+        )
+        return
+    
+    keyboard = build_address_management_keyboard(addresses)
+    await message.answer(
+        f"📖 **Ваші збережені адреси** ({len(addresses)}):\n"
+        "Оберіть адресу для перейменування або видалення:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query(F.data.startswith("addr_info:"))
+async def callback_address_info(callback: CallbackQuery) -> None:
+    """Show address info."""
+    global db_conn
+    user_id = callback.from_user.id
+    address_id = int(callback.data.split(":", 1)[1])
+    
+    await callback.answer()
+    
+    address = await get_address_by_id(db_conn, user_id, address_id)
+    if not address:
+        await callback.message.edit_text("❌ Адреса не знайдена.")
+        return
+    
+    alias_text = f"(**{address['alias']}**)" if address.get('alias') else ""
+    await callback.message.answer(
+        f"📍 **Адреса:** `{address['city']}, {address['street']}, {address['house']}` {alias_text}\n"
+        f"👥 **Черга:** {address.get('group_name') or 'Н/Д'}"
+    )
+
+@dp.callback_query(F.data.startswith("addr_delete:"))
+async def callback_address_delete(callback: CallbackQuery) -> None:
+    """Delete address from address book."""
+    global db_conn
+    user_id = callback.from_user.id
+    address_id = int(callback.data.split(":", 1)[1])
+    
+    await callback.answer()
+    
+    address = await get_address_by_id(db_conn, user_id, address_id)
+    if not address:
+        await callback.message.edit_text("❌ Адреса не знайдена.")
+        return
+    
+    city, street, house = address['city'], address['street'], address['house']
+    success = await delete_user_address(db_conn, user_id, address_id)
+    
+    if success:
+        logger.info(f"User {user_id} deleted address: {city}, {street}, {house}")
+        await callback.message.edit_text(
+            f"🗑️ **Адресу видалено:** `{city}, {street}, {house}`"
+        )
+    else:
+        await callback.message.edit_text("❌ Не вдалося видалити адресу.")
+
+@dp.callback_query(F.data.startswith("addr_rename:"))
+async def callback_address_rename_start(callback: CallbackQuery, state: FSMContext) -> None:
+    """Start address rename flow."""
+    global db_conn
+    user_id = callback.from_user.id
+    address_id = int(callback.data.split(":", 1)[1])
+    
+    await callback.answer()
+    
+    address = await get_address_by_id(db_conn, user_id, address_id)
+    if not address:
+        await callback.message.edit_text("❌ Адреса не знайдена.")
+        return
+    
+    await state.set_state(AddressRenameState.waiting_for_new_name)
+    await state.update_data(address_id=address_id)
+    
+    city, street, house = address['city'], address['street'], address['house']
+    current_alias = address.get('alias') or 'немає'
+    
+    await callback.message.edit_text(
+        f"✏️ **Перейменування адреси**\n"
+        f"📍 `{city}, {street}, {house}`\n"
+        f"Поточна назва: *{current_alias}*\n\n"
+        "Введіть нову назву (наприклад, `Мама`, `Робота`, `Дача`):"
+    )
+
+@dp.message(AddressRenameState.waiting_for_new_name, F.text)
+async def process_address_rename(message: types.Message, state: FSMContext) -> None:
+    """Process new address name."""
+    global db_conn
+    user_id = message.from_user.id
+    new_name = message.text.strip()[:50]  # Limit to 50 chars
+    
+    data = await state.get_data()
+    address_id = data.get('address_id')
+    
+    if not address_id:
+        await state.clear()
+        await message.answer("❌ Помилка. Спробуйте ще раз через /addresses.")
+        return
+    
+    success = await rename_user_address(db_conn, user_id, address_id, new_name)
+    await state.clear()
+    
+    if success:
+        logger.info(f"User {user_id} renamed address {address_id} to: {new_name}")
+        await message.answer(f"✅ **Адресу перейменовано** на: *{new_name}*")
+    else:
+        await message.answer("❌ Не вдалося перейменувати адресу.")
 
 # --- Bot Setup and Main ---
 async def set_default_commands(bot: Bot):
@@ -1155,6 +1459,7 @@ async def set_default_commands(bot: Bot):
         BotCommand(command="help", description="Показати довідку/команди"),
         BotCommand(command="check", description="Перевірити графік відключень"),
         BotCommand(command="repeat", description="Повторити останню перевірку"),
+        BotCommand(command="addresses", description="Керувати адресною книгою"),
         BotCommand(command="subscribe", description="Підписатися на оновлення"),
         BotCommand(command="unsubscribe", description="Скасувати підписку"),
         BotCommand(command="alert", description="Налаштувати сповіщення"),
