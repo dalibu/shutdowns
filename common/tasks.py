@@ -334,7 +334,7 @@ async def subscription_checker_task(
 
             if data_or_error is None:
                 logger.error(f"Address {address_key} was checked, but result is missing.")
-                db_updates_fail.append((next_check_time, user_id))
+                db_updates_fail.append((next_check_time, user_id, city, street, house))
                 continue
 
             if "error" in data_or_error:
@@ -351,7 +351,7 @@ async def subscription_checker_task(
                         user_info = str(user_id)
                     logger.error(f"Failed to send error message to user {user_info}: {e}")
 
-                db_updates_fail.append((next_check_time, user_id))
+                db_updates_fail.append((next_check_time, user_id, city, street, house))
                 continue
 
             data = data_or_error
