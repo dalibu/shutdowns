@@ -299,6 +299,13 @@ async def subscription_checker_task(
                     data = await get_shutdowns_data(city, street, house)
                     
                 current_hash = get_schedule_hash_compact(data)
+                
+                # Log parser results for debugging
+                schedule = data.get("schedule", {})
+                if logger.level <= logging.DEBUG:
+                    import json
+                    logger.debug(f"Parser returned for {address_str}: hash={current_hash[:16]}, schedule={json.dumps(schedule, ensure_ascii=False)}")
+                
                 ADDRESS_CACHE[address_key] = {
                     'last_schedule_hash': current_hash,
                     'last_checked': now
@@ -354,6 +361,16 @@ async def subscription_checker_task(
             # Check if there are real changes in schedule
             schedule = data.get("schedule", {})
             has_actual_schedule = any(slots for slots in schedule.values() if slots)
+            
+            # Log hash comparison for debugging
+            if last_hash and new_hash != last_hash:
+                logger.info(f"Hash changed for {address_str}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
+                # Log normalized schedule for deep debugging (only when hash changes)
+                if logger.level <= logging.DEBUG:
+                    from .bot_base import normalize_schedule_for_hash
+                    import json
+                    normalized = normalize_schedule_for_hash(data)
+                    logger.debug(f"Normalized schedule: {json.dumps(normalized, ensure_ascii=False, sort_keys=True)}")
             
             # Send notification only if:
             # 1. Hash changed AND
@@ -478,7 +495,7 @@ async def subscription_checker_task(
                 except:
                     user_info = str(user_id)
                     
-                db_updates_success.append((next_check_time, new_hash, user_id))
+                db_updates_success.append((next_check_time, new_hash, user_id, city, street, house))
                 logger.info(f"Notification sent to user {user_info}. Hash updated to {new_hash[:8]}.")
             else:
                 # Get user info for logging
@@ -488,18 +505,18 @@ async def subscription_checker_task(
                 except:
                     user_info = str(user_id)
                     
-                logger.debug(f"User {user_info} check for {address_str}. No change in hash: {new_hash[:8]}.")
-                db_updates_fail.append((next_check_time, user_id))
+                logger.debug(f"User {user_info} check for {address_str}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}, last: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash}).")
+                db_updates_fail.append((next_check_time, user_id, city, street, house))
 
         try:
             if db_updates_success:
                 await db_conn.executemany(
-                    "UPDATE subscriptions SET next_check = ?, last_schedule_hash = ? WHERE user_id = ?",
+                    "UPDATE subscriptions SET next_check = ?, last_schedule_hash = ? WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
                     db_updates_success
                 )
             if db_updates_fail:
                  await db_conn.executemany(
-                    "UPDATE subscriptions SET next_check = ? WHERE user_id = ?",
+                    "UPDATE subscriptions SET next_check = ? WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
                     db_updates_fail
                 )
             await db_conn.commit()
