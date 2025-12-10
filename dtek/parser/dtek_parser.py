@@ -27,10 +27,10 @@ handler = logging.StreamHandler()
 
 def custom_time(*args):
     """Возвращает текущее время в Киевском часовом поясе для логирования."""
-    return datetime.now(pytz.timezone('Europe/Kyiv')).timetuple()
+    return datetime.now(pytz.timezone('Europe/Kiev')).timetuple()
 
 formatter = logging.Formatter(
-    '%(asctime)s %(name)s %(levelname)s %(message)s',
+    '%(asctime)s EET | %(levelname)s:%(name)s:%(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 formatter.converter = custom_time

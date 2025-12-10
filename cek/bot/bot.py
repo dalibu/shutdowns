@@ -105,10 +105,18 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.propagate = False  # Отключаем дублирование логов
 handler = logging.StreamHandler()
+
+def custom_time(*args):
+    """Returns current time in Kyiv timezone for logging."""
+    import pytz
+    from datetime import datetime
+    return datetime.now(pytz.timezone('Europe/Kiev')).timetuple()
+
 formatter = logging.Formatter(
-    'cek_bot | %(levelname)s:%(name)s:%(message)s',
-    datefmt='%H:%M:%S'
+    '%(asctime)s EET | %(levelname)s:%(name)s:%(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
+formatter.converter = custom_time
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)

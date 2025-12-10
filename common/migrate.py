@@ -14,9 +14,21 @@ import sqlite3
 import logging
 from pathlib import Path
 from datetime import datetime
+import pytz
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+def custom_time(*args):
+    """Returns current time in Kyiv timezone for logging."""
+    return datetime.now(pytz.timezone('Europe/Kiev')).timetuple()
+
+# Setup logging with Kyiv timezone
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s EET | %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+formatter.converter = custom_time
+handler.setFormatter(formatter)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 

@@ -102,7 +102,9 @@ async def update_user_activity(
     if not conn:
         return
 
-    now = datetime.now()
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
     
     try:
         # Check if user exists
@@ -171,7 +173,9 @@ async def set_human_user(conn: aiosqlite.Connection, user_id: int, username: Opt
     if not conn:
         return
     
-    now = datetime.now()
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
     
     try:
         # Try to update existing record
@@ -210,7 +214,9 @@ async def save_user_address(
     if not conn:
         return -1
     
-    now = datetime.now()
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
     try:
         # Try to insert, on conflict update last_used_at
         await conn.execute("""

@@ -20,10 +20,15 @@ logger.propagate = False  # Отключаем дублирование лого
 
 handler = logging.StreamHandler()
 
+def custom_time(*args):
+    """Returns current time in Kyiv timezone for logging."""
+    return datetime.now(pytz.timezone('Europe/Kiev')).timetuple()
+
 formatter = logging.Formatter(
-    '%(asctime)s %(name)s %(levelname)s %(message)s',
+    '%(asctime)s EET | %(levelname)s:%(name)s:%(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+formatter.converter = custom_time
 handler.setFormatter(formatter)
 if not logger.handlers:
     logger.addHandler(handler)

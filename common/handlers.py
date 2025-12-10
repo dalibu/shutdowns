@@ -1147,7 +1147,9 @@ async def handle_subscribe_command(
         if hash_to_use is None:
             hash_to_use = "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"
 
-        next_check_time = datetime.now()
+        import pytz
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        next_check_time = datetime.now(kiev_tz)
         
         # Extract group from last check
         cursor_group = await db_conn.execute(

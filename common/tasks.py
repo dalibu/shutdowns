@@ -238,7 +238,9 @@ async def subscription_checker_task(
             logger.error("DB connection is not available. Skipping check cycle.")
             continue
 
-        now = datetime.now()
+        import pytz
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        now = datetime.now(kiev_tz)
         users_to_check = []
         try:
             cursor = await db_conn.execute(
