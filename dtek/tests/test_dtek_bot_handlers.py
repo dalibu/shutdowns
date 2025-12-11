@@ -142,8 +142,8 @@ class TestDtekBotHandlers:
                         message.answer.assert_called_once()
                         args = message.answer.call_args[0]
                         # Check that the message contains the lead time (which was causing the error)
-                        assert "Сповіщення за: **15 хв**" in args[0]
-                        assert "Підписка вже існує" in args[0]
+                        assert "Сповіщення за **15 хв.**" in args[0]
+                        assert "Підписка оформлена" in args[0]
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
