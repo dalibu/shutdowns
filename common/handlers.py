@@ -664,10 +664,10 @@ async def handle_stats_command(
         # 2. User export CSV
         csv_buffer = io.StringIO()
         writer = csv.writer(csv_buffer)
-        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'last_city', 'last_street', 'last_house'])
+        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'last_city', 'last_street', 'last_house', 'last_group'])
         
         async with db_conn.execute(
-            "SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house FROM user_activity ORDER BY last_seen DESC"
+            "SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house, last_group FROM user_activity ORDER BY last_seen DESC"
         ) as cursor:
             async for row in cursor:
                 writer.writerow(row)
