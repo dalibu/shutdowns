@@ -614,21 +614,37 @@ def normalize_schedule_for_hash(data: dict) -> Dict[str, List[Dict[str, str]]]:
 
 def get_schedule_hash_compact(data: dict) -> str:
     """
-    Генерирует устойчивый хеш данных графика (schedule), используя каноническую 
-    нормализованную JSON-строку. Это исключает влияние форматирования вывода 
-    и неустойчивого порядка слотов.
+    Генерирует устойчивый хеш данных графика (schedule) и текущего отключения (current_outage), 
+    используя каноническую нормализованную JSON-строку. Это исключает влияние форматирования 
+    вывода и неустойчивого порядка слотов.
     """
     normalized_data = normalize_schedule_for_hash(data)
     
-    if not normalized_data:
+    # Включаем информацию о текущем отключении в хеш
+    current_outage = data.get("current_outage")
+    
+    # Создаем объект для хеширования
+    hash_object = {
+        "schedule": normalized_data
+    }
+    
+    # Добавляем current_outage если есть (только значимые поля)
+    if current_outage and current_outage.get("has_current_outage"):
+        hash_object["current_outage"] = {
+            "reason": current_outage.get("reason"),
+            "start_time": current_outage.get("start_time"),
+            "expected_restoration": current_outage.get("expected_restoration"),
+        }
+    
+    if not normalized_data and not hash_object.get("current_outage"):
         return "NO_SCHEDULE_FOUND"
 
     # Создаем устойчивую (каноническую) JSON-строку:
     # ensure_ascii=False для кириллицы
     # separators=(',', ':') для удаления пробелов
-    # sort_keys=True гарантирует порядок верхнего уровня (хотя наша нормализация уже это делает)
+    # sort_keys=True гарантирует порядок верхнего уровня
     schedule_json_string = json.dumps(
-        normalized_data, 
+        hash_object, 
         sort_keys=True, 
         ensure_ascii=False, 
         separators=(',', ':')

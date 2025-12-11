@@ -438,42 +438,48 @@ async def send_schedule_response(
         house = api_data.get("house_num", "Н/Д")
         group = format_group_name(api_data.get("group"))
 
-        # Check for current outage information
+        # Check for current outage information and prepare warning message
+        outage_warning = None
         current_outage = api_data.get("current_outage")
         if current_outage and current_outage.get("has_current_outage"):
-            # Format outage message
-            outage_message = f"🏠 Адреса: `{city}, {street}, {house}`"
-            if group != "невідомо":
-                outage_message += f"\n👥 Черга: `{group}`"
-            
-            outage_message += "\n\n⚡ **За вашою адресою зараз відсутня електроенергія**\n\n"
+            # Format outage warning message
+            outage_parts = ["⚡ **УВАГА! Поточне відключення**\n"]
             
             # Add detailed information if available
             if current_outage.get("reason"):
-                outage_message += f"🔧 **Причина:** {current_outage['reason']}\n"
+                outage_parts.append(f"🔧 **Причина:** {current_outage['reason']}")
             
             if current_outage.get("start_time"):
-                outage_message += f"⏰ **Час початку:** {current_outage['start_time']}\n"
+                outage_parts.append(f"⏰ **Початок:** {current_outage['start_time']}")
             
             if current_outage.get("expected_restoration"):
-                outage_message += f"🔋 **Очікуваний час відновлення:** {current_outage['expected_restoration']}\n"
+                outage_parts.append(f"🔋 **Відновлення:** {current_outage['expected_restoration']}")
             
             if current_outage.get("update_time"):
-                outage_message += f"\n📅 _Дата оновлення: {current_outage['update_time']}_"
+                outage_parts.append(f"📅 _Оновлено: {current_outage['update_time']}_")
             
-            # Add subscription suggestion if not subscribed
-            if not is_subscribed:
-                outage_message += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
-            
-            await message.answer(outage_message, parse_mode="Markdown")
-            return
+            outage_warning = "\n".join(outage_parts)
 
         schedule = api_data.get("schedule", {})
         if not schedule:
-            await message.answer("❌ *Не вдалося отримати графік відключень.*")
-            if not is_subscribed:
-                await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
-            return
+            # No schedule, only show outage warning if exists
+            if outage_warning:
+                full_message = f"🏠 Адреса: `{city}, {street}, {house}`"
+                if group != "невідомо":
+                    full_message += f"\n👥 Черга: `{group}`"
+                full_message += f"\n\n{outage_warning}"
+                
+                if not is_subscribed:
+                    full_message += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
+                
+                await message.answer(full_message, parse_mode="Markdown")
+                return
+            else:
+                # No schedule and no outage
+                await message.answer("❌ *Не вдалося отримати графік відключень.*")
+                if not is_subscribed:
+                    await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
+                return
 
 
         # Sort dates
@@ -519,6 +525,10 @@ async def send_schedule_response(
         # Build message parts
         message_parts = []
         message_parts.append(f"🏠 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+        
+        # Add current outage warning if exists
+        if outage_warning:
+            message_parts.append(outage_warning)
         
         if diagram_caption:
             message_parts.append(diagram_caption)
