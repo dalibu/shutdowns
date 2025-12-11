@@ -221,3 +221,6 @@ dtek/data/bot.db-shm
 *.db-wal
 
 
+
+# Logs
+logs/

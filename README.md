@@ -243,12 +243,14 @@ python -m common.migrate --db-path ./data/bot.db --status
 # Run DTEK bot
 export BOT_TOKEN="your_token"
 export DB_PATH="./dtek_bot.db"
+export LOG_LEVEL="DEBUG"  # Optional
 python -m common.migrate --db-path ./dtek_bot.db  # First time only
 python -m dtek.bot.bot
 
 # Run CEK bot
 export BOT_TOKEN="your_token"
 export DB_PATH="./cek_bot.db"
+export LOG_LEVEL="DEBUG"  # Optional
 python -m common.migrate --db-path ./cek_bot.db  # First time only
 python -m cek.bot.bot
 ```

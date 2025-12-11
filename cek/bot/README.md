@@ -29,6 +29,10 @@ cp .env.example .env
 
 # Edit .env and paste your token
 nano .env
+
+# Optional: Configure logging
+# LOG_LEVEL=INFO  (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+# LOG_DIR=/logs   (Directory for log files inside container)
 ```
 
 ### 3. Launch the bot
@@ -130,6 +134,11 @@ docker cp ./backup_20231122.db cek_bot:/data/cek_bot.db
 ### Review logs
 ```bash
 docker-compose logs -f cek_bot
+
+# Logs are also stored in the 'logs' directory in the project root:
+# - cek/logs/bot.log (current log)
+# - cek/logs/bot.log.YYYY-MM-DD (rotated logs)
+# Logs are automatically rotated daily and kept for 7 days.
 ```
 
 ### Run in development mode

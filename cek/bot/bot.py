@@ -101,25 +101,25 @@ DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "da
 FONT_PATH = os.getenv("FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
 
 # Logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.propagate = False  # Отключаем дублирование логов
-handler = logging.StreamHandler()
+from common.logging_config import setup_logging
 
-def custom_time(*args):
-    """Returns current time in Kyiv timezone for logging."""
-    import pytz
-    from datetime import datetime
-    return datetime.now(pytz.timezone('Europe/Kiev')).timetuple()
+# Logging
+# Use LOG_DIR env or default to /logs (mapped to host volume)
+LOG_DIR = os.getenv("LOG_DIR", "/logs")
 
-formatter = logging.Formatter(
-    '%(asctime)s EET | %(levelname)s:%(name)s:%(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-formatter.converter = custom_time
-handler.setFormatter(formatter)
-if not logger.handlers:
-    logger.addHandler(handler)
+# Validating log directory permissions for local dev/testing
+try:
+    if not os.path.exists(LOG_DIR):
+        # Try to creat it, if permission denied, fallback
+        os.makedirs(LOG_DIR, exist_ok=True)
+    elif not os.access(LOG_DIR, os.W_OK):
+        raise PermissionError(f"No write access to {LOG_DIR}")
+except (PermissionError, OSError) as e:
+    # Fallback for local development/testing where /logs might not be accessible
+    print(f"Warning: Cannot write to {LOG_DIR} ({e}). Falling back to local './logs'")
+    LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
+
+logger = setup_logging(__name__, log_dir=LOG_DIR)
 
 # Dispatcher
 dp = Dispatcher()
