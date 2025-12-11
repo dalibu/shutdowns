@@ -27,7 +27,7 @@ The parser now detects and handles active power outages at addresses (displayed 
 When `current_outage` data is present, the bot displays:
 
 ```
-🏠 Адреса: `м. Дніпро, вул. Скіфська, 20`
+📍 Адреса: `м. Дніпро, вул. Скіфська, 20`
 👥 Черга: `1.6`
 
 ⚡ **За вашою адресою зараз відсутня електроенергія**

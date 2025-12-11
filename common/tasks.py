@@ -37,6 +37,7 @@ from .formatting import (
     get_current_status_message,
     format_group_name,
 )
+from .log_context import set_user_context, clear_user_context
 
 
 async def _process_alert_for_user(
@@ -56,103 +57,110 @@ async def _process_alert_for_user(
     
     Returns the event datetime string if alert was sent, None otherwise.
     """
-    if user_info is None:
-        user_info = str(user_id)
-        
-    address_key = (city, street, house)
-    data = SCHEDULE_DATA_CACHE.get(address_key)
-    
-    if not data:
-        logger.debug(f"Alert check user {user_info}: no data in cache for address {address_key}")
-        return None
-    
-    schedule = data.get("schedule", {})
-    if not schedule:
-        logger.debug(f"Alert check user {user_info}: no schedule data")
-        return None
-    
-    kiev_tz = pytz.timezone('Europe/Kiev')
-    
-    # Collect all events (start and end of shutdowns)
-    events = []
+    # Set user context for logging
+    set_user_context(user_id)
     
     try:
-        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-    except ValueError:
-        sorted_dates = sorted(schedule.keys())
-    
-    for date_str in sorted_dates:
+        if user_info is None:
+            user_info = str(user_id)
+            
+        address_key = (city, street, house)
+        data = SCHEDULE_DATA_CACHE.get(address_key)
+        
+        if not data:
+            logger.debug(f"Alert check: no data in cache for address {address_key}")
+            return None
+        
+        schedule = data.get("schedule", {})
+        if not schedule:
+            logger.debug(f"Alert check: no schedule data")
+            return None
+        
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        
+        # Collect all events (start and end of shutdowns)
+        events = []
+        
         try:
-            date_obj = datetime.strptime(date_str, '%d.%m.%y').date()
-            if date_obj < now.date():
-                continue
+            sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
         except ValueError:
-            continue
+            sorted_dates = sorted(schedule.keys())
         
-        slots = schedule.get(date_str, [])
-        for slot in slots:
-            time_str = slot.get('shutdown', '00:00–00:00')
-            start_min, end_min = parse_time_range(time_str)
-            
-            start_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=start_min)
-            end_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=end_min)
-            
-            events.append((start_dt, 'off_start'))
-            events.append((end_dt, 'on_start'))
-    
-    events.sort(key=lambda x: x[0])
-    
-    logger.debug(f"Alert check user {user_info}: found {len(events)} events total")
-    
-    # Find the next future event
-    target_event = None
-    for event_dt, event_type in events:
-        if event_dt > now:
-            target_event = (event_dt, event_type)
-            break
-    
-    if not target_event:
-        logger.debug(f"Alert check user {user_info}: no future events found")
-        return None
-        
-    event_dt, event_type = target_event
-    time_to_event = (event_dt - now).total_seconds() / 60.0  # minutes
-    
-    msg_type = "відключення" if event_type == 'off_start' else "включення"
-    logger.debug(f"Alert check user {user_info}: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
-    
-    # Check if it's time to send alert
-    if 0 < time_to_event <= lead_time:
-        event_dt_str = event_dt.isoformat()
-        
-        if last_alert_event_start_str != event_dt_str:
-            # Format address for display
-            address_display = f"`{city}, {street}, {house}`"
-            
-            # Send alert!
-            time_str = event_dt.strftime('%H:%M')
-            minutes_left = int(time_to_event)
-            
-            msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
-            
-            logger.info(f"Sending alert to user {user_info}: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
-            
+        for date_str in sorted_dates:
             try:
-                await bot.send_message(user_id, msg, parse_mode="Markdown")
-                logger.info(f"Alert sent successfully to user {user_info}, event_dt={event_dt_str}")
-                return event_dt_str  # Return event time for DB update
-            except Exception as e:
-                logger.error(f"Failed to send alert to {user_info}: {e}")
-                return None
+                date_obj = datetime.strptime(date_str, '%d.%m.%y').date()
+                if date_obj < now.date():
+                    continue
+            except ValueError:
+                continue
+            
+            slots = schedule.get(date_str, [])
+            for slot in slots:
+                time_str = slot.get('shutdown', '00:00–00:00')
+                start_min, end_min = parse_time_range(time_str)
+                
+                start_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=start_min)
+                end_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=end_min)
+                
+                events.append((start_dt, 'off_start'))
+                events.append((end_dt, 'on_start'))
+        
+        events.sort(key=lambda x: x[0])
+        
+        logger.debug(f"Alert check: found {len(events)} events total")
+        
+        # Find the next future event
+        target_event = None
+        for event_dt, event_type in events:
+            if event_dt > now:
+                target_event = (event_dt, event_type)
+                break
+        
+        if not target_event:
+            logger.debug(f"Alert check: no future events found")
+            return None
+            
+        event_dt, event_type = target_event
+        time_to_event = (event_dt - now).total_seconds() / 60.0  # minutes
+        
+        msg_type = "відключення" if event_type == 'off_start' else "включення"
+        logger.debug(f"Alert check: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
+        
+        # Check if it's time to send alert
+        if 0 < time_to_event <= lead_time:
+            event_dt_str = event_dt.isoformat()
+            
+            if last_alert_event_start_str != event_dt_str:
+                # Format address for display
+                address_display = f"`{city}, {street}, {house}`"
+                
+                # Send alert!
+                time_str = event_dt.strftime('%H:%M')
+                minutes_left = int(time_to_event)
+                
+                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
+                
+                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
+                
+                try:
+                    await bot.send_message(user_id, msg, parse_mode="Markdown")
+                    logger.info(f"Alert sent successfully, event_dt={event_dt_str}")
+                    return event_dt_str  # Return event time for DB update
+                except Exception as e:
+                    logger.error(f"Failed to send alert: {e}")
+                    return None
+            else:
+                logger.debug(f"Alert check: alert already sent for this event (last_alert={last_alert_event_start_str})")
         else:
-            logger.debug(f"Alert check user {user_info}: alert already sent for this event (last_alert={last_alert_event_start_str})")
-    else:
-        if time_to_event <= 0:
-            logger.debug(f"Alert check user {user_info}: event already passed")
-        else:
-            logger.debug(f"Alert check user {user_info}: event too far ({time_to_event:.1f} min > {lead_time} min)")
-    
-    return None
+            if time_to_event <= 0:
+                logger.debug(f"Alert check: event already passed")
+            else:
+                logger.debug(f"Alert check: event too far ({time_to_event:.1f} min > {lead_time} min)")
+        
+        return None
+    finally:
+        # Always clear user context
+        clear_user_context()
 
 
 async def alert_checker_task(
@@ -200,14 +208,18 @@ async def alert_checker_task(
                 except:
                     user_info = str(user_id)
                 
-                logger.debug(f"Processing alerts for user {user_info}, lead_time={lead_time} min, last_alert={last_alert_event_start_str}")
+                logger.debug(f"Processing alerts, lead_time={lead_time} min")
                 
                 new_last_alert = await _process_alert_for_user(
                     bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now, logger, user_info
                 )
                 
                 if new_last_alert:
-                    logger.info(f"Updating last_alert_event_start for user {user_info} to {new_last_alert}")
+                    # Set context for the DB update log
+                    set_user_context(user_id)
+                    logger.info(f"Updating last_alert_event_start to {new_last_alert}")
+                    clear_user_context()
+                    
                     await db_conn.execute(
                         "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
                         (new_last_alert, user_id)
@@ -216,6 +228,7 @@ async def alert_checker_task(
 
         except Exception as e:
             logger.error(f"Error in alert_checker_task loop: {e}", exc_info=True)
+
 
 
 async def subscription_checker_task(
@@ -297,7 +310,15 @@ async def subscription_checker_task(
             city, street, house = address_key
             address_str = f"`{city}, {street}, {house}`"
             
+            # Get first user_id for this address (for logging context)
+            user_ids_for_address = addresses_to_check_map[address_key]
+            first_user_id = user_ids_for_address[0] if user_ids_for_address else None
+            
             try:
+                # Set user context for parser logs (use first user from list)
+                if first_user_id:
+                    set_user_context(first_user_id)
+                
                 # === GROUP CACHE OPTIMIZATION (with normalized addresses) ===
                 # Step 1: Get address_id and cached group
                 address_id, cached_group = await get_address_id(
@@ -371,6 +392,10 @@ async def subscription_checker_task(
             except Exception as e:
                 logger.error(f"Error checking address {address_str}: {e}")
                 api_results[address_key] = {"error": str(e)}
+            finally:
+                # Always clear context after processing address
+                clear_user_context()
+
 
         db_updates_success = []
         db_updates_fail = []
@@ -387,187 +412,176 @@ async def subscription_checker_task(
             next_check_time = now + interval_delta
             data_or_error = api_results.get(address_key)
             
-            # Get address_id for this subscription
-            address_id, _ = await get_address_id(db_conn, city, street, house)
-            if not address_id:
-                logger.error(f"Failed to get address_id for {address_str}")
-                continue
+            # Set user context for all logs related to this user's notification
+            set_user_context(user_id)
+            
+            try:
+                # Get address_id for this subscription
+                address_id, _ = await get_address_id(db_conn, city, street, house)
+                if not address_id:
+                    logger.error(f"Failed to get address_id for {address_str}")
+                    continue
 
-            if data_or_error is None:
-                logger.error(f"Address {address_key} was checked, but result is missing.")
-                db_updates_fail.append((next_check_time, user_id, address_id))
-                continue
+                if data_or_error is None:
+                    logger.error(f"Address {address_key} was checked, but result is missing.")
+                    db_updates_fail.append((next_check_time, user_id, address_id))
+                    continue
 
-            if "error" in data_or_error:
-                error_message = data_or_error['error']
-                final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
-                try:
-                    await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
-                except Exception as e:
-                    # Get user info for logging
+                if "error" in data_or_error:
+                    error_message = data_or_error['error']
+                    final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
                     try:
-                        user = await bot.get_chat(user_id)
-                        user_info = format_user_info(user)
-                    except:
-                        user_info = str(user_id)
-                    logger.error(f"Failed to send error message to user {user_info}: {e}")
+                        await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
+                    except Exception as e:
+                        logger.error(f"Failed to send error message: {e}")
 
-                db_updates_fail.append((next_check_time, user_id, address_id))
-                continue
+                    db_updates_fail.append((next_check_time, user_id, address_id))
+                    continue
 
-            data = data_or_error
-            last_hash = sub_data.get('last_schedule_hash')
-            new_hash = ADDRESS_CACHE[address_key]['last_schedule_hash']
+                data = data_or_error
+                last_hash = sub_data.get('last_schedule_hash')
+                new_hash = ADDRESS_CACHE[address_key]['last_schedule_hash']
 
-            # Check if there are real changes in schedule
-            schedule = data.get("schedule", {})
-            has_actual_schedule = any(slots for slots in schedule.values() if slots)
-            
-            # Log hash comparison for debugging
-            if last_hash and new_hash != last_hash:
-                logger.info(f"Hash changed for {address_str}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
-                # Log normalized schedule for deep debugging (only when hash changes)
-                if logger.level <= logging.DEBUG:
-                    from .bot_base import normalize_schedule_for_hash
-                    import json
-                    normalized = normalize_schedule_for_hash(data)
-                    logger.debug(f"Normalized schedule: {json.dumps(normalized, ensure_ascii=False, sort_keys=True)}")
-            
-            # Send notification only if:
-            # 1. Hash changed AND
-            # 2. There is actual schedule OR it's first check (last_hash in special values)
-            should_notify = (
-                new_hash != last_hash and 
-                (has_actual_schedule or last_hash in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"))
-            )
-            
-            if should_notify:
-                group = format_group_name(data.get("group"))
+                # Check if there are real changes in schedule
+                schedule = data.get("schedule", {})
+                has_actual_schedule = any(slots for slots in schedule.values() if slots)
                 
-                interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
-                update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
+                # Log hash comparison for debugging
+                if last_hash and new_hash != last_hash:
+                    logger.info(f"Hash changed for {address_str}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
+                    # Log normalized schedule for deep debugging (only when hash changes)
+                    if logger.level <= logging.DEBUG:
+                        from .bot_base import normalize_schedule_for_hash
+                        import json
+                        normalized = normalize_schedule_for_hash(data)
+                        logger.debug(f"Normalized schedule: {json.dumps(normalized, ensure_ascii=False, sort_keys=True)}")
                 
-                try:
-                    sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-                except ValueError:
-                    sorted_dates = sorted(schedule.keys())
-
-                # Generate diagram (24h or 48h)
-                has_shutdowns_tomorrow = False
-                if len(sorted_dates) >= 2:
-                    tomorrow_date = sorted_dates[1]
-                    if schedule.get(tomorrow_date):
-                        has_shutdowns_tomorrow = True
+                # Send notification only if:
+                # 1. Hash changed AND
+                # 2. There is actual schedule OR it's first check (last_hash in special values)
+                should_notify = (
+                    new_hash != last_hash and 
+                    (has_actual_schedule or last_hash in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"))
+                )
                 
-                image_data = None
-                diagram_caption = ""
-                filename = ""
-
-                kiev_tz = pytz.timezone('Europe/Kiev')
-                current_time = datetime.now(kiev_tz)
-
-                if has_shutdowns_tomorrow:
-                    # 48 hours
-                    days_slots_48h = {}
-                    for date in sorted_dates[:2]:
-                        days_slots_48h[date] = schedule.get(date, [])
+                if should_notify:
+                    group = format_group_name(data.get("group"))
                     
-                    if any(slots for slots in days_slots_48h.values()):
-                        image_data = generate_48h_image(days_slots_48h, font_path, current_time=current_time)
-                    diagram_caption = "🕙 **Загальний графік на 48 годин**"
-                    filename = "schedule_48h_update.png"
-                else:
-                    # 24 hours
-                    if sorted_dates:
-                        today_date = sorted_dates[0]
-                        today_slots = {today_date: schedule.get(today_date, [])}
-                        if schedule.get(today_date):
-                            image_data = generate_24h_image(today_slots, font_path, current_time=current_time)
-                            diagram_caption = "🕙 **Графік на сьогодні**"
-                            filename = "schedule_24h_update.png"
+                    interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
+                    update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
+                    
+                    try:
+                        sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
+                    except ValueError:
+                        sorted_dates = sorted(schedule.keys())
 
-                # Build message parts
-                message_parts = []
-                message_parts.append(f"{update_header}\nдля {address_str} (інтервал {interval_str})")
-                message_parts.append(f"🏠 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
-                
-                if diagram_caption:
-                    message_parts.append(diagram_caption)
-                
-                # Text data by days
-                for date in sorted_dates:
-                    slots = schedule[date]
-                    day_text = process_single_day_schedule_compact(date, slots, provider)
-                    if day_text and day_text.strip():
-                        message_parts.append(day_text.strip())
+                    # Generate diagram (24h or 48h)
+                    has_shutdowns_tomorrow = False
+                    if len(sorted_dates) >= 2:
+                        tomorrow_date = sorted_dates[1]
+                        if schedule.get(tomorrow_date):
+                            has_shutdowns_tomorrow = True
+                    
+                    image_data = None
+                    diagram_caption = ""
+                    filename = ""
 
-                # Status message
-                status_msg = get_current_status_message(schedule)
-                if status_msg:
-                    message_parts.append(status_msg)
-                
-                # Combine all parts
-                full_message = "\n\n".join(message_parts)
-                
-                # Send message with photo and caption
-                try:
-                    if image_data:
-                        # Telegram allows up to 1024 characters in caption
-                        if len(full_message) <= 1024:
-                            image_file = BufferedInputFile(image_data, filename=filename)
-                            await bot.send_photo(
-                                chat_id=user_id,
-                                photo=image_file,
-                                caption=full_message,
-                                parse_mode="Markdown"
-                            )
+                    kiev_tz = pytz.timezone('Europe/Kiev')
+                    current_time = datetime.now(kiev_tz)
+
+                    if has_shutdowns_tomorrow:
+                        # 48 hours
+                        days_slots_48h = {}
+                        for date in sorted_dates[:2]:
+                            days_slots_48h[date] = schedule.get(date, [])
+                        
+                        if any(slots for slots in days_slots_48h.values()):
+                            image_data = generate_48h_image(days_slots_48h, font_path, current_time=current_time)
+                        diagram_caption = "🕙 **Загальний графік на 48 годин**"
+                        filename = "schedule_48h_update.png"
+                    else:
+                        # 24 hours
+                        if sorted_dates:
+                            today_date = sorted_dates[0]
+                            today_slots = {today_date: schedule.get(today_date, [])}
+                            if schedule.get(today_date):
+                                image_data = generate_24h_image(today_slots, font_path, current_time=current_time)
+                                diagram_caption = "🕙 **Графік на сьогодні**"
+                                filename = "schedule_24h_update.png"
+
+                    # Build message parts
+                    message_parts = []
+                    message_parts.append(f"{update_header}\\nдля {address_str} (інтервал {interval_str})")
+                    message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\\n👥 Черга: `{group}`")
+                    
+                    if diagram_caption:
+                        message_parts.append(diagram_caption)
+                    
+                    # Text data by days
+                    for date in sorted_dates:
+                        slots = schedule[date]
+                        day_text = process_single_day_schedule_compact(date, slots, provider)
+                        if day_text and day_text.strip():
+                            message_parts.append(day_text.strip())
+
+                    # Status message
+                    status_msg = get_current_status_message(schedule)
+                    if status_msg:
+                        message_parts.append(status_msg)
+                    
+                    # Combine all parts
+                    full_message = "\\n\\n".join(message_parts)
+                    
+                    # Send message with photo and caption
+                    try:
+                        if image_data:
+                            # Telegram allows up to 1024 characters in caption
+                            if len(full_message) <= 1024:
+                                image_file = BufferedInputFile(image_data, filename=filename)
+                                await bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=image_file,
+                                    caption=full_message,
+                                    parse_mode="Markdown"
+                                )
+                            else:
+                                # Send photo with short caption and text separately
+                                short_caption = "\\n\\n".join(message_parts[:3])  # Header + address + diagram
+                                remaining_text = "\\n\\n".join(message_parts[3:])  # Rest
+                                
+                                image_file = BufferedInputFile(image_data, filename=filename)
+                                await bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=image_file,
+                                    caption=short_caption,
+                                    parse_mode="Markdown"
+                                )
+                                await bot.send_message(
+                                    chat_id=user_id,
+                                    text=remaining_text,
+                                    parse_mode="Markdown",
+                                    disable_notification=True
+                                )
                         else:
-                            # Send photo with short caption and text separately
-                            short_caption = "\n\n".join(message_parts[:3])  # Header + address + diagram
-                            remaining_text = "\n\n".join(message_parts[3:])  # Rest
-                            
-                            image_file = BufferedInputFile(image_data, filename=filename)
-                            await bot.send_photo(
-                                chat_id=user_id,
-                                photo=image_file,
-                                caption=short_caption,
-                                parse_mode="Markdown"
-                            )
+                            # No diagram - just send text
                             await bot.send_message(
                                 chat_id=user_id,
-                                text=remaining_text,
-                                parse_mode="Markdown",
-                                disable_notification=True
+                                text=full_message,
+                                parse_mode="Markdown"
                             )
-                    else:
-                        # No diagram - just send text
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text=full_message,
-                            parse_mode="Markdown"
-                        )
-                except Exception as e:
-                    logger.error(f"Failed to send update notification to user {user_id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to send update notification: {e}")
+                    
+                    db_updates_success.append((next_check_time, new_hash, user_id, address_id))
+                    logger.info(f"Notification sent. Hash updated to {new_hash[:8]}.")
+                else:
+                    logger.debug(f"Check for {address_str}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}, last: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash}).")
+                    db_updates_fail.append((next_check_time, user_id, address_id))
+            
+            finally:
+                # Always clear context after processing user
+                clear_user_context()
 
-                # Get user info for logging
-                try:
-                    user = await bot.get_chat(user_id)
-                    user_info = format_user_info(user)
-                except:
-                    user_info = str(user_id)
-                    
-                db_updates_success.append((next_check_time, new_hash, user_id, address_id))
-                logger.info(f"Notification sent to user {user_info}. Hash updated to {new_hash[:8]}.")
-            else:
-                # Get user info for logging
-                try:
-                    user = await bot.get_chat(user_id)
-                    user_info = format_user_info(user)
-                except:
-                    user_info = str(user_id)
-                    
-                logger.debug(f"User {user_info} check for {address_str}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}, last: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash}).")
-                db_updates_fail.append((next_check_time, user_id, address_id))
 
         try:
             if db_updates_success:

@@ -5,6 +5,7 @@ import sys
 import pytz
 from datetime import datetime
 from pathlib import Path
+from common.log_context import UserContextFilter
 
 def custom_time(*args):
     """Returns current time in Kyiv timezone for logging."""
@@ -15,7 +16,7 @@ def setup_logging(name: str, log_dir: str = None) -> logging.Logger:
     Setup logging with:
     1. StreamHandler (stdout)
     2. TimedRotatingFileHandler (daily rotation, keep 7 days) if log_dir is provided
-    3. Custom formatting with Kyiv time
+    3. Custom formatting with Kyiv time and user_id context
     4. Log level from LOG_LEVEL environment variable
     """
     logger = logging.getLogger(name)
@@ -27,16 +28,21 @@ def setup_logging(name: str, log_dir: str = None) -> logging.Logger:
     
     logger.propagate = False
     
-    # Common formatter
+    # Common formatter with user_id context
+    # %(user_id)s will be populated by UserContextFilter
     formatter = logging.Formatter(
-        '%(asctime)s EET | %(levelname)s:%(name)s:%(message)s',
+        '%(asctime)s EET | %(user_id)s%(levelname)s:%(name)s:%(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     formatter.converter = custom_time
     
+    # Add user context filter
+    user_filter = UserContextFilter()
+    
     # 1. Stream Handler (stdout)
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
+    stream_handler.addFilter(user_filter)
     
     # Remove existing handlers to avoid duplicates
     if logger.handlers:
@@ -63,10 +69,14 @@ def setup_logging(name: str, log_dir: str = None) -> logging.Logger:
                 encoding='utf-8'
             )
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(user_filter)
             file_handler.suffix = "%Y-%m-%d" # Suffix for rotated files: bot.log.2023-10-27
             logger.addHandler(file_handler)
         except (PermissionError, OSError) as e:
             # Fallback for when we cannot write to the log file (e.g. root-owned file from docker)
             print(f"Error setting up file logging to {filename}: {e}. Continuing with console logging only.", file=sys.stderr)
-        
+    
+    # Suppress noisy websocket logs (these appear when browser closes after parsing - normal behavior)
+    logging.getLogger('websocket').setLevel(logging.CRITICAL)
+    
     return logger

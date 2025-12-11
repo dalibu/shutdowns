@@ -108,7 +108,7 @@ async def handle_captcha_answer(message: types.Message, state: FSMContext, ctx: 
         HUMAN_USERS[user_id] = True
         await set_human_user(ctx.db_conn, user_id, message.from_user.username)
         await state.clear()
-        logger.info(f"CAPTCHA passed by user {user_info}")
+        logger.info("CAPTCHA passed")
         await message.answer(
             "✅ **Перевірка пройдена!**\n"
             "Тепер ви можете користуватися всіма функціями бота. Введіть **/start** ще раз, щоб побачити список команд.",
@@ -116,7 +116,7 @@ async def handle_captcha_answer(message: types.Message, state: FSMContext, ctx: 
         )
     else:
         await state.clear()
-        logger.info(f"CAPTCHA failed by user {user_info}")
+        logger.info("CAPTCHA failed")
         await message.answer(
             "❌ **Неправильна відповідь.** Спробуйте ще раз, ввівши **/start**."
         )
@@ -184,7 +184,7 @@ async def handle_alert(message: types.Message, ctx: BotContext) -> None:
             await message.answer(f"🔔 Сповіщення встановлено! Ви отримаєте повідомлення за **{minutes} хв.** до зміни статусу світла.")
 
     except Exception as e:
-        logger.error(f"Error setting alert for user {user_id}: {e}")
+        logger.error(f"Error setting alert: {e}")
         await message.answer("❌ Сталася помилка при збереженні налаштувань.")
 
 
@@ -205,7 +205,7 @@ async def handle_unsubscribe(message: types.Message, ctx: BotContext) -> None:
             sub = subscriptions[0]
             success = await remove_subscription_by_id(ctx.db_conn, sub['id'])
             if success:
-                logger.info(f"User {user_id} unsubscribed from {sub['city']}, {sub['street']}, {sub['house']}")
+                logger.info(f"Unsubscribed from {sub['city']}, {sub['street']}, {sub['house']}")
                 await message.answer(
                     f"🚫 **Підписку скасовано** для адреси: `{sub['city']}, {sub['street']}, {sub['house']}`"
                 )
@@ -219,7 +219,7 @@ async def handle_unsubscribe(message: types.Message, ctx: BotContext) -> None:
                 reply_markup=keyboard
             )
     except Exception as e:
-        logger.error(f"Failed to unsubscribe user {user_id}: {e}", exc_info=True)
+        logger.error(f"Failed to unsubscribe: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі скасувати підписку.")
 
 
@@ -258,7 +258,7 @@ async def handle_callback_unsubscribe(callback: CallbackQuery, ctx: BotContext) 
     try:
         if data == "all":
             count = await remove_all_subscriptions(ctx.db_conn, user_id)
-            logger.info(f"User {user_id} unsubscribed from all {count} subscriptions.")
+            logger.info(f"Unsubscribed from all {count} subscriptions.")
             await callback.message.edit_text(
                 f"🚫 **Всі підписки скасовано** ({count} шт.)"
             )
@@ -274,7 +274,7 @@ async def handle_callback_unsubscribe(callback: CallbackQuery, ctx: BotContext) 
                     city, street, house = sub['city'], sub['street'], sub['house']
                     remaining = len(subs) - 1
                     remaining_text = f"\n\n_Залишилось підписок: {remaining}_" if remaining > 0 else ""
-                    logger.info(f"User {user_id} unsubscribed from {city}, {street}, {house}")
+                    logger.info(f"Unsubscribed from {city}, {street}, {house}")
                     await callback.message.edit_text(
                         f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}"
                     )
@@ -351,7 +351,7 @@ async def handle_callback_address_delete(callback: CallbackQuery, ctx: BotContex
     success = await delete_user_address(ctx.db_conn, user_id, address_id)
     
     if success:
-        logger.info(f"User {user_id} deleted address: {city}, {street}, {house}")
+        logger.info(f"Deleted address: {city}, {street}, {house}")
         await callback.message.edit_text(
             f"🗑️ **Адресу видалено:** `{city}, {street}, {house}`"
         )
@@ -399,7 +399,7 @@ async def handle_process_address_rename(message: types.Message, state: FSMContex
     await state.clear()
     
     if success:
-        logger.info(f"User {user_id} renamed address {address_id} to '{new_alias}'")
+        logger.info(f"Renamed address {address_id} to '{new_alias}'")
         await message.answer(f"✅ **Адресу перейменовано** на: **{new_alias}**")
     else:
         await message.answer("❌ Не вдалося перейменувати адресу.")
@@ -464,7 +464,7 @@ async def send_schedule_response(
         if not schedule:
             # No schedule, only show outage warning if exists
             if outage_warning:
-                full_message = f"🏠 Адреса: `{city}, {street}, {house}`"
+                full_message = f"📍 Адреса: `{city}, {street}, {house}`"
                 if group != "невідомо":
                     full_message += f"\n👥 Черга: `{group}`"
                 full_message += f"\n\n{outage_warning}"
@@ -524,7 +524,7 @@ async def send_schedule_response(
 
         # Build message parts
         message_parts = []
-        message_parts.append(f"🏠 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+        message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
         
         # Add current outage warning if exists
         if outage_warning:
@@ -578,7 +578,7 @@ async def send_schedule_response(
             await message.answer(full_message, parse_mode="Markdown")
     
     except Exception as e:
-        logger.error(f"Error in send_schedule_response for user {message.from_user.id}: {e}", exc_info=True)
+        logger.error(f"Error in send_schedule_response: {e}", exc_info=True)
         await message.answer("❌ Сталася помілка під час формування відповіді.")
 
 
@@ -608,10 +608,10 @@ async def handle_start_command(
     logger = ctx.logger or logging.getLogger(__name__)
     provider = ctx.provider_name
     
-    logger.info(f"Command /start by user {user_info}")
+    logger.info("Command /start")
     
     if user_id not in HUMAN_USERS:
-        logger.info(f"CAPTCHA requested for user {user_info}")
+        logger.info("CAPTCHA requested")
         is_human = await captcha_check_func(message, state)
         if not is_human:
             return
@@ -726,7 +726,7 @@ async def handle_stats_command(
         csv_file = BufferedInputFile(csv_data, filename=filename)
         await message.answer_document(csv_file, caption="📁 Експорт користувачів")
         
-        logger.info(f"Stats requested by admin {user_id}")
+        logger.info("Stats requested (admin)")
 
     except Exception as e:
         logger.error(f"Error generating stats: {e}", exc_info=True)
@@ -803,7 +803,7 @@ async def handle_process_house(
         await message.answer(error_message)
     except Exception as e:
         await state.clear()
-        logger.error(f"Critical error during FSM address process for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Critical error during FSM address process: {e}", exc_info=True)
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 
@@ -844,7 +844,7 @@ async def handle_check_command(
         # Check if user has saved addresses
         addresses = await get_user_addresses(db_conn, user_id, limit=10)
         if addresses:
-            logger.info(f"Command /check (address selection) by user {user_info}, {len(addresses)} addresses")
+            logger.info(f"Command /check (address selection), {len(addresses)} addresses")
             keyboard = build_address_selection_keyboard(addresses, action="check", include_new_button=True)
             await message.answer(
                 "📍 **Оберіть адресу для перевірки** або додайте нову:",
@@ -852,7 +852,7 @@ async def handle_check_command(
             )
             return
         else:
-            logger.info(f"Command /check (FSM) by user {user_info}")
+            logger.info("Command /check (FSM)")
             await state.set_state(CheckAddressState.waiting_for_city)
             await message.answer(f"📍 **Будь ласка, введіть назву міста** (наприклад, `{example_city}`):")
             return
@@ -864,7 +864,7 @@ async def handle_check_command(
     await message.answer("⏳ Перевіряю графік за вказаною адресою. Очікуйте...")
     try:
         city, street, house = parse_address_from_text(text_args)
-        logger.info(f"Command /check by user {user_info} for address: {city}, {street}, {house}")
+        logger.info(f"Command /check for address: {city}, {street}, {house}")
         
         # Get or create address_id
         address_id, _ = await get_address_id(db_conn, city, street, house)
@@ -900,7 +900,7 @@ async def handle_check_command(
     except ConnectionError as e:
         await message.answer(f"❌ **Помилка підключення:** {e}")
     except Exception as e:
-        logger.error(f"Critical error in /check for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Critical error in /check: {e}", exc_info=True)
         await message.answer("❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 
@@ -946,12 +946,12 @@ async def handle_repeat_command(
             return
 
         city, street, house, group = row
-        logger.info(f"Command /repeat by user {user_info} for address: {city}, {street}, {house}")
+        logger.info(f"Command /repeat for address: {city}, {street}, {house}")
         
         await perform_check_func(message, user_id, city, street, house, group, is_repeat=True)
 
     except Exception as e:
-        logger.error(f"Error in /repeat for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Error in /repeat: {e}", exc_info=True)
         await message.answer("❌ Виникла помилка при повторенні перевірки.")
 
 
@@ -987,7 +987,7 @@ async def perform_address_check(
     user_info = format_user_info(message.from_user) if hasattr(message, 'from_user') and message.from_user else str(user_id)
     
     action = "repeat" if is_repeat else "check"
-    logger.info(f"Performing {action} for user {user_id} address: {city}, {street}, {house}")
+    logger.info(f"Performing {action} for address: {city}, {street}, {house}")
     
     address_str = f"`{city}, {street}, {house}`"
     prefix = "🔄 **Повторюю перевірку**" if is_repeat else "⏳ **Перевіряю графік**"
@@ -1007,7 +1007,7 @@ async def perform_address_check(
         current_hash = None
         
         if cached_group:
-            logger.debug(f"User {user_id} check: address [ID:{address_id}] belongs to group {cached_group}")
+            logger.debug(f"Check: address [ID:{address_id}] belongs to group {cached_group}")
             
             # Try to get from group cache
             group_cache = await get_group_cache(
@@ -1016,13 +1016,13 @@ async def perform_address_check(
             
             if group_cache:
                 # Use cached data
-                logger.info(f"User {user_id} check: using group cache for {cached_group}")
+                logger.info(f"Check: using group cache for {cached_group}")
                 data = group_cache['data']
                 current_hash = group_cache['hash']
         
         # Fetch from provider if cache miss or group unknown
         if data is None:
-            logger.debug(f"User {user_id} check: calling parser for {address_str}")
+            logger.debug(f"Check: calling parser for {address_str}")
             data = await get_shutdowns_data(city, street, house)
             current_hash = get_schedule_hash_compact(data)
             
@@ -1061,7 +1061,7 @@ async def perform_address_check(
         error_type = "Помилка вводу/помилка API" if isinstance(e, ValueError) else "Помилка"
         await message.answer(f"❌ **{error_type}:** {e}")
     except Exception as e:
-        logger.error(f"Critical error during {action} check for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Critical error during {action} check: {e}", exc_info=True)
         await message.answer(f"❌ Виникла непередбачена помилка. Спробуйте пізніше.")
 
 
@@ -1191,11 +1191,11 @@ async def handle_subscribe_command(
             return
         city, street, house, hash_from_check = row
     except Exception as e:
-        logger.error(f"Failed to fetch last_check from DB for user {user_id}: {e}")
+        logger.error(f"Failed to fetch last_check from DB: {e}")
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
         return
 
-    logger.info(f"Command /subscribe by user {user_info} for address: {city}, {street}, {house}")
+    logger.info(f"Command /subscribe for address: {city}, {street}, {house}")
     text_args = message.text.replace('/subscribe', '', 1).strip()
     interval_hours = DEFAULT_INTERVAL_HOURS
     if text_args:
@@ -1286,10 +1286,10 @@ async def handle_subscribe_command(
         )
         await db_conn.commit()
         
-        logger.info(f"User {user_id} subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Alert: {new_lead_time}m")
+        logger.info(f"Subscribed/updated to {city}, {street}, {house} with interval {interval_hours}h. Alert: {new_lead_time}m")
         created_msg = build_subscription_created_message(city, street, house, interval_display, new_lead_time, current_lead_time)
         await message.answer(created_msg)
         await update_user_activity(db_conn, user_id, username=message.from_user.username, city=city, street=street, house=house, group_name=group)
     except Exception as e:
-        logger.error(f"Failed to write subscription to DB for user {user_id}: {e}", exc_info=True)
+        logger.error(f"Failed to write subscription to DB: {e}", exc_info=True)
         await message.answer("❌ **Помилка БД** при спробі зберегти підписку.")

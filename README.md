@@ -183,7 +183,7 @@ The project supports a **pluggable data source architecture**, allowing provider
 - **Implementation**: Each provider implements its own data source (e.g., `dtek/data_source.py`).
 - **Configuration**: Controlled via `DATA_SOURCE_TYPE` environment variable.
 
-For detailed implementation guide, see [DATA_SOURCES.md](DATA_SOURCES.md).
+For detailed implementation guide, see [DATA_SOURCES.md](docs/DATA_SOURCES.md).
 
 ## Development
 

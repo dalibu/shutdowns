@@ -104,6 +104,9 @@ FONT_PATH = os.getenv("FONT_PATH", os.path.join(os.path.dirname(__file__), "..",
 # Logging
 from common.logging_config import setup_logging
 
+# User context for logging
+from common.middleware import UserContextMiddleware
+
 # Logging
 # Use LOG_DIR env or default to /logs (mapped to host volume)
 LOG_DIR = os.getenv("LOG_DIR", "/logs")
@@ -124,10 +127,16 @@ logger = setup_logging(__name__, log_dir=LOG_DIR)
 
 # Dispatcher
 dp = Dispatcher()
+
+# Register middleware for user context logging
+dp.message.middleware(UserContextMiddleware())
+dp.callback_query.middleware(UserContextMiddleware())
+
 db_conn = None
 
 # BotContext for common handlers
 ctx: BotContext = None
+
 
 def get_ctx() -> BotContext:
     """Get current BotContext with updated db_conn."""
