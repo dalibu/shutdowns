@@ -949,7 +949,7 @@ async def perform_address_check(
         # === GROUP CACHE OPTIMIZATION (with normalized addresses) ===
         # Get or create address_id
         address_id, cached_group = await get_address_id(
-            db_conn, ctx.provider_code, city, street, house
+            db_conn, city, street, house
         )
         
         if not address_id:
