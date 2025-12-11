@@ -429,7 +429,7 @@ async def subscription_checker_task(
 
                 if "error" in data_or_error:
                     error_message = data_or_error['error']
-                    final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
+                    final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
                     try:
                         await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
                     except Exception as e:
@@ -511,8 +511,8 @@ async def subscription_checker_task(
 
                     # Build message parts
                     message_parts = []
-                    message_parts.append(f"{update_header}\\nдля {address_str} (інтервал {interval_str})")
-                    message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\\n👥 Черга: `{group}`")
+                    message_parts.append(f"{update_header}\nдля {address_str} (інтервал {interval_str})")
+                    message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
                     
                     if diagram_caption:
                         message_parts.append(diagram_caption)
@@ -530,7 +530,7 @@ async def subscription_checker_task(
                         message_parts.append(status_msg)
                     
                     # Combine all parts
-                    full_message = "\\n\\n".join(message_parts)
+                    full_message = "\n\n".join(message_parts)
                     
                     # Send message with photo and caption
                     try:
@@ -546,8 +546,8 @@ async def subscription_checker_task(
                                 )
                             else:
                                 # Send photo with short caption and text separately
-                                short_caption = "\\n\\n".join(message_parts[:3])  # Header + address + diagram
-                                remaining_text = "\\n\\n".join(message_parts[3:])  # Rest
+                                short_caption = "\n\n".join(message_parts[:3])  # Header + address + diagram
+                                remaining_text = "\n\n".join(message_parts[3:])  # Rest
                                 
                                 image_file = BufferedInputFile(image_data, filename=filename)
                                 await bot.send_photo(
