@@ -16,6 +16,22 @@ from .bot_base import (
 logger = logging.getLogger(__name__)
 
 
+def format_group_name(group: Optional[str]) -> str:
+    """
+    Formats group name for display, replacing empty/undefined values with Ukrainian text.
+    
+    Args:
+        group: Group name from parser (e.g., "3.1", "1.6", None, "", "Н/Д")
+    
+    Returns:
+        Formatted group name or "невідомо" if undefined
+    """
+    if not group or group in ("Н/Д", "undefined", "null"):
+        return "невідомо"
+    return group.strip()
+
+
+
 def merge_consecutive_slots(schedule: Dict[str, List[Dict[str, Any]]]) -> Dict[str, List[Dict[str, Any]]]:
     """
     Merges consecutive shutdown slots into continuous periods.

@@ -24,7 +24,8 @@ class DtekParserDataSource(ShutdownDataSource):
                 street=data.get("street", ""),
                 house_num=data.get("house_num", ""),
                 group=data.get("group", ""),
-                schedule=data.get("schedule", {})
+                schedule=data.get("schedule", {}),
+                current_outage=data.get("current_outage")  # Pass through outage info
             )
         except Exception as e:
             logger.error(f"DTEK parser failed: {e}")

@@ -51,6 +51,7 @@ from common.bot_base import (
 from common.formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
+    format_group_name,
 )
 
 # ============================================================
@@ -329,7 +330,7 @@ async def handle_callback_address_info(callback: CallbackQuery, ctx: BotContext)
     alias_text = f"(**{address['alias']}**)" if address.get('alias') else ""
     await callback.message.answer(
         f"📍 **Адреса:** `{address['city']}, {address['street']}, {address['house']}` {alias_text}\n"
-        f"👥 **Черга:** {address.get('group_name') or 'Н/Д'}"
+        f"👥 **Черга:** {format_group_name(address.get('group_name'))}"
     )
 
 
@@ -435,7 +436,37 @@ async def send_schedule_response(
         city = api_data.get("city", "Н/Д")
         street = api_data.get("street", "Н/Д")
         house = api_data.get("house_num", "Н/Д")
-        group = api_data.get("group", "Н/Д")
+        group = format_group_name(api_data.get("group"))
+
+        # Check for current outage information
+        current_outage = api_data.get("current_outage")
+        if current_outage and current_outage.get("has_current_outage"):
+            # Format outage message
+            outage_message = f"🏠 Адреса: `{city}, {street}, {house}`"
+            if group != "невідомо":
+                outage_message += f"\n👥 Черга: `{group}`"
+            
+            outage_message += "\n\n⚡ **За вашою адресою зараз відсутня електроенергія**\n\n"
+            
+            # Add detailed information if available
+            if current_outage.get("reason"):
+                outage_message += f"🔧 **Причина:** {current_outage['reason']}\n"
+            
+            if current_outage.get("start_time"):
+                outage_message += f"⏰ **Час початку:** {current_outage['start_time']}\n"
+            
+            if current_outage.get("expected_restoration"):
+                outage_message += f"🔋 **Очікуваний час відновлення:** {current_outage['expected_restoration']}\n"
+            
+            if current_outage.get("update_time"):
+                outage_message += f"\n📅 _Дата оновлення: {current_outage['update_time']}_"
+            
+            # Add subscription suggestion if not subscribed
+            if not is_subscribed:
+                outage_message += "\n\n💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`."
+            
+            await message.answer(outage_message, parse_mode="Markdown")
+            return
 
         schedule = api_data.get("schedule", {})
         if not schedule:
@@ -443,6 +474,7 @@ async def send_schedule_response(
             if not is_subscribed:
                 await message.answer("💡 *Ви можете підписатися на автоматичні оновлення графіку для цієї адреси, використовуючи команду* `/subscribe`.")
             return
+
 
         # Sort dates
         try:

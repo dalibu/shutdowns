@@ -191,13 +191,75 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
             # Пауза после выбора для обработки зависимых полей
             time.sleep(1)
             
-            # Для последнего поля ждем появления таблицы
+            # Для последнего поля проверяем результаты
             if is_last:
-                logger.debug("Ожидание таблицы результатов...")
-                # Убрали time.sleep(5) - таблица должна появиться быстро
-                results_table = driver.select("#discon-fact > div.discon-fact-tables", wait=30)
-                if not results_table:
-                    raise Exception("Таблица результатов не появилась")
+                logger.debug("Ожидание результатов...")
+                # Даем время на загрузку результатов (таблица или showCurOutage)
+                time.sleep(2)
+
+        # Проверка на наличие текущего отключения (showCurOutage)
+        # ВАЖНО: проверяем ДО ожидания таблицы, т.к. при аварии таблицы нет!
+        current_outage_elem = driver.select("div#showCurOutage.active", wait=2)
+        if current_outage_elem:
+            logger.info("Обнаружено текущее отключение (showCurOutage)")
+            outage_text = current_outage_elem.text.strip()
+            
+            # Пытаемся распарсить детали из текста
+            outage_info = {
+                "has_current_outage": True,
+                "message": outage_text,
+                "reason": None,
+                "start_time": None,
+                "expected_restoration": None,
+                "update_time": None
+            }
+            
+            # Извлекаем детали с помощью регулярных выражений
+            reason_match = re.search(r'Причина:\s*(.+?)(?:<br>|\n|$)', outage_text)
+            if reason_match:
+                outage_info["reason"] = reason_match.group(1).strip()
+            
+            start_match = re.search(r'Час початку\s*–\s*(.+?)(?:<br>|\n|$)', outage_text)
+            if start_match:
+                outage_info["start_time"] = start_match.group(1).strip()
+            
+            restoration_match = re.search(r'Орієнтовний час відновлення електроенергії\s*–\s*(.+?)(?:<br>|\n|$)', outage_text)
+            if restoration_match:
+                outage_info["expected_restoration"] = restoration_match.group(1).strip()
+            
+            update_match = re.search(r'Дата оновлення інформації\s*–\s*(.+?)(?:<br>|\n|$)', outage_text)
+            if update_match:
+                outage_info["update_time"] = update_match.group(1).strip()
+            
+            # Получаем адрес
+            city_value = driver.select("input#city").get_attribute("value")
+            street_value = driver.select("input#street").get_attribute("value")
+            house_value = driver.select("input#house_num").get_attribute("value")
+            
+            # Пытаемся получить группу (может отсутствовать)
+            group_text = ""
+            try:
+                group_elem = driver.select("#discon_form #group-name > span", wait=2)
+                if group_elem:
+                    group_text = group_elem.text.replace("Черга", "").strip()
+            except:
+                logger.debug("Не удалось получить группу для текущего отключения")
+            
+            return {
+                "data": {
+                    "city": city_value,
+                    "street": street_value,
+                    "house_num": house_value,
+                    "group": group_text,
+                    "current_outage": outage_info,
+                    "schedule": {}
+                }
+            }
+
+        # Если нет текущего отключения, проверяем наличие таблицы расписания
+        results_table = driver.select("#discon-fact > div.discon-fact-tables", wait=5)
+        if not results_table:
+            raise Exception("Таблица результатов не появилась и нет информации о текущем отключении")
 
         # Сбор данных
         group_text = driver.get_text("#discon_form #group-name > span")

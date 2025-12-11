@@ -10,12 +10,13 @@ logger = logging.getLogger(__name__)
 class ShutdownSlot(TypedDict):
     shutdown: str  # Format: "HH:MM–HH:MM"
 
-class ScheduleData(TypedDict):
+class ScheduleData(TypedDict, total=False):
     city: str
     street: str
     house_num: str
     group: str
     schedule: Dict[str, List[ShutdownSlot]]  # Key: "dd.mm.yy"
+    current_outage: Optional[Dict[str, Any]]  # Optional: info about active outage
 
 # --- Abstract Base Class ---
 

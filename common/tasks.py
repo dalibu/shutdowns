@@ -35,6 +35,7 @@ from .bot_base import (
 from .formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
+    format_group_name,
 )
 
 
@@ -441,7 +442,7 @@ async def subscription_checker_task(
             )
             
             if should_notify:
-                group = data.get("group", "Н/Д")
+                group = format_group_name(data.get("group"))
                 
                 interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
                 update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
