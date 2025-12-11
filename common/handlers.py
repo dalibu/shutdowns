@@ -27,7 +27,7 @@ from common.bot_base import (
     update_user_activity,
     save_user_address,
     get_user_addresses,
-    get_address_by_id,
+    get_address_by_id,  # User address book function
     delete_user_address,
     rename_user_address,
     get_user_subscriptions,
@@ -40,6 +40,13 @@ from common.bot_base import (
     build_address_management_keyboard,
     get_schedule_hash_compact,
     parse_address_from_text,
+    get_group_cache,
+    update_group_cache,
+    get_group_for_address,
+    update_address_group_mapping,
+    get_address_id,  # New normalized function
+    update_address_group,  # New normalized function
+    get_address_data_by_id,  # Get address data from addresses table
 )
 from common.formatting import (
     process_single_day_schedule_compact,
@@ -657,10 +664,10 @@ async def handle_stats_command(
         # 2. User export CSV
         csv_buffer = io.StringIO()
         writer = csv.writer(csv_buffer)
-        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'last_city', 'last_street', 'last_house'])
+        writer.writerow(['user_id', 'username', 'first_seen', 'last_seen', 'last_city', 'last_street', 'last_house', 'last_group'])
         
         async with db_conn.execute(
-            "SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house FROM user_activity ORDER BY last_seen DESC"
+            "SELECT user_id, username, first_seen, last_seen, last_city, last_street, last_house, last_group FROM user_activity ORDER BY last_seen DESC"
         ) as cursor:
             async for row in cursor:
                 writer.writerow(row)
@@ -668,7 +675,13 @@ async def handle_stats_command(
         csv_buffer.seek(0)
         csv_data = csv_buffer.getvalue().encode('utf-8')
         
-        csv_file = BufferedInputFile(csv_data, filename=f"{provider.lower()}_users_export.csv")
+        # Generate filename with timestamp and latin prefix
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        timestamp = datetime.now(kiev_tz).strftime("%Y%m%d_%H%M%S")
+        filename_prefix = provider.lower().replace('дтек', 'dtek').replace('цек', 'cek')
+        filename = f"{filename_prefix}_users_export_{timestamp}.csv"
+        
+        csv_file = BufferedInputFile(csv_data, filename=filename)
         await message.answer_document(csv_file, caption="📁 Експорт користувачів")
         
         logger.info(f"Stats requested by admin {user_id}")
@@ -710,12 +723,23 @@ async def handle_process_house(
     await message.answer(f"✅ **Перевіряю графік** для адреси: {address_str}\n\n⏳ Очікуйте...")
 
     try:
+        # Get or create address_id
+        address_id, _ = await get_address_id(db_conn, city, street, house)
+        if not address_id:
+            raise Exception("Failed to get/create address")
+        
         api_data = await get_shutdowns_data(city, street, house)
         current_hash = get_schedule_hash_compact(api_data)
         group = api_data.get('group', None)
+        
+        # Update address group
+        if group:
+            await update_address_group(db_conn, address_id, group)
+        
+        # Save to user_last_check with address_id
         await db_conn.execute(
-            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, current_hash, group)
+            "INSERT OR REPLACE INTO user_last_check (user_id, address_id, last_hash) VALUES (?, ?, ?)",
+            (user_id, address_id, current_hash)
         )
         await db_conn.commit()
         await state.clear()
@@ -800,14 +824,23 @@ async def handle_check_command(
         city, street, house = parse_address_from_text(text_args)
         logger.info(f"Command /check by user {user_info} for address: {city}, {street}, {house}")
         
+        # Get or create address_id
+        address_id, _ = await get_address_id(db_conn, city, street, house)
+        if not address_id:
+            raise Exception("Failed to get/create address")
+        
         api_data = await get_shutdowns_data(city, street, house)
         current_hash = get_schedule_hash_compact(api_data)
         group = api_data.get('group', None)
         
-        # Save to user_last_check
+        # Update address group
+        if group:
+            await update_address_group(db_conn, address_id, group)
+        
+        # Save to user_last_check with address_id
         await db_conn.execute(
-            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, current_hash, group)
+            "INSERT OR REPLACE INTO user_last_check (user_id, address_id, last_hash) VALUES (?, ?, ?)",
+            (user_id, address_id, current_hash)
         )
         await db_conn.commit()
         
@@ -858,9 +891,12 @@ async def handle_repeat_command(
         return
 
     try:
-        async with db_conn.execute(
-            "SELECT city, street, house, group_name FROM user_last_check WHERE user_id = ?", (user_id,)
-        ) as cursor:
+        async with db_conn.execute("""
+            SELECT a.city, a.street, a.house, a.group_name
+            FROM user_last_check ulc
+            JOIN addresses a ON a.id = ulc.address_id
+            WHERE ulc.user_id = ?
+        """, (user_id,)) as cursor:
             row = await cursor.fetchone()
 
         if not row:
@@ -916,14 +952,55 @@ async def perform_address_check(
     await message.answer(f"{prefix} для: {address_str}...")
 
     try:
-        data = await get_shutdowns_data(city, street, house)
+        # === GROUP CACHE OPTIMIZATION (with normalized addresses) ===
+        # Get or create address_id
+        address_id, cached_group = await get_address_id(
+            db_conn, city, street, house
+        )
         
-        current_hash = get_schedule_hash_compact(data)
+        if not address_id:
+            raise Exception("Failed to get/create address_id")
+        
+        data = None
+        current_hash = None
+        
+        if cached_group:
+            logger.debug(f"User {user_id} check: address [ID:{address_id}] belongs to group {cached_group}")
+            
+            # Try to get from group cache
+            group_cache = await get_group_cache(
+                db_conn, cached_group, ctx.provider_code
+            )
+            
+            if group_cache:
+                # Use cached data
+                logger.info(f"User {user_id} check: using group cache for {cached_group}")
+                data = group_cache['data']
+                current_hash = group_cache['hash']
+        
+        # Fetch from provider if cache miss or group unknown
+        if data is None:
+            logger.debug(f"User {user_id} check: calling parser for {address_str}")
+            data = await get_shutdowns_data(city, street, house)
+            current_hash = get_schedule_hash_compact(data)
+            
+            # Update group cache
+            if data.get('group'):
+                await update_group_cache(
+                    db_conn, data['group'], ctx.provider_code,
+                    current_hash, data
+                )
+        
         new_group = data.get('group', group)
         
+        # Update address group in normalized table
+        if new_group:
+            await update_address_group(db_conn, address_id, new_group)
+        
+        # Save to user_last_check (now using address_id)
         await db_conn.execute(
-            "INSERT OR REPLACE INTO user_last_check (user_id, city, street, house, last_hash, group_name) VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, current_hash, new_group)
+            "INSERT OR REPLACE INTO user_last_check (user_id, address_id, last_hash) VALUES (?, ?, ?)",
+            (user_id, address_id, current_hash)
         )
         await db_conn.commit()
         
@@ -1114,10 +1191,12 @@ async def handle_subscribe_command(
         new_lead_time = 15
 
     try:
-        cursor = await db_conn.execute(
-            "SELECT last_schedule_hash, interval_hours FROM subscriptions WHERE user_id = ? AND city = ? AND street = ? AND house = ?", 
-            (user_id, city, street, house)
-        )
+        cursor = await db_conn.execute("""
+            SELECT s.last_schedule_hash, s.interval_hours
+            FROM subscriptions s
+            JOIN addresses a ON a.id = s.address_id
+            WHERE s.user_id = ? AND a.city = ? AND a.street = ? AND a.house = ?
+        """, (user_id, city, street, house))
         sub_row = await cursor.fetchone()
         if sub_row:
             hash_to_use = sub_row[0]

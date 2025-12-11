@@ -8,9 +8,9 @@ services:
     env_file:
       - .env
     environment:
-      - DTEK_BOT_TOKEN=${DTEK_BOT_TOKEN}
-      - DTEK_DB_PATH=/data/dtek_bot.db
-      - DTEK_FONT_PATH=/app/resources/DejaVuSans.ttf
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DB_PATH=/data/bot.db
+      - FONT_PATH=/app/resources/DejaVuSans.ttf
     volumes:
       - ../../dtek/data:/data
     networks:

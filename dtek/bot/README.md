@@ -132,9 +132,9 @@ docker-compose down
 pip install -r ../../requirements.txt
 
 # Run locally
-export DTEK_BOT_TOKEN="your_token"
-export DTEK_DB_PATH="./dtek_bot.db"
-export DTEK_FONT_PATH="../../resources/DejaVuSans.ttf"
+export BOT_TOKEN="your_token"
+export DB_PATH="./dtek_bot.db"
+export FONT_PATH="../../resources/DejaVuSans.ttf"
 python -m dtek.bot.bot
 ```
 

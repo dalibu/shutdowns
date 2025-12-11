@@ -218,23 +218,39 @@ async def save_user_address(
     kiev_tz = pytz.timezone('Europe/Kiev')
     now = datetime.now(kiev_tz)
     try:
-        # Try to insert, on conflict update last_used_at
+        # First, get or create address_id
+        cursor = await conn.execute("""
+            SELECT id FROM addresses
+            WHERE city = ? AND street = ? AND house = ?
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        
+        if row:
+            address_id = row[0]
+            # Update group if provided
+            if group_name:
+                await conn.execute("""
+                    UPDATE addresses SET group_name = ?, updated_at = ?
+                    WHERE id = ?
+                """, (group_name, now, address_id))
+        else:
+            # Create new address
+            cursor = await conn.execute("""
+                INSERT INTO addresses (provider, city, street, house, group_name, created_at, updated_at)
+                VALUES ('unknown', ?, ?, ?, ?, ?, ?)
+            """, (city, street, house, group_name, now, now))
+            address_id = cursor.lastrowid
+        
+        # Now save/update in user_addresses
         await conn.execute("""
-            INSERT INTO user_addresses (user_id, city, street, house, group_name, last_used_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, city, street, house) DO UPDATE SET
-                last_used_at = excluded.last_used_at,
-                group_name = COALESCE(excluded.group_name, group_name)
-        """, (user_id, city, street, house, group_name, now))
+            INSERT INTO user_addresses (user_id, address_id, last_used_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, address_id) DO UPDATE SET
+                last_used_at = excluded.last_used_at
+        """, (user_id, address_id, now))
         await conn.commit()
         
-        # Get the ID
-        cursor = await conn.execute(
-            "SELECT id FROM user_addresses WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
-            (user_id, city, street, house)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else -1
+        return address_id
     except Exception as e:
         logging.error(f"Failed to save user address: {e}")
         return -1
@@ -253,10 +269,11 @@ async def get_user_addresses(
     
     try:
         cursor = await conn.execute("""
-            SELECT id, alias, city, street, house, group_name, last_used_at
-            FROM user_addresses
-            WHERE user_id = ?
-            ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+            SELECT ua.id, ua.alias, a.city, a.street, a.house, a.group_name, ua.last_used_at
+            FROM user_addresses ua
+            JOIN addresses a ON a.id = ua.address_id
+            WHERE ua.user_id = ?
+            ORDER BY ua.last_used_at DESC NULLS LAST, ua.created_at DESC
             LIMIT ?
         """, (user_id, limit))
         rows = await cursor.fetchall()
@@ -264,7 +281,7 @@ async def get_user_addresses(
         return [
             {
                 'id': row[0],
-                'alias': row[1],
+                'alias': row[1] if row[1] else None,
                 'city': row[2],
                 'street': row[3],
                 'house': row[4],
@@ -288,9 +305,10 @@ async def get_address_by_id(
     
     try:
         cursor = await conn.execute("""
-            SELECT id, alias, city, street, house, group_name
-            FROM user_addresses
-            WHERE id = ? AND user_id = ?
+            SELECT ua.id, ua.alias, a.city, a.street, a.house, a.group_name
+            FROM user_addresses ua
+            JOIN addresses a ON a.id = ua.address_id
+            WHERE ua.id = ? AND ua.user_id = ?
         """, (address_id, user_id))
         row = await cursor.fetchone()
         
@@ -305,7 +323,7 @@ async def get_address_by_id(
             }
         return None
     except Exception as e:
-        logging.error(f"Failed to get address by id: {e}")
+        logging.error(f"Failed to get address by ID: {e}")
         return None
 
 async def delete_user_address(
@@ -360,10 +378,11 @@ async def get_user_subscriptions(
     
     try:
         cursor = await conn.execute("""
-            SELECT id, city, street, house, interval_hours, notification_lead_time, group_name
-            FROM subscriptions
-            WHERE user_id = ?
-            ORDER BY id
+            SELECT s.id, a.city, a.street, a.house, s.interval_hours, s.notification_lead_time, a.group_name
+            FROM subscriptions s
+            JOIN addresses a ON a.id = s.address_id
+            WHERE s.user_id = ?
+            ORDER BY s.id
         """, (user_id,))
         rows = await cursor.fetchall()
         
@@ -410,8 +429,9 @@ async def is_address_subscribed(
     
     try:
         cursor = await conn.execute("""
-            SELECT 1 FROM subscriptions
-            WHERE user_id = ? AND city = ? AND street = ? AND house = ?
+            SELECT 1 FROM subscriptions s
+            JOIN addresses a ON a.id = s.address_id
+            WHERE s.user_id = ? AND a.city = ? AND a.street = ? AND a.house = ?
         """, (user_id, city, street, house))
         row = await cursor.fetchone()
         return row is not None
@@ -433,7 +453,10 @@ async def remove_subscription(
     try:
         cursor = await conn.execute("""
             DELETE FROM subscriptions
-            WHERE user_id = ? AND city = ? AND street = ? AND house = ?
+            WHERE user_id = ? AND address_id IN (
+                SELECT id FROM addresses
+                WHERE city = ? AND street = ? AND house = ?
+            )
         """, (user_id, city, street, house))
         await conn.commit()
         return cursor.rowcount > 0
@@ -452,10 +475,12 @@ async def remove_subscription_by_id(
     
     try:
         # First get the address info
-        cursor = await conn.execute(
-            "SELECT city, street, house FROM subscriptions WHERE id = ? AND user_id = ?",
-            (subscription_id, user_id)
-        )
+        cursor = await conn.execute("""
+            SELECT a.city, a.street, a.house
+            FROM subscriptions s
+            JOIN addresses a ON a.id = s.address_id
+            WHERE s.id = ? AND s.user_id = ?
+        """, (subscription_id, user_id))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -611,6 +636,452 @@ def get_schedule_hash_compact(data: dict) -> str:
     
     # Хешируем полученную строку
     return hashlib.sha256(schedule_json_string.encode('utf-8')).hexdigest()
+
+# --- Group Schedule Cache Functions ---
+# Cache time-to-live in minutes
+GROUP_CACHE_TTL_MINUTES = 15
+
+async def get_group_cache(
+    conn: aiosqlite.Connection,
+    group_name: str,
+    provider: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Get cached schedule data for a group if available and fresh.
+    
+    Args:
+        conn: Database connection
+        group_name: Group identifier (e.g., "3.1", "5.2")
+        provider: Provider code ("dtek" or "cek")
+    
+    Returns:
+        Dict with 'data' (parsed JSON) and 'hash' if cache is fresh, None otherwise
+    """
+    if not conn or not group_name:
+        return None
+    
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT last_schedule_hash, schedule_data, last_updated
+            FROM group_schedule_cache
+            WHERE group_name = ? AND provider = ?
+        """, (group_name, provider))
+        row = await cursor.fetchone()
+        
+        if not row:
+            return None
+        
+        last_hash, schedule_json, last_updated = row
+        
+        # Parse last_updated timestamp
+        try:
+            last_updated_dt = datetime.fromisoformat(last_updated)
+            if last_updated_dt.tzinfo is None:
+                last_updated_dt = kiev_tz.localize(last_updated_dt)
+        except:
+            return None
+        
+        # Check if cache is still fresh
+        age_minutes = (now - last_updated_dt).total_seconds() / 60
+        if age_minutes > GROUP_CACHE_TTL_MINUTES:
+            logging.debug(f"Group cache for {group_name} ({provider}) is stale ({age_minutes:.1f} min old)")
+            return None
+        
+        # Parse schedule data
+        try:
+            schedule_data = json.loads(schedule_json) if schedule_json else {}
+        except:
+            return None
+        
+        logging.info(f"Using group cache for {group_name} ({provider}), age: {age_minutes:.1f} min")
+        return {
+            'data': schedule_data,
+            'hash': last_hash
+        }
+    except Exception as e:
+        logging.error(f"Failed to get group cache: {e}")
+        return None
+
+
+async def update_group_cache(
+    conn: aiosqlite.Connection,
+    group_name: str,
+    provider: str,
+    schedule_hash: str,
+    schedule_data: Dict[str, Any]
+) -> bool:
+    """
+    Update or insert group schedule cache.
+    
+    Args:
+        conn: Database connection
+        group_name: Group identifier
+        provider: Provider code ("dtek" or "cek")
+        schedule_hash: Computed hash of the schedule
+        schedule_data: Full schedule data dict
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if not conn or not group_name:
+        return False
+    
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
+    
+    try:
+        # Serialize schedule data to JSON
+        schedule_json = json.dumps(schedule_data, ensure_ascii=False)
+        
+        await conn.execute("""
+            INSERT INTO group_schedule_cache (group_name, provider, last_schedule_hash, schedule_data, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(group_name, provider) DO UPDATE SET
+                last_schedule_hash = excluded.last_schedule_hash,
+                schedule_data = excluded.schedule_data,
+                last_updated = excluded.last_updated
+        """, (group_name, provider, schedule_hash, schedule_json, now))
+        await conn.commit()
+        
+        logging.debug(f"Updated group cache for {group_name} ({provider}), hash: {schedule_hash[:16]}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to update group cache: {e}")
+        return False
+
+
+async def get_cached_group_for_address(
+    conn: aiosqlite.Connection,
+    city: str,
+    street: str,
+    house: str
+) -> Optional[str]:
+    """
+    Get cached group name for an address from subscriptions or user_last_check.
+    
+    This checks both tables to find if we've previously determined the group
+    for this address, avoiding a full parser call just to get the group.
+    
+    Returns:
+        Group name string if found, None otherwise
+    """
+    if not conn:
+        return None
+    
+    try:
+        # Try subscriptions first (most reliable)
+        cursor = await conn.execute("""
+            SELECT group_name FROM subscriptions
+            WHERE city = ? AND street = ? AND house = ?
+            AND group_name IS NOT NULL
+            LIMIT 1
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        
+        # Try user_last_check as fallback
+        cursor = await conn.execute("""
+            SELECT group_name FROM user_last_check
+            WHERE city = ? AND street = ? AND house = ?
+            AND group_name IS NOT NULL
+            LIMIT 1
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Failed to get cached group for address: {e}")
+        return None
+
+
+async def get_address_id(
+    conn: aiosqlite.Connection,
+    city: str,
+    street: str,
+    house: str,
+    provider: str = 'unknown'  # Optional since each DB has only one provider
+) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Get or create address_id for given address.
+    
+    This is the main function for working with addresses after normalization.
+    Returns address ID and cached group name.
+    
+    Note: provider parameter is optional/ignored since each bot database only contains one provider.
+    
+    Args:
+        conn: Database connection
+        city: City name
+        street: Street name
+        house: House number
+        provider: Provider code (optional, defaults to 'unknown')
+    
+    Returns:
+        Tuple of (address_id, group_name) if found/created, (None, None) on error
+    """
+    if not conn:
+        return None, None
+    
+    try:
+        # Try to find existing address (no provider filter - each DB has only one provider anyway)
+        cursor = await conn.execute("""
+            SELECT id, group_name FROM addresses
+            WHERE city = ? AND street = ? AND house = ?
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        
+        if row:
+            return row[0], row[1]  # (address_id, group_name)
+        
+        # Create new address if not found
+        cursor = await conn.execute("""
+            INSERT INTO addresses (provider, city, street, house, created_at, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, (provider, city, street, house))
+        await conn.commit()
+        
+        address_id = cursor.lastrowid
+        logging.debug(f"Created new address {address_id}: {city}, {street}, {house}")
+        return address_id, None
+        
+    except Exception as e:
+        logging.error(f"Failed to get/create address: {e}")
+        return None, None
+
+
+async def update_address_group(
+    conn: aiosqlite.Connection,
+    address_id: int,
+    group_name: str
+) -> bool:
+    """
+    Update group name for an address.
+    
+    This is now the single source of truth for address group information.
+    Replaces update_address_group_mapping().
+    
+    Args:
+        conn: Database connection
+        address_id: Address ID from addresses table
+        group_name: Group identifier
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if not conn or not address_id or not group_name:
+        return False
+    
+    import pytz
+    kiev_tz = pytz.timezone('Europe/Kiev')
+    now = datetime.now(kiev_tz)
+    
+    try:
+        await conn.execute("""
+            UPDATE addresses 
+            SET group_name = ?, updated_at = ?
+            WHERE id = ?
+        """, (group_name, now, address_id))
+        await conn.commit()
+        
+        logging.debug(f"Updated group for address {address_id} -> {group_name}")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to update address group: {e}")
+        return False
+
+
+async def get_address_data_by_id(
+    conn: aiosqlite.Connection,
+    address_id: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Get full address information by ID.
+    
+    Args:
+        conn: Database connection
+        address_id: Address ID
+    
+    Returns:
+        Dict with address info or None
+    """
+    if not conn or not address_id:
+        return None
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT id, provider, city, street, house, group_name
+            FROM addresses
+            WHERE id = ?
+        """, (address_id,))
+        row = await cursor.fetchone()
+        
+        if row:
+            return {
+                'id': row[0],
+                'provider': row[1],
+                'city': row[2],
+                'street': row[3],
+                'house': row[4],
+                'group_name': row[5]
+            }
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get address by ID: {e}")
+        return None
+
+
+async def find_addresses_by_group(
+    conn: aiosqlite.Connection,
+    provider: str,
+    group_name: str,
+    limit: int = 10
+) -> List[Dict[str, str]]:
+    """
+    Find addresses that belong to a specific group.
+    
+    This enables the future feature where users can search by group number.
+    Now uses the normalized addresses table.
+    
+    Args:
+        conn: Database connection
+        provider: Provider code ("dtek" or "cek")
+        group_name: Group identifier to search for
+        limit: Maximum number of results
+    
+    Returns:
+        List of dicts with 'id', 'city', 'street', 'house', 'updated_at'
+    """
+    if not conn or not group_name:
+        return []
+    
+    try:
+        cursor = await conn.execute("""
+            SELECT id, city, street, house, updated_at
+            FROM addresses
+            WHERE provider = ? AND group_name = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+        """, (provider, group_name, limit))
+        rows = await cursor.fetchall()
+        
+        return [
+            {
+                'id': row[0],
+                'city': row[1],
+                'street': row[2],
+                'house': row[3],
+                'updated_at': row[4]
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Failed to find addresses by group: {e}")
+        return []
+
+
+# --- DEPRECATED FUNCTIONS (kept for backward compatibility during migration) ---
+
+async def update_address_group_mapping(
+    conn: aiosqlite.Connection,
+    provider: str,
+    city: str,
+    street: str,
+    house: str,
+    group_name: str
+) -> bool:
+    """
+    DEPRECATED: Use get_address_id() + update_address_group() instead.
+    
+    Kept for backward compatibility during migration.
+    This function now updates the addresses table instead of address_group_mapping.
+    """
+    address_id, _ = await get_address_id(conn, city, street, house)
+    if address_id:
+        return await update_address_group(conn, address_id, group_name)
+    return False
+
+
+async def get_cached_group_for_address(
+    conn: aiosqlite.Connection,
+    city: str,
+    street: str,
+    house: str
+) -> Optional[str]:
+    """
+    DEPRECATED: Use get_address_id() instead.
+    
+    Get cached group name for an address from subscriptions or user_last_check.
+    Kept for backward compatibility, but now checks addresses table first.
+    """
+    if not conn:
+        return None
+    
+    try:
+        # Try addresses first (new normalized table)
+        cursor = await conn.execute("""
+            SELECT group_name FROM addresses
+            WHERE city = ? AND street = ? AND house = ?
+            AND group_name IS NOT NULL
+            LIMIT 1
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        
+        # Fallback to subscriptions (for safety during migration)
+        cursor = await conn.execute("""
+            SELECT a.group_name FROM subscriptions s
+            JOIN addresses a ON a.id = s.address_id
+            WHERE a.city = ? AND a.street = ? AND a.house = ?
+            AND a.group_name IS NOT NULL
+            LIMIT 1
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        
+        # Fallback to user_last_check
+        cursor = await conn.execute("""
+            SELECT a.group_name FROM user_last_check ulc
+            JOIN addresses a ON a.id = ulc.address_id
+            WHERE a.city = ? AND a.street = ? AND a.house = ?
+            AND a.group_name IS NOT NULL
+            LIMIT 1
+        """, (city, street, house))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return row[0]
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Failed to get cached group for address: {e}")
+        return None
+
+
+async def get_group_for_address(
+    conn: aiosqlite.Connection,
+    provider: str,
+    city: str,
+    street: str,
+    house: str
+) -> Optional[str]:
+    """
+    DEPRECATED: Use get_address_id() instead (returns both ID and group).
+    
+    Get group name for an address.
+    Kept for backward compatibility - now just wraps get_address_id().
+    """
+    _, group_name = await get_address_id(conn, city, street, house)
+    return group_name
+
 
 # --- CAPTCHA Functions ---
 def get_captcha_data() -> Tuple[str, int]:

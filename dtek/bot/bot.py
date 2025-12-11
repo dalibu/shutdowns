@@ -40,7 +40,7 @@ from common.bot_base import (
     # Multi-address functions
     save_user_address,
     get_user_addresses,
-    get_address_by_id,
+    get_address_data_by_id,
     delete_user_address,
     rename_user_address,
     get_user_subscriptions,
@@ -97,9 +97,9 @@ from dtek.data_source import get_data_source
 
 # --- Configuration ---
 PROVIDER = "ДТЕК"
-BOT_TOKEN = os.getenv("DTEK_BOT_TOKEN")
-DB_PATH = os.getenv("DTEK_DB_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "bot.db"))
-FONT_PATH = os.getenv("DTEK_FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "data", "bot.db"))
+FONT_PATH = os.getenv("FONT_PATH", os.path.join(os.path.dirname(__file__), "..", "resources", "DejaVuSans.ttf"))
 
 # Logging
 logger = logging.getLogger(__name__)
@@ -340,7 +340,7 @@ async def set_default_commands(bot: Bot):
 async def main():
     global db_conn
     if not BOT_TOKEN:
-        logger.error("DTEK_BOT_TOKEN is not set. Exiting.")
+        logger.error("BOT_TOKEN is not set. Exiting.")
         return
 
     default_properties = DefaultBotProperties(

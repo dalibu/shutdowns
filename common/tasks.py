@@ -22,6 +22,15 @@ from .bot_base import (
     get_hours_str,
     format_user_info,
     parse_time_range,
+    get_group_cache,
+    update_group_cache,
+    get_cached_group_for_address,
+    get_group_for_address,
+    update_address_group_mapping,
+    find_addresses_by_group,
+    get_address_id,  # New normalized function
+    update_address_group,  # New normalized function
+    get_address_by_id,  # New normalized function
 )
 from .formatting import (
     process_single_day_schedule_compact,
@@ -169,9 +178,12 @@ async def alert_checker_task(
         now = datetime.now(kiev_tz)
 
         try:
-            cursor = await db_conn.execute(
-                "SELECT user_id, city, street, house, notification_lead_time, last_alert_event_start FROM subscriptions WHERE notification_lead_time > 0"
-            )
+            cursor = await db_conn.execute("""
+                SELECT s.user_id, a.city, a.street, a.house, s.notification_lead_time, s.last_alert_event_start
+                FROM subscriptions s
+                JOIN addresses a ON a.id = s.address_id
+                WHERE s.notification_lead_time > 0
+            """)
             rows = await cursor.fetchall()
             
             if rows:
@@ -243,10 +255,12 @@ async def subscription_checker_task(
         now = datetime.now(kiev_tz)
         users_to_check = []
         try:
-            cursor = await db_conn.execute(
-                "SELECT user_id, city, street, house, interval_hours, last_schedule_hash FROM subscriptions WHERE next_check <= ?",
-                (now,)
-            )
+            cursor = await db_conn.execute("""
+                SELECT s.user_id, a.city, a.street, a.house, s.interval_hours, s.last_schedule_hash
+                FROM subscriptions s
+                JOIN addresses a ON a.id = s.address_id
+                WHERE s.next_check <= ?
+            """, (now,))
             rows = await cursor.fetchall()
             if not rows:
                 logger.debug("Subscription check skipped: no users require check.")
@@ -281,33 +295,70 @@ async def subscription_checker_task(
         for address_key in addresses_to_check_map.keys():
             city, street, house = address_key
             address_str = f"`{city}, {street}, {house}`"
+            
             try:
-                logger.debug(f"Calling parser for address {address_str}")
+                # === GROUP CACHE OPTIMIZATION (with normalized addresses) ===
+                # Step 1: Get address_id and cached group
+                address_id, cached_group = await get_address_id(
+                    db_conn, city, street, house
+                )
                 
-                # Try to get cached group if function provided (CEK optimization)
-                cached_group = None
-                if get_cached_group:
-                    try:
-                        cached_group = await get_cached_group(db_conn, city, street, house)
-                        if cached_group:
-                            logger.info(f"Using cached group for subscription check: {cached_group}")
-                    except Exception:
-                        pass
+                data = None
+                current_hash = None
+                used_cache = False
                 
-                # Call data fetch function with or without cached_group
-                if cached_group and get_cached_group:
-                    data = await get_shutdowns_data(city, street, house, cached_group)
-                else:
-                    data = await get_shutdowns_data(city, street, house)
+                if address_id and cached_group:
+                    logger.debug(f"Address {address_str} [ID:{address_id}] belongs to group {cached_group}")
                     
-                current_hash = get_schedule_hash_compact(data)
+                    # Step 2: Try to get schedule from group cache
+                    group_cache = await get_group_cache(
+                        db_conn, cached_group, ctx.provider_code
+                    )
+                    
+                    if group_cache:
+                        # Cache hit! Use cached data
+                        logger.info(f"✓ Cache HIT for {address_str}, group {cached_group} (age: fresh)")
+                        data = group_cache['data']
+                        current_hash = group_cache['hash']
+                        used_cache = True
+                    else:
+                        # Cache miss or stale - need to fetch from provider
+                        logger.info(f"✗ Cache MISS for {address_str}, group {cached_group} (stale or not found)")
+                
+                # Step 3: Fetch from provider if needed
+                if data is None:
+                    logger.debug(f"Calling parser for address {address_str}")
+                    
+                    # Use cached_group if available (CEK optimization for parser)
+                    if cached_group and get_cached_group:
+                        data = await get_shutdowns_data(city, street, house, cached_group)
+                    else:
+                        data = await get_shutdowns_data(city, street, house)
+                    
+                    current_hash = get_schedule_hash_compact(data)
+                    
+                    # Step 4: Update group cache with fresh data
+                    if data.get('group'):
+                        group_from_parser = data['group']
+                        await update_group_cache(
+                            db_conn, group_from_parser, ctx.provider_code,
+                            current_hash, data
+                        )
+                        logger.debug(f"Updated group cache for {group_from_parser}")
+                
+                # Step 5: Update address group in normalized table
+                if address_id and data and data.get('group'):
+                    await update_address_group(db_conn, address_id, data['group'])
+                
                 
                 # Log parser results for debugging
-                schedule = data.get("schedule", {})
+                schedule = data.get("schedule", {}) if data else {}
                 if logger.level <= logging.DEBUG:
                     import json
-                    logger.debug(f"Parser returned for {address_str}: hash={current_hash[:16]}, schedule={json.dumps(schedule, ensure_ascii=False)}")
+                    cache_status = "CACHE" if used_cache else "PARSER"
+                    logger.debug(f"{cache_status} returned for {address_str}: hash={current_hash[:16] if current_hash else 'None'}, schedule={json.dumps(schedule, ensure_ascii=False)}")
                 
+                # Update in-memory caches
                 ADDRESS_CACHE[address_key] = {
                     'last_schedule_hash': current_hash,
                     'last_checked': now
@@ -315,6 +366,7 @@ async def subscription_checker_task(
                 SCHEDULE_DATA_CACHE[address_key] = data
                 
                 api_results[address_key] = data
+                
             except Exception as e:
                 logger.error(f"Error checking address {address_str}: {e}")
                 api_results[address_key] = {"error": str(e)}
@@ -333,10 +385,16 @@ async def subscription_checker_task(
             interval_delta = timedelta(hours=interval_hours)
             next_check_time = now + interval_delta
             data_or_error = api_results.get(address_key)
+            
+            # Get address_id for this subscription
+            address_id, _ = await get_address_id(db_conn, city, street, house)
+            if not address_id:
+                logger.error(f"Failed to get address_id for {address_str}")
+                continue
 
             if data_or_error is None:
                 logger.error(f"Address {address_key} was checked, but result is missing.")
-                db_updates_fail.append((next_check_time, user_id, city, street, house))
+                db_updates_fail.append((next_check_time, user_id, address_id))
                 continue
 
             if "error" in data_or_error:
@@ -353,7 +411,7 @@ async def subscription_checker_task(
                         user_info = str(user_id)
                     logger.error(f"Failed to send error message to user {user_info}: {e}")
 
-                db_updates_fail.append((next_check_time, user_id, city, street, house))
+                db_updates_fail.append((next_check_time, user_id, address_id))
                 continue
 
             data = data_or_error
@@ -497,7 +555,7 @@ async def subscription_checker_task(
                 except:
                     user_info = str(user_id)
                     
-                db_updates_success.append((next_check_time, new_hash, user_id, city, street, house))
+                db_updates_success.append((next_check_time, new_hash, user_id, address_id))
                 logger.info(f"Notification sent to user {user_info}. Hash updated to {new_hash[:8]}.")
             else:
                 # Get user info for logging
@@ -508,19 +566,21 @@ async def subscription_checker_task(
                     user_info = str(user_id)
                     
                 logger.debug(f"User {user_info} check for {address_str}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}, last: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash}).")
-                db_updates_fail.append((next_check_time, user_id, city, street, house))
+                db_updates_fail.append((next_check_time, user_id, address_id))
 
         try:
             if db_updates_success:
-                await db_conn.executemany(
-                    "UPDATE subscriptions SET next_check = ?, last_schedule_hash = ? WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
-                    db_updates_success
-                )
+                await db_conn.executemany("""
+                    UPDATE subscriptions 
+                    SET next_check = ?, last_schedule_hash = ? 
+                    WHERE user_id = ? AND address_id = ?
+                """, db_updates_success)
             if db_updates_fail:
-                 await db_conn.executemany(
-                    "UPDATE subscriptions SET next_check = ? WHERE user_id = ? AND city = ? AND street = ? AND house = ?",
-                    db_updates_fail
-                )
+                await db_conn.executemany("""
+                    UPDATE subscriptions 
+                    SET next_check = ? 
+                    WHERE user_id = ? AND address_id = ?
+                """, db_updates_fail)
             await db_conn.commit()
             logger.debug(f"DB updated for {len(db_updates_success)} success and {len(db_updates_fail)} other checks.")
         except Exception as e:
