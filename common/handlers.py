@@ -675,7 +675,13 @@ async def handle_stats_command(
         csv_buffer.seek(0)
         csv_data = csv_buffer.getvalue().encode('utf-8')
         
-        csv_file = BufferedInputFile(csv_data, filename=f"{provider.lower()}_users_export.csv")
+        # Generate filename with timestamp and latin prefix
+        kiev_tz = pytz.timezone('Europe/Kiev')
+        timestamp = datetime.now(kiev_tz).strftime("%Y%m%d_%H%M%S")
+        filename_prefix = provider.lower().replace('дтек', 'dtek').replace('цек', 'cek')
+        filename = f"{filename_prefix}_users_export_{timestamp}.csv"
+        
+        csv_file = BufferedInputFile(csv_data, filename=filename)
         await message.answer_document(csv_file, caption="📁 Експорт користувачів")
         
         logger.info(f"Stats requested by admin {user_id}")
