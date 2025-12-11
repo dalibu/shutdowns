@@ -68,7 +68,7 @@ async def _process_alert_for_user(
         data = SCHEDULE_DATA_CACHE.get(address_key)
         
         if not data:
-            logger.debug(f"Alert check: no data in cache for address {address_key}")
+            logger.debug(f"Alert check skipped: no schedule data in cache yet for {address_key} (subscription not checked yet or bot restarted)")
             return None
         
         schedule = data.get("schedule", {})
