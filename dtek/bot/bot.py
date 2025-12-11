@@ -40,7 +40,7 @@ from common.bot_base import (
     # Multi-address functions
     save_user_address,
     get_user_addresses,
-    get_address_by_id,
+    get_address_data_by_id,
     delete_user_address,
     rename_user_address,
     get_user_subscriptions,
