@@ -141,9 +141,9 @@ docker-compose down
 pip install -r ../../requirements.txt
 
 # Run locally
-export CEK_BOT_TOKEN="your_token"
-export CEK_DB_PATH="./cek_bot.db"
-export CEK_FONT_PATH="../../resources/DejaVuSans.ttf"
+export BOT_TOKEN="your_token"
+export DB_PATH="./cek_bot.db"
+export FONT_PATH="../../resources/DejaVuSans.ttf"
 python -m cek.bot.bot
 ```
 
