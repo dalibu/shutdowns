@@ -383,7 +383,7 @@ async def main():
         logger.info("Bot session closed.")
 
 if __name__ == "__main__":
-    logger.setLevel(logging.DEBUG)
+    # logger.setLevel(logging.DEBUG) # Removed to respect LOG_LEVEL env var
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
