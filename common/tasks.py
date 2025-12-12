@@ -51,10 +51,14 @@ async def _process_alert_for_user(
     last_alert_event_start_str: str,
     now: datetime,
     logger: logging.Logger,
-    user_info: str = None
+    user_info: str = None,
+    addresses: List[Dict[str, str]] = None,
+    group_name: str = None
 ) -> Optional[str]:
     """
     Checks if an alert should be sent to the user.
+    
+    Now supports grouped alerts - displays all addresses in the group.
     
     Returns the event datetime string if alert was sent, None otherwise.
     """
@@ -132,16 +136,21 @@ async def _process_alert_for_user(
             event_dt_str = event_dt.isoformat()
             
             if last_alert_event_start_str != event_dt_str:
-                # Format address for display
-                address_display = f"`{city}, {street}, {house}`"
+                # Format address(es) for display using helper
+                if addresses and len(addresses) > 0:
+                    group_display = format_group_name(group_name) if group_name else "невідомо"
+                    address_info = format_address_list(addresses, group_display)
+                else:
+                    # Fallback for single address (backward compatibility)
+                    address_info = f"📍 Адреса: `{city}, {street}, {house}`"
                 
                 # Send alert!
                 time_str = event_dt.strftime('%H:%M')
                 minutes_left = int(time_to_event)
                 
-                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
+                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n\n{address_info}"
                 
-                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
+                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for group {group_name or 'unknown'}")
                 
                 try:
                     await bot.send_message(user_id, msg, parse_mode="Markdown")
@@ -172,6 +181,9 @@ async def alert_checker_task(
     """
     Background task for checking and sending alerts.
     
+    Now groups alerts by (user_id, group_name) to avoid duplicate notifications
+    for users with multiple addresses in the same group.
+    
     Args:
         bot: Aiogram Bot instance
         db_conn_getter: Callable that returns current db connection
@@ -188,19 +200,58 @@ async def alert_checker_task(
         now = datetime.now(kiev_tz)
 
         try:
+            # Fetch subscriptions grouped by (user_id, group_name)
             cursor = await db_conn.execute("""
-                SELECT s.user_id, a.city, a.street, a.house, s.notification_lead_time, s.last_alert_event_start
+                SELECT 
+                    s.user_id,
+                    COALESCE(a.group_name, 'unknown_' || a.id) as group_key,
+                    a.group_name,
+                    GROUP_CONCAT(a.id, '|') as address_ids,
+                    GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
+                    MIN(s.notification_lead_time) as notification_lead_time,
+                    MIN(s.last_alert_event_start) as last_alert_event_start
                 FROM subscriptions s
                 JOIN addresses a ON a.id = s.address_id
                 WHERE s.notification_lead_time > 0
+                GROUP BY s.user_id, group_key
             """)
             rows = await cursor.fetchall()
             
             if rows:
-                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user(s) with notifications enabled")
+                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user-group combinations with notifications enabled")
             
             for row in rows:
-                user_id, city, street, house, lead_time, last_alert_event_start_str = row
+                user_id = row[0]
+                group_key = row[1]
+                group_name = row[2]
+                address_ids_str = row[3]
+                addresses_str = row[4]
+                lead_time = row[5]
+                last_alert_event_start_str = row[6]
+                
+                # Parse address IDs
+                address_ids = [int(aid) for aid in address_ids_str.split('|')] if address_ids_str else []
+                
+                # Parse addresses
+                addresses = []
+                if addresses_str:
+                    for addr_str in addresses_str.split('|'):
+                        parts = addr_str.split('::')
+                        if len(parts) == 3:
+                            addresses.append({
+                                'city': parts[0],
+                                'street': parts[1],
+                                'house': parts[2]
+                            })
+                
+                # Use first address as sample for alert checking
+                if not addresses:
+                    continue
+                    
+                sample = addresses[0]
+                city = sample['city']
+                street = sample['street']
+                house = sample['house']
                 
                 # Get user info for logging
                 try:
@@ -209,22 +260,26 @@ async def alert_checker_task(
                 except:
                     user_info = str(user_id)
                 
-                logger.debug(f"Processing alerts, lead_time={lead_time} min")
+                logger.debug(f"Processing alerts for group {group_key}, lead_time={lead_time} min")
                 
+                # Check alert using sample address (all addresses in group have same schedule)
                 new_last_alert = await _process_alert_for_user(
-                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now, logger, user_info
+                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, 
+                    now, logger, user_info, addresses, group_name
                 )
                 
                 if new_last_alert:
                     # Set context for the DB update log
                     set_user_context(user_id)
-                    logger.info(f"Updating last_alert_event_start to {new_last_alert}")
+                    logger.info(f"Updating last_alert_event_start to {new_last_alert} for group {group_key}")
                     clear_user_context()
                     
-                    await db_conn.execute(
-                        "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
-                        (new_last_alert, user_id)
-                    )
+                    # Update all subscriptions in this group
+                    for address_id in address_ids:
+                        await db_conn.execute(
+                            "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ? AND address_id = ?",
+                            (new_last_alert, user_id, address_id)
+                        )
                     await db_conn.commit()
 
         except Exception as e:
