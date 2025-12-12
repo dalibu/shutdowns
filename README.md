@@ -296,7 +296,17 @@ This project was refactored from a centralized architecture (single bot + API) t
 - ✅ Easier to customize per client
 - ✅ Shared logic via common library (DRY)
 
+## Documentation
+
+Detailed technical documentation is available in the `docs/` directory:
+
+- **[CACHING_AND_SUBSCRIPTIONS.md](docs/CACHING_AND_SUBSCRIPTIONS.md)** - Architecture of group-based caching and automatic subscription checks
+- **[DATA_SOURCES.md](docs/DATA_SOURCES.md)** - Pluggable data source architecture
+- **[CURRENT_OUTAGE_TESTING.md](docs/CURRENT_OUTAGE_TESTING.md)** - Emergency outage detection and handling
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Overall system architecture
+
 ## Contributing
+
 
 When adding new features:
 

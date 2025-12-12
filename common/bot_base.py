@@ -53,10 +53,19 @@ HUMAN_USERS: Dict[int, bool] = {}
 ADDRESS_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 SCHEDULE_DATA_CACHE: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
 
-DEFAULT_INTERVAL_HOURS = 1.0
-CHECKER_LOOP_INTERVAL_SECONDS = 5 * 60
+# --- Configuration Constants (with environment variable fallback) ---
+# Default subscription check interval (hours)
+DEFAULT_INTERVAL_HOURS = float(os.getenv("DEFAULT_INTERVAL_HOURS", "1.0"))
 
-# --- Database Functions ---
+# Subscription checker loop interval (seconds)
+# Default: 5 minutes (300 seconds)
+CHECKER_LOOP_INTERVAL_SECONDS = int(os.getenv("CHECKER_LOOP_INTERVAL_SECONDS", str(5 * 60)))
+
+# --- Group Schedule Cache Functions ---
+# Cache time-to-live in minutes
+# Default: 15 minutes
+GROUP_CACHE_TTL_MINUTES = int(os.getenv("GROUP_CACHE_TTL_MINUTES", "15"))
+
 async def init_db(db_path: str) -> aiosqlite.Connection:
     """
     Initialize database connection.
@@ -653,9 +662,6 @@ def get_schedule_hash_compact(data: dict) -> str:
     # Хешируем полученную строку
     return hashlib.sha256(schedule_json_string.encode('utf-8')).hexdigest()
 
-# --- Group Schedule Cache Functions ---
-# Cache time-to-live in minutes
-GROUP_CACHE_TTL_MINUTES = 15
 
 async def get_group_cache(
     conn: aiosqlite.Connection,
