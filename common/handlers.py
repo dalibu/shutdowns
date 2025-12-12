@@ -438,29 +438,46 @@ async def send_schedule_response(
         house = api_data.get("house_num", "Н/Д")
         group = format_group_name(api_data.get("group"))
 
-        # Check for current outage information and prepare warning message
+        schedule = api_data.get("schedule", {})
+        
+        # Check for current outage information
+        # Only show outage warning if:
+        # 1. There is NO schedule table (empty schedule)
+        # 2. The outage contains parsed details from regex (not just raw message)
         outage_warning = None
         current_outage = api_data.get("current_outage")
-        if current_outage and current_outage.get("has_current_outage"):
-            # Format outage warning message
-            outage_parts = ["⚡ **УВАГА! Поточне відключення**\n"]
+        
+        # Determine if we should show outage warning
+        has_schedule_table = bool(schedule)
+        
+        if current_outage and current_outage.get("has_current_outage") and not has_schedule_table:
+            # Check if outage has any structured details extracted by regex
+            has_details = any([
+                current_outage.get("reason"),
+                current_outage.get("start_time"),
+                current_outage.get("expected_restoration"),
+                current_outage.get("update_time")
+            ])
             
-            # Add detailed information if available
-            if current_outage.get("reason"):
-                outage_parts.append(f"🔧 **Причина:** {current_outage['reason']}")
-            
-            if current_outage.get("start_time"):
-                outage_parts.append(f"⏰ **Початок:** {current_outage['start_time']}")
-            
-            if current_outage.get("expected_restoration"):
-                outage_parts.append(f"🔋 **Відновлення:** {current_outage['expected_restoration']}")
-            
-            if current_outage.get("update_time"):
-                outage_parts.append(f"📅 _Оновлено: {current_outage['update_time']}_")
-            
-            outage_warning = "\n".join(outage_parts)
-
-        schedule = api_data.get("schedule", {})
+            # Only show outage warning if it has extracted details
+            if has_details:
+                # Format outage warning message
+                outage_parts = ["⚡ **УВАГА! Поточне відключення**\n"]
+                
+                # Add detailed information if available
+                if current_outage.get("reason"):
+                    outage_parts.append(f"🔧 **Причина:** {current_outage['reason']}")
+                
+                if current_outage.get("start_time"):
+                    outage_parts.append(f"⏰ **Початок:** {current_outage['start_time']}")
+                
+                if current_outage.get("expected_restoration"):
+                    outage_parts.append(f"🔋 **Відновлення:** {current_outage['expected_restoration']}")
+                
+                if current_outage.get("update_time"):
+                    outage_parts.append(f"📅 _Оновлено: {current_outage['update_time']}_")
+                
+                outage_warning = "\n".join(outage_parts)
         if not schedule:
             # No schedule, only show outage warning if exists
             if outage_warning:
