@@ -90,6 +90,20 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
         # 7. Рисуем отключения (черные сектора) с точностью до минут
         degrees_per_minute = 360.0 / (48.0 * 60.0)  # 0.125 градуса на минуту
 
+        # Вычисляем текущее время в минутах от начала первого дня для сравнения
+        current_minutes_from_start = None
+        if current_time:
+            try:
+                current_date_str = current_time.strftime('%d.%m.%y')
+                if len(sorted_dates) >= 1 and current_date_str == sorted_dates[0]:
+                    # День 1
+                    current_minutes_from_start = current_time.hour * 60 + current_time.minute
+                elif len(sorted_dates) >= 2 and current_date_str == sorted_dates[1]:
+                    # День 2
+                    current_minutes_from_start = (24 * 60) + (current_time.hour * 60 + current_time.minute)
+            except Exception as e:
+                logger.warning(f"Failed to calculate current time for color comparison: {e}")
+
         for day_idx, date in enumerate(sorted_dates[:2]):
             slots = days_slots[date]
             day_offset_minutes = day_idx * 24 * 60
@@ -112,12 +126,30 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
                     if end_h < start_h:
                         end_abs += 24 * 60
                     
-                    # Рисуем сектор с учетом поворота диаграммы
-                    # 00:00 День 1 = 270 градусов (Верх) + rotation_offset
-                    start_angle = 270 + (start_abs * degrees_per_minute) + rotation_offset
-                    end_angle = 270 + (end_abs * degrees_per_minute) + rotation_offset
+                    # Разбиваем отключение на почасовые сегменты
+                    current_seg_start = start_abs
                     
-                    draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
+                    while current_seg_start < end_abs:
+                        # Определяем конец текущего сегмента (до конца часа или до конца отключения)
+                        # Округляем вверх до следующего часа
+                        next_hour_boundary = ((current_seg_start // 60) + 1) * 60
+                        current_seg_end = min(next_hour_boundary, end_abs)
+                        
+                        # Определяем цвет сегмента: серый если полностью в прошлом, черный иначе
+                        if current_minutes_from_start is not None and current_seg_end <= current_minutes_from_start:
+                            # Сегмент полностью в прошлом
+                            color = "#555555"  # Темно-серый
+                        else:
+                            # Сегмент текущий или в будущем
+                            color = "#000000"  # Черный
+                        
+                        # Рисуем сегмент
+                        seg_start_angle = 270 + (current_seg_start * degrees_per_minute) + rotation_offset
+                        seg_end_angle = 270 + (current_seg_end * degrees_per_minute) + rotation_offset
+                        draw.pieslice(bbox, seg_start_angle, seg_end_angle, fill=color, outline=None)
+                        
+                        # Переходим к следующему сегменту
+                        current_seg_start = current_seg_end
 
                 except Exception as e:
                     logger.warning(f"Error processing DTEK slot '{slot}': {e}")
@@ -130,8 +162,9 @@ def generate_48h_schedule_image(days_slots: Dict[str, List[Dict[str, Any]]], fon
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
-            # Thicker lines for better visibility
-            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=4)
+            # Thicker lines for 23-00 transitions (hour 0 and hour 24) to mark day boundaries
+            line_width = 12 if hour in [0, 24] else 4
+            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=line_width)
 
         # 7. Белый центральный круг
         inner_radius = int(radius * 0.50)
@@ -431,6 +464,16 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
         draw.ellipse(bbox, fill="#FFD700", outline=None)
 
         # 6. Рисуем отключения (черные сектора) с точностью до минут
+        # Вычисляем текущее время в минутах от начала дня для сравнения
+        current_minutes = None
+        if current_time:
+            try:
+                current_date_str = current_time.strftime('%d.%m.%y')
+                if current_date_str == today_date:
+                    current_minutes = current_time.hour * 60 + current_time.minute
+            except Exception as e:
+                logger.warning(f"Failed to calculate current time for color comparison: {e}")
+        
         for slot in today_slots:
             try:
                 time_str = slot.get('shutdown', '00:00–00:00')
@@ -449,13 +492,33 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
                 if end_minutes < start_minutes:
                     end_minutes = 24 * 60  # Рисуем до конца дня
                 
-                # Переводим минуты в углы с учетом поворота
-                # 00:00 = 270 градусов (Верх) + rotation_offset
-                # 1 минута = 0.25 градуса
-                start_angle = 270 + (start_minutes * 0.25) + rotation_offset
-                end_angle = 270 + (end_minutes * 0.25) + rotation_offset
+                # Разбиваем отключение на почасовые сегменты
+                current_seg_start = start_minutes
                 
-                draw.pieslice(bbox, start_angle, end_angle, fill="#000000", outline=None)
+                while current_seg_start < end_minutes:
+                    # Определяем конец текущего сегмента (до конца часа или до конца отключения)
+                    # Округляем вверх до следующего часа
+                    next_hour_boundary = ((current_seg_start // 60) + 1) * 60
+                    current_seg_end = min(next_hour_boundary, end_minutes)
+                    
+                    # Определяем цвет сегмента: серый если полностью в прошлом, черный иначе
+                    if current_minutes is not None and current_seg_end <= current_minutes:
+                        # Сегмент полностью в прошлом
+                        color = "#555555"  # Темно-серый
+                    else:
+                        # Сегмент текущий или в будущем
+                        color = "#000000"  # Черный
+                    
+                    # Переводим минуты в углы с учетом поворота
+                    # 00:00 = 270 градусов (Верх) + rotation_offset
+                    # 1 минута = 0.25 градуса
+                    seg_start_angle = 270 + (current_seg_start * 0.25) + rotation_offset
+                    seg_end_angle = 270 + (current_seg_end * 0.25) + rotation_offset
+                    
+                    draw.pieslice(bbox, seg_start_angle, seg_end_angle, fill=color, outline=None)
+                    
+                    # Переходим к следующему сегменту
+                    current_seg_start = current_seg_end
                         
             except Exception as e:
                 logger.warning(f"Error processing shutdown slot '{slot}': {e}")
@@ -468,8 +531,9 @@ def generate_24h_schedule_image(day_slots: Dict[str, List[Dict[str, Any]]], font
             angle_rad = math.radians(angle_deg)
             x_pos = center[0] + radius * math.cos(angle_rad)
             y_pos = center[1] + radius * math.sin(angle_rad)
-            # Thicker lines for better visibility
-            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=4)
+            # Thicker line for 23-00 transition (hour 0) to mark day start
+            line_width = 12 if hour == 0 else 4
+            draw.line([center, (x_pos, y_pos)], fill="#FFFFFF", width=line_width)
 
         # 7. Белый центральный круг
         inner_radius = int(radius * 0.50)

@@ -169,9 +169,11 @@ The `common/` directory contains shared logic used by both bots:
   - Current status messages
   - Time slot merging
 
-- **`visualization.py`** (~800 lines)
+- **`visualization.py`** (~850 lines)
   - Rotating circular diagrams (48h and 24h)
   - Triangle hour marker pointing upward
+  - **Enhanced day boundary** - Thicker line (12px) between 23:00 and 00:00 for clarity
+  - **Hourly segment color-coding** - Past segments in gray (#555555), current/future in black (#000000)
   - Smart date positioning in center
   - PIL/Pillow image generation
 
