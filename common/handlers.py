@@ -48,6 +48,7 @@ from common.bot_base import (
     update_address_group,  # New normalized function
     get_address_data_by_id,  # Get address data from addresses table
 )
+from common.handlers_group_subscription import handle_group_subscription
 from common.formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
@@ -1275,13 +1276,17 @@ async def handle_subscribe_command(
     """
     Handle /subscribe command - subscribe to schedule updates.
     
+    Supports both address and group subscriptions:
+    - /subscribe → subscribes to last checked address
+    - /subscribe 3.1 → subscribes to group 3.1
+    
     Args:
         message: Aiogram message object
         state: FSM context
         ctx: BotContext with provider configuration
         captcha_check_func: Function to check CAPTCHA
     """
-    from .bot_base import DEFAULT_INTERVAL_HOURS, get_hours_str
+    from .bot_base import DEFAULT_INTERVAL_HOURS, get_hours_str, detect_check_input_type
     from .formatting import build_subscription_exists_message, build_subscription_created_message
     
     user_id = message.from_user.id
@@ -1295,6 +1300,42 @@ async def handle_subscribe_command(
         await captcha_check_func(message, state)
         return
 
+    # Check if user is trying to subscribe to a group directly
+    text_args = message.text.replace('/subscribe', '', 1).strip()
+    
+    # Extract interval if specified (e.g., "/subscribe 3.1 6" or "/subscribe 6")
+    interval_hours = DEFAULT_INTERVAL_HOURS
+    parts = text_args.split() if text_args else []
+    
+    # Try to detect group subscription
+    if parts:
+        first_part = parts[0]
+        input_type, value = detect_check_input_type(first_part)
+        
+        if input_type == "group":
+            # Group subscription!
+            group_name = value
+            
+            # Check for interval in second part
+            if len(parts) > 1:
+                try:
+                    val = float(parts[1].replace(',', '.'))
+                    if val <= 0.0:
+                        await message.answer("❌ **Помилка.** Інтервал має бути позитивним числом годин.")
+                        return
+                    if val < 0.5:
+                        await message.answer("❌ **Помилка.** Мінімальний інтервал перевірки — 0.5 години (30 хвилин).")
+                        return
+                    interval_hours = val
+                except ValueError:
+                    await message.answer("❌ **Помилка.** Інтервал повинен бути числом (наприклад, `/subscribe 3.1 6`).")
+                    return
+            
+            # Handle group subscription
+            await handle_group_subscription(message, group_name, interval_hours, ctx)
+            return
+
+    # Original address subscription logic continues...
     city, street, house, hash_from_check = None, None, None, None
     try:
         cursor = await db_conn.execute("SELECT city, street, house, last_hash FROM user_last_check WHERE user_id = ?", (user_id,))
