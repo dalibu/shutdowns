@@ -562,6 +562,53 @@ def parse_address_from_text(text: str) -> tuple[str, str, str]:
     house = parts[2]
     return city, street, house
 
+def detect_check_input_type(text: str) -> tuple[str, str]:
+    """
+    Определяет тип ввода для команды /check: группа или адрес.
+    
+    ДТЕК має 6 груп з двома підгрупами кожна: 1.1, 1.2, 2.1, 2.2, ... 6.1, 6.2
+    Паттерн групи: перша цифра 1-6, роздільник (точка/кома/пробіл), друга цифра 1-2
+    
+    Приклади валідних груп:
+    - 3.1, 3,1, 3 1 (нормалізується до 3.1)
+    - 1.2, 6.1 (мінімум і максимум)
+    
+    Невалідні приклади (будуть адресою):
+    - 7.1 (перша цифра > 6)
+    - 3.3 (друга цифра > 2)
+    - 3 (немає другої цифри)
+    
+    Args:
+        text: Текст після команди /check
+    
+    Returns:
+        ("group", normalized_group) - якщо це група (нормалізована до формату X.Y)
+        ("address", original_text) - якщо це адреса
+        ("unknown", "") - якщо порожній ввід
+    """
+    import re
+    
+    text_clean = text.strip()
+    if not text_clean:
+        return ("unknown", "")
+    
+    # Строгий паттерн для ДТЕК груп:
+    # - Перша цифра: тільки [1-6]
+    # - Роздільник: точка, кома, або пробіли \s*[.,\s]\s*
+    # - Друга цифра: тільки [12]
+    # ^: початок рядка, $: кінець рядка (щоб було ТІЛЬКИ це)
+    group_pattern = r'^([1-6])\s*[.,\s]\s*([12])$'
+    match = re.match(group_pattern, text_clean)
+    
+    if match:
+        # Нормалізуємо групу до формату з точкою
+        group_normalized = f"{match.group(1)}.{match.group(2)}"
+        return ("group", group_normalized)
+    
+    # Інакше вважаємо що це адреса
+    return ("address", text)
+
+
 def get_hours_str(value: float) -> str:
     """Возвращает правильное склонение слова 'год.'"""
     return "год."

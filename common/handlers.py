@@ -635,16 +635,16 @@ async def handle_start_command(
 
     text = (
         f"👋 **Вітаю! Я бот (неофиційний, але найкращій та найефективніший 😉) для перевірки графіків відключень {provider}.**\n\n"
-        "Для перевірки графіку, введіть команду **/check**, додавши адресу у форматі:\n"
+        "**Для перевірки графіку** введіть команду **/check**, додавши адресу або номер черги:\n\n"
+        "**За адресою:**\n"
         "`/check м. Місто, вул. Вулиця, Будинок`\n"
-        "або\n"
-        "`/check сел. Село, вул. Вулиця, Будинок`\n\n"
-        "**Наприклад:**\n"
-        f"`/check {example_address}`\n\n"
-        "Або просто введіть **/check** без адреси, щоб ввести дані покроково.\n\n"
+        f"*Наприклад:* `/check {example_address}`\n\n"
+        "**За номером черги (миттєво! ⚡):**\n"
+        "`/check 3.1` або `/check 3,1`\n\n"
+        "Або просто введіть **/check** без параметрів для покрокового вводу.\n\n"
         "**Команди:**\n"
         "/start або /help - показати цю довідку.\n"
-        "/check - перевірити графік за адресою.\n"
+        "/check - перевірити графік за адресою або номером черги.\n"
         "/repeat - повторити останню перевірку /check.\n"
         "/subscribe - підписатися на оновлення (за замовчуванням 1 година).\n"
         "*Приклад: `/subscribe 3` (кожні 3 години). Автоматично вмикає сповіщення за 15 хв.*\n"
@@ -836,7 +836,11 @@ async def handle_check_command(
     example_city: str = "м. Дніпро"
 ) -> None:
     """
-    Handle /check command - check power schedule for address.
+    Handle /check command - check power schedule for address OR group.
+    
+    Now intelligently detects input type:
+    - /check 3.1 or /check 3,1 → checks group schedule
+    - /check м. Дніпро, вул. ... → checks address schedule
     
     Args:
         message: Aiogram message object
@@ -847,10 +851,16 @@ async def handle_check_command(
         send_response_func: Function to send formatted response
         example_city: Example city for FSM prompt
     """
+    from common.bot_base import (
+        find_addresses_by_group,
+        detect_check_input_type
+    )
+    
     user_id = message.from_user.id
     user_info = format_user_info(message.from_user)
     logger = ctx.logger or logging.getLogger(__name__)
     db_conn = ctx.db_conn
+    provider_code = ctx.provider_code
     
     if user_id not in HUMAN_USERS:
         await message.answer("⛔ **Відмовлено в доступі.** Будь ласка, спочатку пройдіть перевірку "
@@ -880,6 +890,90 @@ async def handle_check_command(
     if current_state:
         await state.clear()
 
+    # ===== NEW: Detect input type (group or address) =====
+    input_type, parsed_value = detect_check_input_type(text_args)
+    
+    # ===== BRANCH 1: GROUP CHECK =====
+    if input_type == "group":
+        group_name = parsed_value
+        logger.info(f"Command /check for group: {group_name}")
+        
+        try:
+            # Step 1: Check group cache
+            group_cache = await get_group_cache(db_conn, group_name, provider_code)
+            
+            if group_cache:
+                # Cache HIT! Show schedule from cache
+                logger.info(f"✓ Group cache HIT for /check {group_name} (instant response)")
+                api_data = group_cache['data']
+                
+                # Override address information to show group instead
+                api_data_for_display = api_data.copy()
+                api_data_for_display['city'] = f"Черга {format_group_name(group_name)}"
+                api_data_for_display['street'] = ""
+                api_data_for_display['house_num'] = ""
+                api_data_for_display['group'] = group_name
+                
+                await send_response_func(message, api_data_for_display, False)
+                await update_user_activity(db_conn, user_id, username=message.from_user.username, group_name=group_name)
+                return
+            
+            # Step 2: Cache miss - try to find a known address from this group
+            logger.info(f"✗ Group cache MISS for /check {group_name}")
+            addresses = await find_addresses_by_group(db_conn, provider_code, group_name, limit=1)
+            
+            if not addresses:
+                # Group is completely unknown to us
+                logger.info(f"Group {group_name} is unknown (no addresses found)")
+                await message.answer(
+                    f"❌ **Черга `{format_group_name(group_name)}` невідома.**\n\n"
+                    "Ми ще не маємо інформації про цю чергу. "
+                    "Будь ласка, спочатку перевірте графік за адресою (наприклад, `/check м. Дніпро, вул. Сонячна набережна, 6`), "
+                    "щоб ми могли визначити, які адреси належать до цієї черги."
+                )
+                return
+            
+            # Step 3: Found an address - use it to get fresh data
+            addr = addresses[0]
+            city, street, house = addr['city'], addr['street'], addr['house']
+            
+            logger.info(f"Found address for group {group_name}: {city}, {street}, {house}")
+            await message.answer(f"⏳ Оновлюю графік для черги `{format_group_name(group_name)}`... Очікуйте...")
+            
+            # Get fresh data from parser
+            api_data = await get_shutdowns_data(city, street, house)
+            current_hash = get_schedule_hash_compact(api_data)
+            group_from_parser = api_data.get('group', None)
+            
+            # Update group cache with fresh data
+            if group_from_parser:
+                await update_group_cache(db_conn, group_from_parser, provider_code, current_hash, api_data)
+                logger.debug(f"Updated group cache for {group_from_parser} after /check")
+                
+                # Also verify/update address group mapping
+                address_id, _ = await get_address_id(db_conn, city, street, house)
+                if address_id:
+                    await update_address_group(db_conn, address_id, group_from_parser)
+            
+            # Override address information to show group instead
+            api_data_for_display = api_data.copy()
+            api_data_for_display['city'] = f"Черга {format_group_name(group_name)}"
+            api_data_for_display['street'] = ""
+            api_data_for_display['house_num'] = ""
+            
+            await send_response_func(message, api_data_for_display, False)
+            await update_user_activity(db_conn, user_id, username=message.from_user.username, group_name=group_name)
+            
+        except ValueError as e:
+            logger.error(f"Group check error: {e}")
+            await message.answer(f"❌ {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error in /check (group): {e}", exc_info=True)
+            await message.answer("❌ **Помилка** при перевірці графіку для черги.")
+        
+        return
+    
+    # ===== BRANCH 2: ADDRESS CHECK (original logic) =====
     await message.answer("⏳ Перевіряю графік за вказаною адресою. Очікуйте...")
     try:
         city, street, house = parse_address_from_text(text_args)
