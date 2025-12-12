@@ -379,24 +379,33 @@ async def rename_user_address(
 # --- Multi-Subscription Functions ---
 async def get_user_subscriptions(
     conn: aiosqlite.Connection,
-    user_id: int
+    user_id: int,
+    provider_code: str = None
 ) -> List[Dict[str, Any]]:
-    """Gets all subscriptions for a user."""
+    """
+    Gets all subscriptions for a user (both address and group subscriptions).
+    
+    Returns list with 'type' field: 'address' or 'group'
+    """
     if not conn:
         return []
     
+    subscriptions = []
+    
     try:
+        # 1. Get address subscriptions
         cursor = await conn.execute("""
             SELECT s.id, a.city, a.street, a.house, s.interval_hours, s.notification_lead_time, a.group_name
             FROM subscriptions s
             JOIN addresses a ON a.id = s.address_id
             WHERE s.user_id = ?
-            ORDER BY s.id
+            ORDER BY a.group_name, s.id
         """, (user_id,))
-        rows = await cursor.fetchall()
+        addr_rows = await cursor.fetchall()
         
-        return [
-            {
+        for row in addr_rows:
+            subscriptions.append({
+                'type': 'address',
                 'id': row[0],
                 'city': row[1],
                 'street': row[2],
@@ -404,9 +413,34 @@ async def get_user_subscriptions(
                 'interval_hours': row[4],
                 'notification_lead_time': row[5],
                 'group_name': row[6]
-            }
-            for row in rows
-        ]
+            })
+        
+        # 2. Get group subscriptions (if provider_code specified)
+        if provider_code:
+            cursor = await conn.execute("""
+                SELECT id, group_name, interval_hours, notification_lead_time, provider
+                FROM group_subscriptions
+                WHERE user_id = ? AND provider = ?
+                ORDER BY group_name
+            """, (user_id, provider_code))
+            group_rows = await cursor.fetchall()
+            
+            for row in group_rows:
+                subscriptions.append({
+                    'type': 'group',
+                    'id': row[0],
+                    'group_name': row[1],
+                    'interval_hours': row[2],
+                    'notification_lead_time': row[3],
+                    'provider': row[4],
+                    # For compatibility with address subscriptions
+                    'city': None,
+                    'street': None,
+                    'house': None
+                })
+        
+        return subscriptions
+        
     except Exception as e:
         logging.error(f"Failed to get user subscriptions: {e}")
         return []
@@ -525,6 +559,25 @@ async def remove_all_subscriptions(
     except Exception as e:
         logging.error(f"Failed to remove all subscriptions: {e}")
         return 0
+
+async def remove_group_subscription(
+    conn: aiosqlite.Connection,
+    subscription_id: int
+) -> bool:
+    """Removes group subscription by ID. Returns True if success."""
+    if not conn:
+        return False
+    
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM group_subscriptions WHERE id = ?",
+            (subscription_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logging.error(f"Failed to remove group subscription: {e}")
+        return False
 
 # --- Utility Functions ---
 def parse_time_range(time_str: str) -> tuple:
@@ -1211,17 +1264,27 @@ def build_subscription_selection_keyboard(
 ) -> InlineKeyboardMarkup:
     """
     Build keyboard for unsubscribe selection.
+    Supports both address and group subscriptions.
     action: 'unsub' - prefix for callback_data
     """
+    from .formatting import format_group_name
+    
     buttons = []
     for sub in subscriptions:
-        label = _format_address_label(sub)
-        callback_data = f"{action}:{sub['id']}"
-        buttons.append([InlineKeyboardButton(text=f"📍 {label}", callback_data=callback_data)])
+        if sub.get('type') == 'group':
+            # Group subscription
+            label = f"👥 Черга {format_group_name(sub['group_name'])}"
+            callback_data = f"{action}:group:{sub['id']}"
+        else:
+            # Address subscription
+            label = _format_address_label(sub)
+            callback_data = f"{action}:{sub['id']}"
+        
+        buttons.append([InlineKeyboardButton(text=label, callback_data=callback_data)])
     
     # Add "unsubscribe all" button
     if len(subscriptions) > 1:
-        buttons.append([InlineKeyboardButton(text="🚫 Відписатися від усіх", callback_data=f"{action}:all")])
+        buttons.append([InlineKeyboardButton(text="🗑️ Відписатися від усіх", callback_data=f"{action}:all")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

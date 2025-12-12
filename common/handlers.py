@@ -190,38 +190,55 @@ async def handle_alert(message: types.Message, ctx: BotContext) -> None:
 
 
 async def handle_unsubscribe(message: types.Message, ctx: BotContext) -> None:
-    """Handle /unsubscribe command with multi-subscription support."""
+    """Handle /unsubscribe command with support for both address and group subscriptions."""
     user_id = message.from_user.id
     logger = ctx.logger or logging.getLogger(__name__)
     
     try:
-        subscriptions = await get_user_subscriptions(ctx.db_conn, user_id)
+        subscriptions = await get_user_subscriptions(ctx.db_conn, user_id, ctx.provider_code)
         
         if not subscriptions:
-            await message.answer("❌ **Помилка.** Ви не підписані на оновлення.")
+            await message.answer("❌ **Помилка.** Ви не підписані на оновлення.", parse_mode="Markdown")
             return
         
         if len(subscriptions) == 1:
             # Single subscription - unsubscribe immediately
             sub = subscriptions[0]
-            success = await remove_subscription_by_id(ctx.db_conn, sub['id'])
-            if success:
-                logger.info(f"Unsubscribed from {sub['city']}, {sub['street']}, {sub['house']}")
-                await message.answer(
-                    f"🚫 **Підписку скасовано** для адреси: `{sub['city']}, {sub['street']}, {sub['house']}`"
-                )
+            
+            if sub['type'] == 'group':
+                # Group subscription
+                success = await remove_group_subscription(ctx.db_conn, sub['id'])
+                if success:
+                    from .formatting import format_group_name
+                    logger.info(f"Unsubscribed from group {sub['group_name']}")
+                    await message.answer(
+                        f"🚫 **Підписку скасовано** для черги: `{format_group_name(sub['group_name'])}`",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer("❌ Не вдалося скасувати підписку.")
             else:
-                await message.answer("❌ Не вдалося скасувати підписку.")
+                # Address subscription
+                success = await remove_subscription_by_id(ctx.db_conn, user_id, sub['id'])
+                if success:
+                    logger.info(f"Unsubscribed from {sub['city']}, {sub['street']}, {sub['house']}")
+                    await message.answer(
+                        f"🚫 **Підписку скасовано** для адреси: `{sub['city']}, {sub['street']}, {sub['house']}`",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer("❌ Не вдалося скасувати підписку.")
         else:
             # Multiple subscriptions - show selection
             keyboard = build_subscription_selection_keyboard(subscriptions, action="unsub")
             await message.answer(
                 f"📋 **У вас {len(subscriptions)} активних підписок.** Оберіть, від якої відписатися:",
-                reply_markup=keyboard
+                reply_markup=keyboard,
+                parse_mode="Markdown"
             )
     except Exception as e:
         logger.error(f"Failed to unsubscribe: {e}", exc_info=True)
-        await message.answer("❌ **Помилка БД** при спробі скасувати підписку.")
+        await message.answer("❌ **Помилка БД** при спробі скасувати підписку.", parse_mode="Markdown")
 
 
 # ============================================================
@@ -249,35 +266,82 @@ async def handle_process_street(message: types.Message, state: FSMContext) -> No
 # ============================================================
 
 async def handle_callback_unsubscribe(callback: CallbackQuery, ctx: BotContext) -> None:
-    """Handle unsubscribe selection from inline keyboard."""
+    """Handle unsubscribe selection from inline keyboard (address or group)."""
     user_id = callback.from_user.id
-    data = callback.data.split(":", 1)[1]
+    data_parts = callback.data.split(":", 2)  # Changed to handle "unsub:group:123"
     logger = ctx.logger or logging.getLogger(__name__)
     
     await callback.answer()
     
     try:
-        if data == "all":
-            count = await remove_all_subscriptions(ctx.db_conn, user_id)
-            logger.info(f"Unsubscribed from all {count} subscriptions.")
+        # Extract action and data
+        action = data_parts[0]  # "unsub"
+        
+        if len(data_parts) == 2 and data_parts[1] == "all":
+            # Unsubscribe from all (both address and group)
+            count_addr = await remove_all_subscriptions(ctx.db_conn, user_id)
+            
+            # Also remove all group subscriptions
+            count_group = 0
+            if ctx.provider_code:
+                try:
+                    cursor = await ctx.db_conn.execute(
+                        "DELETE FROM group_subscriptions WHERE user_id = ? AND provider = ?",
+                        (user_id, ctx.provider_code)
+                    )
+                    await ctx.db_conn.commit()
+                    count_group = cursor.rowcount
+                except Exception as e:
+                    logger.error(f"Failed to remove group subscriptions: {e}")
+            
+            total_count = count_addr + count_group
+            logger.info(f"Unsubscribed from all {total_count} subscriptions ({count_addr} addr, {count_group} group).")
             await callback.message.edit_text(
-                f"🚫 **Всі підписки скасовано** ({count} шт.)"
+                f"�️ **Всі підписки скасовано** ({total_count} шт.)",
+                parse_mode="Markdown"
             )
-        else:
-            sub_id = int(data)
+        elif len(data_parts) == 3 and data_parts[1] == "group":
+            # Group subscription: "unsub:group:123"
+            sub_id = int(data_parts[2])
+            
             # Get subscription details before removing
-            subs = await get_user_subscriptions(ctx.db_conn, user_id)
-            sub = next((s for s in subs if s['id'] == sub_id), None)
+            subs = await get_user_subscriptions(ctx.db_conn, user_id, ctx.provider_code)
+            sub = next((s for s in subs if s['type'] == 'group' and s['id'] == sub_id), None)
             
             if sub:
-                success = await remove_subscription_by_id(ctx.db_conn, sub_id)
+                success = await remove_group_subscription(ctx.db_conn, sub_id)
+                if success:
+                    from .formatting import format_group_name
+                    group_name = sub['group_name']
+                    remaining = len(subs) - 1
+                    remaining_text = f"\n\n_Залишилось підписок: {remaining}_" if remaining > 0 else ""
+                    logger.info(f"Unsubscribed from group {group_name}")
+                    await callback.message.edit_text(
+                        f"🚫 **Підписку скасовано** для черги: `{format_group_name(group_name)}`{remaining_text}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await callback.message.edit_text("❌ Не вдалося скасувати підписку.")
+            else:
+                await callback.message.edit_text("❌ Підписку не знайдено.")
+        else:
+            # Address subscription: "unsub:123"
+            sub_id = int(data_parts[1])
+            
+            # Get subscription details before removing
+            subs = await get_user_subscriptions(ctx.db_conn, user_id, ctx.provider_code)
+            sub = next((s for s in subs if s.get('type') != 'group' and s['id'] == sub_id), None)
+            
+            if sub:
+                success = await remove_subscription_by_id(ctx.db_conn, user_id, sub_id)
                 if success:
                     city, street, house = sub['city'], sub['street'], sub['house']
                     remaining = len(subs) - 1
                     remaining_text = f"\n\n_Залишилось підписок: {remaining}_" if remaining > 0 else ""
                     logger.info(f"Unsubscribed from {city}, {street}, {house}")
                     await callback.message.edit_text(
-                        f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}"
+                        f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}",
+                        parse_mode="Markdown"
                     )
                 else:
                     await callback.message.edit_text("❌ Не вдалося скасувати підписку.")
