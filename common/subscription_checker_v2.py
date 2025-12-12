@@ -1,238 +1,17 @@
 """
-Common background tasks for power shutdown bots.
-Contains subscription checker and alert processing logic.
+New version of subscription_checker_task with notification grouping by (user_id, group_name).
+
+This is a complete replacement for the current subscription_checker_task in common/tasks.py.
+After testing, this will replace the old version.
+
+Key changes:
+1. Groups subscriptions by (user_id, group_name) instead of individual addresses
+2. Fetches schedule once per group instead of per address
+3. Sends one notification per group with list of addresses
+4. Updates all subscriptions in a group simultaneously
 """
 
-import asyncio
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, Tuple, List, Callable, Awaitable, Optional
-import aiosqlite
-from aiogram import Bot
-from aiogram.types import BufferedInputFile
-import pytz
-
-from .bot_base import (
-    BotContext,
-    ADDRESS_CACHE,
-    SCHEDULE_DATA_CACHE,
-    DEFAULT_INTERVAL_HOURS,
-    CHECKER_LOOP_INTERVAL_SECONDS,
-    get_schedule_hash_compact,
-    get_hours_str,
-    format_user_info,
-    parse_time_range,
-    get_group_cache,
-    update_group_cache,
-    get_cached_group_for_address,
-    get_group_for_address,
-    update_address_group_mapping,
-    find_addresses_by_group,
-    get_address_id,  # New normalized function
-    update_address_group,  # New normalized function
-    get_address_by_id,  # New normalized function
-)
-from .formatting import (
-    process_single_day_schedule_compact,
-    get_current_status_message,
-    format_group_name,
-    format_address_list,
-)
-from .log_context import set_user_context, clear_user_context
-
-
-async def _process_alert_for_user(
-    bot: Bot,
-    user_id: int,
-    city: str,
-    street: str,
-    house: str,
-    lead_time: int,
-    last_alert_event_start_str: str,
-    now: datetime,
-    logger: logging.Logger,
-    user_info: str = None
-) -> Optional[str]:
-    """
-    Checks if an alert should be sent to the user.
-    
-    Returns the event datetime string if alert was sent, None otherwise.
-    """
-    # Set user context for logging
-    set_user_context(user_id)
-    
-    try:
-        if user_info is None:
-            user_info = str(user_id)
-            
-        address_key = (city, street, house)
-        data = SCHEDULE_DATA_CACHE.get(address_key)
-        
-        if not data:
-            logger.debug(f"Alert check skipped: no schedule data in cache yet for {address_key} (subscription not checked yet or bot restarted)")
-            return None
-        
-        schedule = data.get("schedule", {})
-        if not schedule:
-            logger.debug(f"Alert check: no schedule data")
-            return None
-        
-        kiev_tz = pytz.timezone('Europe/Kiev')
-        
-        # Collect all events (start and end of shutdowns)
-        events = []
-        
-        try:
-            sorted_dates = sorted(schedule.keys(), key=lambda d: datetime.strptime(d, '%d.%m.%y'))
-        except ValueError:
-            sorted_dates = sorted(schedule.keys())
-        
-        for date_str in sorted_dates:
-            try:
-                date_obj = datetime.strptime(date_str, '%d.%m.%y').date()
-                if date_obj < now.date():
-                    continue
-            except ValueError:
-                continue
-            
-            slots = schedule.get(date_str, [])
-            for slot in slots:
-                time_str = slot.get('shutdown', '00:00–00:00')
-                start_min, end_min = parse_time_range(time_str)
-                
-                start_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=start_min)
-                end_dt = kiev_tz.localize(datetime.combine(date_obj, datetime.min.time())) + timedelta(minutes=end_min)
-                
-                events.append((start_dt, 'off_start'))
-                events.append((end_dt, 'on_start'))
-        
-        events.sort(key=lambda x: x[0])
-        
-        logger.debug(f"Alert check: found {len(events)} events total")
-        
-        # Find the next future event
-        target_event = None
-        for event_dt, event_type in events:
-            if event_dt > now:
-                target_event = (event_dt, event_type)
-                break
-        
-        if not target_event:
-            logger.debug(f"Alert check: no future events found")
-            return None
-            
-        event_dt, event_type = target_event
-        time_to_event = (event_dt - now).total_seconds() / 60.0  # minutes
-        
-        msg_type = "відключення" if event_type == 'off_start' else "включення"
-        logger.debug(f"Alert check: next event is {msg_type} at {event_dt.strftime('%H:%M')} (in {time_to_event:.1f} min), lead_time={lead_time} min")
-        
-        # Check if it's time to send alert
-        if 0 < time_to_event <= lead_time:
-            event_dt_str = event_dt.isoformat()
-            
-            if last_alert_event_start_str != event_dt_str:
-                # Format address for display
-                address_display = f"`{city}, {street}, {house}`"
-                
-                # Send alert!
-                time_str = event_dt.strftime('%H:%M')
-                minutes_left = int(time_to_event)
-                
-                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
-                
-                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
-                
-                try:
-                    await bot.send_message(user_id, msg, parse_mode="Markdown")
-                    logger.info(f"Alert sent successfully, event_dt={event_dt_str}")
-                    return event_dt_str  # Return event time for DB update
-                except Exception as e:
-                    logger.error(f"Failed to send alert: {e}")
-                    return None
-            else:
-                logger.debug(f"Alert check: alert already sent for this event (last_alert={last_alert_event_start_str})")
-        else:
-            if time_to_event <= 0:
-                logger.debug(f"Alert check: event already passed")
-            else:
-                logger.debug(f"Alert check: event too far ({time_to_event:.1f} min > {lead_time} min)")
-        
-        return None
-    finally:
-        # Always clear user context
-        clear_user_context()
-
-
-async def alert_checker_task(
-    bot: Bot,
-    db_conn_getter: Callable[[], aiosqlite.Connection],
-    logger: logging.Logger
-):
-    """
-    Background task for checking and sending alerts.
-    
-    Args:
-        bot: Aiogram Bot instance
-        db_conn_getter: Callable that returns current db connection
-        logger: Logger instance for this provider
-    """
-    logger.info("Alert checker started.")
-    while True:
-        await asyncio.sleep(60)
-        db_conn = db_conn_getter()
-        if db_conn is None:
-            continue
-
-        kiev_tz = pytz.timezone('Europe/Kiev')
-        now = datetime.now(kiev_tz)
-
-        try:
-            cursor = await db_conn.execute("""
-                SELECT s.user_id, a.city, a.street, a.house, s.notification_lead_time, s.last_alert_event_start
-                FROM subscriptions s
-                JOIN addresses a ON a.id = s.address_id
-                WHERE s.notification_lead_time > 0
-            """)
-            rows = await cursor.fetchall()
-            
-            if rows:
-                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user(s) with notifications enabled")
-            
-            for row in rows:
-                user_id, city, street, house, lead_time, last_alert_event_start_str = row
-                
-                # Get user info for logging
-                try:
-                    user = await bot.get_chat(user_id)
-                    user_info = format_user_info(user)
-                except:
-                    user_info = str(user_id)
-                
-                logger.debug(f"Processing alerts, lead_time={lead_time} min")
-                
-                new_last_alert = await _process_alert_for_user(
-                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now, logger, user_info
-                )
-                
-                if new_last_alert:
-                    # Set context for the DB update log
-                    set_user_context(user_id)
-                    logger.info(f"Updating last_alert_event_start to {new_last_alert}")
-                    clear_user_context()
-                    
-                    await db_conn.execute(
-                        "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
-                        (new_last_alert, user_id)
-                    )
-                    await db_conn.commit()
-
-        except Exception as e:
-            logger.error(f"Error in alert_checker_task loop: {e}", exc_info=True)
-
-
-
-async def subscription_checker_task(
+async def subscription_checker_task_v2(
     bot: Bot,
     ctx: BotContext,
     db_conn_getter: Callable[[], aiosqlite.Connection],
@@ -256,11 +35,13 @@ async def subscription_checker_task(
         generate_48h_image: Function to generate 48h schedule image
         get_cached_group: Optional function to get cached group for address (CEK optimization)
     """
+    from common.formatting import format_address_list
+    
     logger = ctx.logger
     provider = ctx.provider_name
     font_path = ctx.font_path
     
-    logger.info("Subscription checker started.")
+    logger.info("Subscription checker started (v2 with grouping).")
     while True:
         await asyncio.sleep(CHECKER_LOOP_INTERVAL_SECONDS)
         db_conn = db_conn_getter()
@@ -493,7 +274,7 @@ async def subscription_checker_task(
                     continue
 
                 data = data_or_error
-                new_hash = get_schedule_hash_compact(data)
+                new_hash = api_results[group_key].get('schedule_hash', get_schedule_hash_compact(data))
 
                 # Check if there are real changes in schedule
                 schedule = data.get("schedule", {})
