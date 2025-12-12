@@ -329,9 +329,11 @@ async def subscription_checker_task(
         
         # ═══════════════════════════════════════════════════════════════
         # STEP 1: Fetch subscriptions grouped by (user_id, group_name)
+        # Now supports both address-based and direct group subscriptions
         # ═══════════════════════════════════════════════════════════════
         groups_to_check = []
         try:
+            # 1a. Fetch address-based subscriptions grouped by user+group
             cursor = await db_conn.execute("""
                 SELECT 
                     s.user_id,
@@ -346,48 +348,98 @@ async def subscription_checker_task(
                 WHERE s.next_check <= ?
                 GROUP BY s.user_id, group_key
             """, (now,))
-            rows = await cursor.fetchall()
-            if not rows:
-                logger.debug("Subscription check skipped: no users require check.")
-                continue
-
-            for row in rows:
+            addr_rows = await cursor.fetchall()
+            
+            # 1b. Fetch direct group subscriptions
+            cursor = await db_conn.execute("""
+                SELECT 
+                    user_id,
+                    group_name as group_key,
+                    group_name,
+                    NULL as address_ids,
+                    NULL as addresses,
+                    interval_hours,
+                    last_schedule_hash
+                FROM group_subscriptions
+                WHERE next_check <= ? AND provider = ?
+            """, (now, ctx.provider_code))
+            group_rows = await cursor.fetchall()
+            
+            # Merge results: use dict to group by (user_id, group_key)
+            merged = {}
+            
+            # Process address subscriptions
+            for row in addr_rows:
                 user_id = row[0]
-                group_key = row[1]  # For grouping (includes unknown_ prefix if needed)
-                group_name = row[2]  # Actual group_name (may be NULL)
+                group_key = row[1]
+                key = (user_id, group_key)
+                
+                if key not in merged:
+                    merged[key] = {
+                        'user_id': user_id,
+                        'group_key': group_key,
+                        'group_name': row[2],
+                        'address_ids': [],
+                        'addresses': [],
+                        'interval_hours': row[5],
+                        'last_schedule_hash': row[6],
+                        'has_group_sub': False
+                    }
+                
+                # Parse and add address IDs
                 address_ids_str = row[3]
+                if address_ids_str:
+                    merged[key]['address_ids'].extend([int(aid) for aid in address_ids_str.split('|')])
+                
+                # Parse and add addresses
                 addresses_str = row[4]
-                interval_hours = row[5]
-                last_schedule_hash = row[6]
-                
-                # Parse address IDs
-                address_ids = [int(aid) for aid in address_ids_str.split('|')] if address_ids_str else []
-                
-                # Parse addresses (city::street::house format)
-                addresses = []
                 if addresses_str:
                     for addr_str in addresses_str.split('|'):
                         parts = addr_str.split('::')
                         if len(parts) == 3:
-                            addresses.append({
+                            merged[key]['addresses'].append({
                                 'city': parts[0],
                                 'street': parts[1],
                                 'house': parts[2]
                             })
+            
+            # Process group subscriptions
+            for row in group_rows:
+                user_id = row[0]
+                group_key = row[1]
+                key = (user_id, group_key)
                 
-                # Use first address as sample for API calls
-                sample_address = addresses[0] if addresses else None
+                if key not in merged:
+                    # Pure group subscription (no addresses)
+                    merged[key] = {
+                        'user_id': user_id,
+                        'group_key': group_key,
+                        'group_name': row[2],
+                        'address_ids': [],
+                        'addresses': [],
+                        'interval_hours': row[5],
+                        'last_schedule_hash': row[6],
+                        'has_group_sub': True
+                    }
+                else:
+                    # User has both addresses AND group subscription for same group
+                    # Just flag it, we'll still send one notification
+                    merged[key]['has_group_sub'] = True
+                    # Use MIN interval_hours and hash
+                    if row[5] < merged[key]['interval_hours']:
+                        merged[key]['interval_hours'] = row[5]
+            
+            # Convert to list
+            for group_data in merged.values():
+                # Use first address as sample if available
+                sample_address = group_data['addresses'][0] if group_data['addresses'] else None
+                group_data['sample_address'] = sample_address
+                groups_to_check.append(group_data)
+            
+            if not groups_to_check:
+                logger.debug("Subscription check skipped: no users require check.")
+                continue
                 
-                groups_to_check.append({
-                    'user_id': user_id,
-                    'group_key': group_key,  # For dict keys
-                    'group_name': group_name,  # For display
-                    'address_ids': address_ids,
-                    'addresses': addresses,
-                    'sample_address': sample_address,
-                    'interval_hours': interval_hours,
-                    'last_schedule_hash': last_schedule_hash
-                })
         except Exception as e:
             logger.error(f"Failed to fetch subscriptions from DB: {e}", exc_info=True)
             continue
@@ -419,6 +471,32 @@ async def subscription_checker_task(
         for group_key, group_info in groups_to_fetch_map.items():
             group_name = group_info['group_name']
             sample_addr = group_info['sample_address']
+            
+            # If no sample address (group-only subscription), fetch any address from this group
+            if not sample_addr and group_name:
+                try:
+                    cursor = await db_conn.execute("""
+                        SELECT city, street, house
+                        FROM addresses
+                        WHERE provider = ? AND group_name = ?
+                        LIMIT 1
+                    """, (ctx.provider_code, group_name))
+                    addr_row = await cursor.fetchone()
+                    if addr_row:
+                        sample_addr = {
+                            'city': addr_row[0],
+                            'street': addr_row[1],
+                            'house': addr_row[2]
+                        }
+                        logger.debug(f"Found sample address for group {group_name}: {addr_row[0]}, {addr_row[1]}, {addr_row[2]}")
+                    else:
+                        logger.error(f"No addresses found in DB for group {group_name}")
+                        api_results[group_key] = {"error": f"No addresses in database for group {group_name}"}
+                        continue
+                except Exception as e:
+                    logger.error(f"Failed to fetch sample address for group {group_name}: {e}")
+                    api_results[group_key] = {"error": str(e)}
+                    continue
             
             if not sample_addr:
                 logger.error(f"No sample address for group {group_key}, skipping")
@@ -673,14 +751,23 @@ async def subscription_checker_task(
                     except Exception as e:
                         logger.error(f"Failed to send update notification: {e}")
                     
-                    # Update all subscriptions in this group
+                    # Update all address subscriptions in this group
                     for address_id in address_ids:
                         db_updates_success.append((next_check_time, new_hash, user_id, address_id))
+                    
+                    # Also update group subscription if exists
+                    if group_data.get('has_group_sub') and group_name:
+                        db_updates_success.append(('group', next_check_time, new_hash, user_id, group_name))
+                    
                     logger.info(f"Notification sent for group {group_key}. Hash updated to {new_hash[:8]}.")
                 else:
                     logger.debug(f"Check for group {group_key}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}).")
                     for address_id in address_ids:
                         db_updates_fail.append((next_check_time, user_id, address_id))
+                    
+                    # Also update group subscription if exists
+                    if group_data.get('has_group_sub') and group_name:
+                        db_updates_fail.append(('group', next_check_time, user_id, group_name))
             
             finally:
                 clear_user_context()
@@ -689,19 +776,44 @@ async def subscription_checker_task(
         # STEP 5: Update database
         # ═══════════════════════════════════════════════════════════════
         try:
-            if db_updates_success:
+            # Separate address and group subscription updates
+            addr_updates_success = [u for u in db_updates_success if u[0] != 'group']
+            group_updates_success = [(u[1], u[2], u[3], u[4]) for u in db_updates_success if u[0] == 'group']
+            
+            addr_updates_fail = [u for u in db_updates_fail if u[0] != 'group']
+            group_updates_fail = [(u[1], u[2], u[3]) for u in db_updates_fail if u[0] == 'group']
+            
+            # Update address subscriptions
+            if addr_updates_success:
                 await db_conn.executemany("""
                     UPDATE subscriptions 
                     SET next_check = ?, last_schedule_hash = ? 
                     WHERE user_id = ? AND address_id = ?
-                """, db_updates_success)
-            if db_updates_fail:
+                """, addr_updates_success)
+            if addr_updates_fail:
                 await db_conn.executemany("""
                     UPDATE subscriptions 
                     SET next_check = ? 
                     WHERE user_id = ? AND address_id = ?
-                """, db_updates_fail)
+                """, addr_updates_fail)
+            
+            # Update group subscriptions
+            if group_updates_success:
+                await db_conn.executemany("""
+                    UPDATE group_subscriptions 
+                    SET next_check = ?, last_schedule_hash = ? 
+                    WHERE user_id = ? AND group_name = ? AND provider = ?
+                """, [(n, h, u, g, ctx.provider_code) for n, h, u, g in group_updates_success])
+            if group_updates_fail:
+                await db_conn.executemany("""
+                    UPDATE group_subscriptions 
+                    SET next_check = ? 
+                    WHERE user_id = ? AND group_name = ? AND provider = ?
+                """, [(n, u, g, ctx.provider_code) for n, u, g in group_updates_fail])
+            
             await db_conn.commit()
-            logger.debug(f"DB updated for {len(db_updates_success)} success and {len(db_updates_fail)} other checks.")
+            total_success = len(addr_updates_success) + len(group_updates_success)
+            total_fail = len(addr_updates_fail) + len(group_updates_fail)
+            logger.debug(f"DB updated for {total_success} success and {total_fail} other checks.")
         except Exception as e:
              logger.error(f"Failed to batch update subscriptions in DB: {e}", exc_info=True)
