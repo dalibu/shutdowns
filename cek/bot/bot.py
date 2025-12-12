@@ -51,6 +51,10 @@ from common.bot_base import (
     build_address_selection_keyboard,
     build_subscription_selection_keyboard,
     build_address_management_keyboard,
+    # Group cache functions
+    get_address_id,
+    get_group_cache,
+    update_group_cache,
 )
 from common.formatting import (
     build_subscription_exists_message,
@@ -159,11 +163,65 @@ async def _handle_captcha_check(message: types.Message, state: FSMContext) -> bo
     return await handle_captcha_check(message, state, get_ctx())
 
 async def get_shutdowns_data(city: str, street: str, house: str, cached_group: str = None) -> dict:
-    """Отримує дані через абстракцію DataSource."""
+    """
+    Отримує дані через абстракцію DataSource з використанням кешу груп.
+    
+    1. Спочатку перевіряє наявність свіжого кешу для групи адреси
+    2. Якщо кеш свіжий - повертає дані з кешу (миттєво)
+    3. Якщо кешу немає або він застарів - викликає парсер з опцією cached_group
+    4. Після отримання даних від парсера - оновлює кеш групи
+    """
     from common.formatting import build_address_error_message, build_group_error_message
+    
     try:
+        # Step 1: Try to get address_id and cached group (if not provided)
+        if not cached_group:
+            address_id, cached_group = await get_address_id(db_conn, city, street, house)
+        else:
+            # If cached_group is provided (e.g. from subscription checker), try to get address_id
+            address_id, _ = await get_address_id(db_conn, city, street, house)
+        
+        # Step 2: If group is known, try to use group cache
+        if cached_group:
+            logger.debug(f"Found cached group {cached_group} for address {city}, {street}, {house}")
+            
+            group_cache = await get_group_cache(db_conn, cached_group, "cek")
+            
+            if group_cache:
+                # Cache HIT! Return cached data immediately
+                logger.info(f"✓ Cache HIT for manual /check, group {cached_group} (instant response)")
+                return group_cache['data']
+            else:
+                logger.info(f"✗ Cache MISS for manual /check, group {cached_group} (calling parser)")
+        else:
+            logger.debug(f"No cached group for address {city}, {street}, {house} (calling parser)")
+        
+        # Step 3: Cache miss or no group - call parser
+        # CEK parser can use cached_group to avoid re-detection
         source = get_data_source()
-        return await source.get_schedule(city, street, house, cached_group=cached_group)
+        data = await source.get_schedule(city, street, house, cached_group=cached_group)
+        
+        # Step 4: Update group cache with fresh data
+        if data and data.get('group'):
+            group_from_parser = data['group']
+            current_hash = get_schedule_hash_compact(data)
+            
+            await update_group_cache(
+                db_conn, 
+                group_from_parser, 
+                "cek",
+                current_hash, 
+                data
+            )
+            logger.debug(f"Updated group cache for {group_from_parser} after manual check")
+            
+            # Also update address group mapping if needed
+            if address_id:
+                from common.bot_base import update_address_group
+                await update_address_group(db_conn, address_id, group_from_parser)
+        
+        return data
+        
     except Exception as e:
         logger.error(f"Data source error: {e}", exc_info=True)
         error_str = str(e)
