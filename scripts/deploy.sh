@@ -14,6 +14,17 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Detect $DOCKER_COMPOSE command (new vs old)
+if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v $DOCKER_COMPOSE &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo -e "${RED}❌ Neither 'docker compose' nor 'docker-compose' found!${NC}"
+    echo -e "${YELLOW}Please install Docker Compose first.${NC}"
+    exit 1
+fi
+
 # Parse arguments
 BOT_NAME="${1:-all}"  # dtek, cek, or all
 SKIP_TESTS="${2:-false}"  # Set to 'true' to skip tests (use with caution!)
@@ -66,15 +77,15 @@ deploy_bot() {
     echo -e "${BLUE}Deploying ${bot^^} bot...${NC}"
     
     # Stop old container
-    docker-compose -f "$compose_file" down
+    $DOCKER_COMPOSE -f "$compose_file" down
     
     # Build and start new container
-    if docker-compose -f "$compose_file" up --build -d; then
+    if $DOCKER_COMPOSE -f "$compose_file" up --build -d; then
         echo -e "${GREEN}✅ ${bot^^} bot deployed successfully${NC}\n"
         
         # Show logs for verification
         echo -e "${BLUE}Last 20 lines of logs:${NC}"
-        docker-compose -f "$compose_file" logs --tail=20
+        $DOCKER_COMPOSE -f "$compose_file" logs --tail=20
         echo ""
         
         return 0

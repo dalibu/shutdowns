@@ -13,6 +13,17 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Detect $DOCKER_COMPOSE command (new vs old)
+if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v $DOCKER_COMPOSE &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo -e "${RED}❌ Neither 'docker compose' nor 'docker-compose' found!${NC}"
+    echo -e "${YELLOW}Please install Docker Compose first.${NC}"
+    exit 1
+fi
+
 # Parse arguments
 BOT_NAME="${1:-all}"  # dtek, cek, or all
 REMOVE_VOLUMES="${2:-false}"  # Set to 'true' to remove volumes (data)
@@ -37,9 +48,9 @@ stop_bot() {
         # Stop and remove containers
         if [ "$REMOVE_VOLUMES" = "true" ]; then
             echo -e "${YELLOW}⚠️  Removing volumes (DATA WILL BE DELETED)${NC}"
-            docker-compose -f "$compose_file" down -v
+            $DOCKER_COMPOSE -f "$compose_file" down -v
         else
-            docker-compose -f "$compose_file" down
+            $DOCKER_COMPOSE -f "$compose_file" down
         fi
         
         # Verify stopped
