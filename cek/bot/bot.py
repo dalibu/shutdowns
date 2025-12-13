@@ -229,6 +229,49 @@ async def get_shutdowns_data(city: str, street: str, house: str, cached_group: s
             raise ValueError(build_group_error_message(city, street, house))
         raise ValueError(build_address_error_message(EXAMPLE_ADDRESS))
 
+
+async def get_shutdowns_data_by_group(group: str) -> dict:
+    """
+    Прямий пошук графіка по групі для CEK (без потреби в адресі).
+    
+    CEK підтримує пошук графіка безпосередньо по номеру черги через SCHEDULE_URL.
+    Це набагато швидше ніж двоетапний процес адреса->група->графік.
+    
+    Args:
+        group: Номер черги (наприклад "5.2", "6.1")
+        
+    Returns:
+        dict з даними графіка
+    """
+    try:
+        # Check group cache first
+        group_cache = await get_group_cache(db_conn, group, "cek")
+        
+        if group_cache:
+            logger.info(f"✓ Group cache HIT for direct /check {group} (instant response)")
+            return group_cache['data']
+        
+        logger.info(f"✗ Group cache MISS for /check {group}, calling parser")
+        
+        # Call parser directly for group
+        from cek.parser.cek_parser import get_schedule_by_group
+        result = await get_schedule_by_group(group, is_debug=False)
+        data = result.get('data', {})
+        
+        # Update group cache
+        if data and data.get('group'):
+            current_hash = get_schedule_hash_compact(data)
+            await update_group_cache(db_conn, group, "cek", current_hash, data)
+            logger.debug(f"Updated group cache for {group} after direct check")
+        
+        return data
+        
+    except Exception as e:
+        logger.error(f"Direct group lookup error: {e}", exc_info=True)
+        from common.formatting import build_group_error_message
+        raise ValueError(f"❌ Не вдалося отримати графік для черги `{group}`. {str(e)}")
+
+
 async def send_schedule_response(message: types.Message, api_data: dict, is_subscribed: bool):
     """Wrapper for common handler - sends formatted schedule response."""
     await _send_schedule_response_common(
@@ -330,8 +373,60 @@ async def process_house(message: types.Message, state: FSMContext) -> None:
 
 @dp.message(Command("check"))
 async def command_check_handler(message: types.Message, state: FSMContext) -> None:
-    """Wrapper for common check handler."""
-    await handle_check_command(message, state, get_ctx(), _handle_captcha_check, get_shutdowns_data, send_schedule_response, EXAMPLE_CITY)
+    """
+    CEK-specific check handler with direct group lookup support.
+    For CEK, we can search schedules directly by group number (much faster!).
+    """
+    from common.bot_base import detect_check_input_type
+    from common.formatting import format_group_name
+    
+    text_args = message.text.split(maxsplit=1)[1].strip() if len(message.text.split()) > 1 else ""
+    
+    logger.debug(f"CEK check handler - text_args: '{text_args}'")
+    
+    if not text_args:
+        logger.debug("No args, using common handler for interactive flow")
+        await handle_check_command(message, state, get_ctx(), _handle_captcha_check, get_shutdowns_data, send_schedule_response, EXAMPLE_CITY)
+        return
+    
+    input_type, parsed_value = detect_check_input_type(text_args)
+    logger.debug(f"Input detected: type={input_type}, value={parsed_value}")
+    
+    if input_type == "group":
+        group_name = parsed_value
+        user_id = message.from_user.id
+        ctx = get_ctx()
+        db_conn = ctx.db_conn
+        
+        logger.info(f"CEK direct group check for: {group_name}")
+        
+        try:
+            logger.debug(f"Sending 'checking' message...")
+            await message.answer(f"⏳ Перевіряю графік для черги `{format_group_name(group_name)}`...")
+            
+            logger.debug(f"Calling get_shutdowns_data_by_group({group_name})...")
+            api_data = await get_shutdowns_data_by_group(group_name)
+            logger.debug(f"Got api_data: city={api_data.get('city')}, group={api_data.get('group')}")
+            
+            api_data_for_display = api_data.copy()
+            api_data_for_display['city'] = f"Черга {format_group_name(group_name)}"
+            api_data_for_display['street'] = ""
+            api_data_for_display['house_num'] = ""
+            api_data_for_display['group'] = group_name
+            
+            logger.debug(f"Sending schedule response...")
+            await send_schedule_response(message, api_data_for_display, False)
+            logger.debug(f"Schedule response sent successfully")
+            
+            from common.bot_base import update_user_activity
+            await update_user_activity(db_conn, user_id, username=message.from_user.username, group_name=group_name)
+            
+        except Exception as e:
+            logger.error(f"CEK group check error: {e}", exc_info=True)
+            await message.answer(f"❌ {str(e)}")
+    else:
+        logger.debug(f"Address check detected, using common handler")
+        await handle_check_command(message, state, get_ctx(), _handle_captcha_check, get_shutdowns_data, send_schedule_response, EXAMPLE_CITY)
 
 @dp.message(Command("repeat"))
 async def command_repeat_handler(message: types.Message, state: FSMContext) -> None:

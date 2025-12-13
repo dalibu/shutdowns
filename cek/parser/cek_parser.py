@@ -46,26 +46,38 @@ SCHEDULE_URL = "https://cek.dp.ua/index.php/cpojivaham/vidkliuchennia/2-uncatego
 )
 def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    CEK parser with two-step process using Botasaurus:
-    1. Lookup group by address (skip if cached_group provided)
-    2. Get schedule by group and date
+    CEK parser with flexible input:
+    - If only group provided: Direct schedule lookup by group (CEK supports this!)
+    - If address provided: Two-step process (lookup group, then schedule)
     """
     city = data.get('city')
     street = data.get('street')
     house = data.get('house')
     cached_group = data.get('cached_group')
+    group_only = data.get('group_only')  # NEW: Direct group search
     is_debug = data.get('is_debug', False)
 
     logger.debug(f"CEK Parser (Botasaurus) - Mode: {'Headful (debug)' if is_debug else 'Headless'}")
-    logger.debug(f"Address: {city}, {street}, {house}")
-    if cached_group:
-        logger.debug(f"Using cached group: {cached_group}")
     
-    group = cached_group
+    if group_only:
+        # Direct group search (no address lookup needed)
+        logger.info(f"Direct group search for: {group_only}")
+        group = group_only
+        # For group-only search, use placeholder values
+        city = f"Черга {group}"
+        street = ""
+        house = ""
+    else:
+        logger.debug(f"Address: {city}, {street}, {house}")
+        if cached_group:
+            logger.debug(f"Using cached group: {cached_group}")
+    
+    if not group_only:
+        group = cached_group
     
     try:
-        # === STEP 1: Get Group by Address (if not cached) ===
-        if not group:
+        # === STEP 1: Get Group by Address (skip if group_only or cached) ===
+        if not group and not group_only:
             logger.debug("Step 1: Looking up group by address...")
             driver.google_get(GROUP_LOOKUP_URL)
             # Page load is handled by driver
@@ -248,7 +260,7 @@ def run_parser_service_botasaurus(driver: Driver, data: Dict[str, Any]) -> Dict[
 
 # Wrapper for compatibility
 async def run_parser_service(city: str, street: str, house: str, is_debug: bool = False, skip_input_on_debug: bool = False, cached_group: str = None) -> Dict[str, Any]:
-    """Async wrapper for Botasaurus parser."""
+    """Async wrapper for Botasaurus parser (address-based lookup)."""
     data = {
         'city': city,
         'street': street,
@@ -259,6 +271,27 @@ async def run_parser_service(city: str, street: str, house: str, is_debug: bool 
     # Note: This calls synchronous code, blocking the event loop.
     # In a production async app, this should ideally run in an executor.
     # For now, we follow the DTEK pattern.
+    return run_parser_service_botasaurus(data)
+
+
+async def get_schedule_by_group(group: str, is_debug: bool = False) -> Dict[str, Any]:
+    """
+    Direct group schedule lookup for CEK (no address required).
+    
+    CEK supports looking up schedules directly by group number via SCHEDULE_URL.
+    This is much faster than the two-step address->group->schedule process.
+    
+    Args:
+        group: Group number (e.g., "5.2", "6.1")
+        is_debug: Whether to run in debug mode
+        
+    Returns:
+        Dict with schedule data
+    """
+    data = {
+        'group_only': group,
+        'is_debug': is_debug
+    }
     return run_parser_service_botasaurus(data)
 
 if __name__ == "__main__":

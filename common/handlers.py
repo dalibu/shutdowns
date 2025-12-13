@@ -976,16 +976,22 @@ async def handle_check_command(
                 logger.info(f"✓ Group cache HIT for /check {group_name} (instant response)")
                 api_data = group_cache['data']
                 
-                # Override address information to show group instead
-                api_data_for_display = api_data.copy()
-                api_data_for_display['city'] = f"Черга {format_group_name(group_name)}"
-                api_data_for_display['street'] = ""
-                api_data_for_display['house_num'] = ""
-                api_data_for_display['group'] = group_name
-                
-                await send_response_func(message, api_data_for_display, False)
-                await update_user_activity(db_conn, user_id, username=message.from_user.username, group_name=group_name)
-                return
+                # IMPORTANT: Verify that cached data is for the correct group!
+                cached_group = api_data.get('group', '')
+                if cached_group != group_name:
+                    logger.warning(f"Cache mismatch! Requested {group_name}, but cache has {cached_group}. Ignoring cache.")
+                    group_cache = None  # Force cache miss to refetch
+                else:
+                    # Override address information to show group instead
+                    api_data_for_display = api_data.copy()
+                    api_data_for_display['city'] = f"Черга {format_group_name(group_name)}"
+                    api_data_for_display['street'] = ""
+                    api_data_for_display['house_num'] = ""
+                    api_data_for_display['group'] = group_name
+                    
+                    await send_response_func(message, api_data_for_display, False)
+                    await update_user_activity(db_conn, user_id, username=message.from_user.username, group_name=group_name)
+                    return
             
             # Step 2: Cache miss - try to find a known address from this group
             logger.info(f"✗ Group cache MISS for /check {group_name}")
@@ -1013,6 +1019,19 @@ async def handle_check_command(
             api_data = await get_shutdowns_data(city, street, house)
             current_hash = get_schedule_hash_compact(api_data)
             group_from_parser = api_data.get('group', None)
+            
+            # CRITICAL: Verify parser returned data for the CORRECT group!
+            if group_from_parser and group_from_parser != group_name:
+                logger.error(
+                    f"Group mismatch! User requested {group_name}, "
+                    f"but address {city}, {street}, {house} belongs to group {group_from_parser}"
+                )
+                await message.answer(
+                    f"❌ **Помилка:** Адреса `{city}, {street}, {house}` належить до черги **{format_group_name(group_from_parser)}**, "
+                    f"а не до черги **{format_group_name(group_name)}**.\n\n"
+                    f"Можливо, інформація про групи змінилася. Спробуйте `/check {format_group_name(group_from_parser)}`."
+                )
+                return
             
             # Update group cache with fresh data
             if group_from_parser:
