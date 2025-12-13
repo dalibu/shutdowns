@@ -659,11 +659,17 @@ async def subscription_checker_task(
                     error_message = data_or_error['error']
                     # For grouped errors, show group name if available
                     error_context = f"черги {format_group_name(group_name)}" if group_name else "групи адрес"
-                    final_message = f"❌ **Помилка перевірки** для {error_context}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
-                    try:
-                        await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
-                    except Exception as e:
-                        logger.error(f"Failed to send error message: {e}")
+                    
+                    # IMPORTANT: Do NOT send technical errors to users during automatic checks
+                    # This prevents spamming users when there are temporary parser/server issues
+                    # Errors are logged for debugging, but users won't be notified
+                    logger.warning(
+                        f"Subscription check failed for user {user_id}, {error_context}: {error_message}. "
+                        f"Skipping notification. Next check in {interval_hours}h"
+                    )
+                    
+                    # Note: We do NOT send this message to avoid user confusion:
+                    # final_message = f"❌ **Помилка перевірки** для {error_context}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
 
                     for address_id in address_ids:
                         db_updates_fail.append((next_check_time, user_id, address_id))
