@@ -36,6 +36,7 @@ from .formatting import (
     process_single_day_schedule_compact,
     get_current_status_message,
     format_group_name,
+    format_address_list,
 )
 from .log_context import set_user_context, clear_user_context
 
@@ -50,10 +51,14 @@ async def _process_alert_for_user(
     last_alert_event_start_str: str,
     now: datetime,
     logger: logging.Logger,
-    user_info: str = None
+    user_info: str = None,
+    addresses: List[Dict[str, str]] = None,
+    group_name: str = None
 ) -> Optional[str]:
     """
     Checks if an alert should be sent to the user.
+    
+    Now supports grouped alerts - displays all addresses in the group.
     
     Returns the event datetime string if alert was sent, None otherwise.
     """
@@ -131,16 +136,21 @@ async def _process_alert_for_user(
             event_dt_str = event_dt.isoformat()
             
             if last_alert_event_start_str != event_dt_str:
-                # Format address for display
-                address_display = f"`{city}, {street}, {house}`"
+                # Format address(es) for display using helper
+                if addresses and len(addresses) > 0:
+                    group_display = format_group_name(group_name) if group_name else "невідомо"
+                    address_info = format_address_list(addresses, group_display)
+                else:
+                    # Fallback for single address (backward compatibility)
+                    address_info = f"📍 Адреса: `{city}, {street}, {house}`"
                 
                 # Send alert!
                 time_str = event_dt.strftime('%H:%M')
                 minutes_left = int(time_to_event)
                 
-                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n📍 Адреса: {address_display}"
+                msg = f"⚠️ **Увага!** Через {minutes_left} хв. у {time_str} очікується **{msg_type}** світла.\n\n{address_info}"
                 
-                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for {address_display}")
+                logger.info(f"Sending alert: {msg_type} at {time_str} in {minutes_left} min for group {group_name or 'unknown'}")
                 
                 try:
                     await bot.send_message(user_id, msg, parse_mode="Markdown")
@@ -171,6 +181,9 @@ async def alert_checker_task(
     """
     Background task for checking and sending alerts.
     
+    Now groups alerts by (user_id, group_name) to avoid duplicate notifications
+    for users with multiple addresses in the same group.
+    
     Args:
         bot: Aiogram Bot instance
         db_conn_getter: Callable that returns current db connection
@@ -187,19 +200,102 @@ async def alert_checker_task(
         now = datetime.now(kiev_tz)
 
         try:
+            # Fetch subscriptions grouped by (user_id, group_name)
+            # Includes BOTH address subscriptions AND direct group subscriptions
             cursor = await db_conn.execute("""
-                SELECT s.user_id, a.city, a.street, a.house, s.notification_lead_time, s.last_alert_event_start
-                FROM subscriptions s
-                JOIN addresses a ON a.id = s.address_id
-                WHERE s.notification_lead_time > 0
+                SELECT 
+                    user_id,
+                    group_key,
+                    group_name,
+                    address_ids,
+                    addresses,
+                    notification_lead_time,
+                    last_alert_event_start
+                FROM (
+                    -- Address-based subscriptions
+                    SELECT 
+                        s.user_id,
+                        COALESCE(a.group_name, 'unknown_' || a.id) as group_key,
+                        a.group_name,
+                        GROUP_CONCAT(a.id, '|') as address_ids,
+                        GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
+                        MIN(s.notification_lead_time) as notification_lead_time,
+                        MIN(s.last_alert_event_start) as last_alert_event_start
+                    FROM subscriptions s
+                    JOIN addresses a ON a.id = s.address_id
+                    WHERE s.notification_lead_time > 0
+                    GROUP BY s.user_id, group_key
+                    
+                    UNION ALL
+                    
+                    -- Direct group subscriptions
+                    SELECT 
+                        gs.user_id,
+                        gs.group_name as group_key,
+                        gs.group_name,
+                        NULL as address_ids,
+                        NULL as addresses,
+                        gs.notification_lead_time,
+                        gs.last_alert_event_start
+                    FROM group_subscriptions gs
+                    WHERE gs.notification_lead_time > 0
+                )
             """)
             rows = await cursor.fetchall()
             
             if rows:
-                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user(s) with notifications enabled")
+                logger.debug(f"Alert check cycle at {now.strftime('%H:%M:%S')}: checking {len(rows)} user-group combinations with notifications enabled")
             
             for row in rows:
-                user_id, city, street, house, lead_time, last_alert_event_start_str = row
+                user_id = row[0]
+                group_key = row[1]
+                group_name = row[2]
+                address_ids_str = row[3]
+                addresses_str = row[4]
+                lead_time = row[5]
+                last_alert_event_start_str = row[6]
+                
+                # Parse address IDs
+                address_ids = [int(aid) for aid in address_ids_str.split('|')] if address_ids_str else []
+                
+                # Parse addresses
+                addresses = []
+                if addresses_str:
+                    for addr_str in addresses_str.split('|'):
+                        parts = addr_str.split('::')
+                        if len(parts) == 3:
+                            addresses.append({
+                                'city': parts[0],
+                                'street': parts[1],
+                                'house': parts[2]
+                            })
+                
+                # Get sample address for alert checking
+                if addresses:
+                    # Address subscription - use first address
+                    sample = addresses[0]
+                    city = sample['city']
+                    street = sample['street']
+                    house = sample['house']
+                else:
+                    # Group subscription - fetch any address from this group
+                    if not group_name:
+                        continue
+                    
+                    try:
+                        addr_cursor = await db_conn.execute(
+                            "SELECT city, street, house FROM addresses WHERE group_name = ? LIMIT 1",
+                            (group_name,)
+                        )
+                        addr_row = await addr_cursor.fetchone()
+                        if not addr_row:
+                            logger.warning(f"No addresses found for group {group_name}, skipping alert check")
+                            continue
+                        
+                        city, street, house = addr_row
+                    except Exception as e:
+                        logger.error(f"Failed to fetch sample address for group {group_name}: {e}")
+                        continue
                 
                 # Get user info for logging
                 try:
@@ -208,22 +304,26 @@ async def alert_checker_task(
                 except:
                     user_info = str(user_id)
                 
-                logger.debug(f"Processing alerts, lead_time={lead_time} min")
+                logger.debug(f"Processing alerts for group {group_key}, lead_time={lead_time} min")
                 
+                # Check alert using sample address (all addresses in group have same schedule)
                 new_last_alert = await _process_alert_for_user(
-                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, now, logger, user_info
+                    bot, user_id, city, street, house, lead_time, last_alert_event_start_str, 
+                    now, logger, user_info, addresses, group_name
                 )
                 
                 if new_last_alert:
                     # Set context for the DB update log
                     set_user_context(user_id)
-                    logger.info(f"Updating last_alert_event_start to {new_last_alert}")
+                    logger.info(f"Updating last_alert_event_start to {new_last_alert} for group {group_key}")
                     clear_user_context()
                     
-                    await db_conn.execute(
-                        "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ?",
-                        (new_last_alert, user_id)
-                    )
+                    # Update all subscriptions in this group
+                    for address_id in address_ids:
+                        await db_conn.execute(
+                            "UPDATE subscriptions SET last_alert_event_start = ? WHERE user_id = ? AND address_id = ?",
+                            (new_last_alert, user_id, address_id)
+                        )
                     await db_conn.commit()
 
         except Exception as e:
@@ -241,7 +341,10 @@ async def subscription_checker_task(
     get_cached_group: Optional[Callable[..., Awaitable[Optional[str]]]] = None
 ):
     """
-    Background task: periodically checks schedule for all subscribed users.
+    Background task: periodically checks schedule for subscribed users.
+    
+    Now groups notifications by (user_id, group_name) to avoid duplicate messages
+    for users with multiple addresses in the same group.
     
     Args:
         bot: Aiogram Bot instance
@@ -267,99 +370,225 @@ async def subscription_checker_task(
         import pytz
         kiev_tz = pytz.timezone('Europe/Kiev')
         now = datetime.now(kiev_tz)
-        users_to_check = []
+        
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 1: Fetch subscriptions grouped by (user_id, group_name)
+        # Now supports both address-based and direct group subscriptions
+        # ═══════════════════════════════════════════════════════════════
+        groups_to_check = []
         try:
+            # 1a. Fetch address-based subscriptions grouped by user+group
             cursor = await db_conn.execute("""
-                SELECT s.user_id, a.city, a.street, a.house, s.interval_hours, s.last_schedule_hash
+                SELECT 
+                    s.user_id,
+                    COALESCE(a.group_name, 'unknown_' || a.id) as group_key,
+                    a.group_name,
+                    GROUP_CONCAT(a.id, '|') as address_ids,
+                    GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
+                    MIN(s.interval_hours) as interval_hours,
+                    MIN(s.last_schedule_hash) as last_schedule_hash
                 FROM subscriptions s
                 JOIN addresses a ON a.id = s.address_id
                 WHERE s.next_check <= ?
+                GROUP BY s.user_id, group_key
             """, (now,))
-            rows = await cursor.fetchall()
-            if not rows:
+            addr_rows = await cursor.fetchall()
+            
+            # 1b. Fetch direct group subscriptions
+            cursor = await db_conn.execute("""
+                SELECT 
+                    user_id,
+                    group_name as group_key,
+                    group_name,
+                    NULL as address_ids,
+                    NULL as addresses,
+                    interval_hours,
+                    last_schedule_hash
+                FROM group_subscriptions
+                WHERE next_check <= ? AND provider = ?
+            """, (now, ctx.provider_code))
+            group_rows = await cursor.fetchall()
+            
+            # Merge results: use dict to group by (user_id, group_key)
+            merged = {}
+            
+            # Process address subscriptions
+            for row in addr_rows:
+                user_id = row[0]
+                group_key = row[1]
+                key = (user_id, group_key)
+                
+                if key not in merged:
+                    merged[key] = {
+                        'user_id': user_id,
+                        'group_key': group_key,
+                        'group_name': row[2],
+                        'address_ids': [],
+                        'addresses': [],
+                        'interval_hours': row[5],
+                        'last_schedule_hash': row[6],
+                        'has_group_sub': False
+                    }
+                
+                # Parse and add address IDs
+                address_ids_str = row[3]
+                if address_ids_str:
+                    merged[key]['address_ids'].extend([int(aid) for aid in address_ids_str.split('|')])
+                
+                # Parse and add addresses
+                addresses_str = row[4]
+                if addresses_str:
+                    for addr_str in addresses_str.split('|'):
+                        parts = addr_str.split('::')
+                        if len(parts) == 3:
+                            merged[key]['addresses'].append({
+                                'city': parts[0],
+                                'street': parts[1],
+                                'house': parts[2]
+                            })
+            
+            # Process group subscriptions
+            for row in group_rows:
+                user_id = row[0]
+                group_key = row[1]
+                key = (user_id, group_key)
+                
+                if key not in merged:
+                    # Pure group subscription (no addresses)
+                    merged[key] = {
+                        'user_id': user_id,
+                        'group_key': group_key,
+                        'group_name': row[2],
+                        'address_ids': [],
+                        'addresses': [],
+                        'interval_hours': row[5],
+                        'last_schedule_hash': row[6],
+                        'has_group_sub': True
+                    }
+                else:
+                    # User has both addresses AND group subscription for same group
+                    # Just flag it, we'll still send one notification
+                    merged[key]['has_group_sub'] = True
+                    # Use MIN interval_hours and hash
+                    if row[5] < merged[key]['interval_hours']:
+                        merged[key]['interval_hours'] = row[5]
+            
+            # Convert to list
+            for group_data in merged.values():
+                # Use first address as sample if available
+                sample_address = group_data['addresses'][0] if group_data['addresses'] else None
+                group_data['sample_address'] = sample_address
+                groups_to_check.append(group_data)
+            
+            if not groups_to_check:
                 logger.debug("Subscription check skipped: no users require check.")
                 continue
-
-            for row in rows:
-                users_to_check.append({
-                    'user_id': row[0],
-                    'city': row[1],
-                    'street': row[2],
-                    'house': row[3],
-                    'interval_hours': row[4],
-                    'last_schedule_hash': row[5]
-                })
+                
         except Exception as e:
             logger.error(f"Failed to fetch subscriptions from DB: {e}", exc_info=True)
             continue
 
-        logger.debug(f"Starting subscription check for {len(users_to_check)} users at {now.strftime('%H:%M:%S')}.")
+        logger.debug(f"Starting subscription check for {len(groups_to_check)} user-group combinations at {now.strftime('%H:%M:%S')}.")
 
-        addresses_to_check_map: Dict[Tuple[str, str, str], List[int]] = {}
-        for sub_data in users_to_check:
-            address_key = (sub_data['city'], sub_data['street'], sub_data['house'])
-            if address_key not in addresses_to_check_map:
-                addresses_to_check_map[address_key] = []
-            addresses_to_check_map[address_key].append(sub_data['user_id'])
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 2: Group by group_key for efficient API calls
+        # ═══════════════════════════════════════════════════════════════
+        groups_to_fetch_map = {}
+        for group_data in groups_to_check:
+            group_key = group_data['group_key']
+            if group_key not in groups_to_fetch_map:
+                groups_to_fetch_map[group_key] = {
+                    'group_key': group_key,
+                    'group_name': group_data['group_name'],
+                    'sample_address': group_data['sample_address'],
+                    'user_groups': []
+                }
+            groups_to_fetch_map[group_key]['user_groups'].append(group_data)
 
-        logger.info(f"Checking {len(addresses_to_check_map)} unique addresses now for {len(users_to_check)} users.")
+        logger.info(f"Checking {len(groups_to_fetch_map)} unique groups for {len(groups_to_check)} user-group combinations.")
 
-        api_results: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 3: Fetch schedule for each unique group
+        # ═══════════════════════════════════════════════════════════════
+        api_results = {}
 
-        for address_key in addresses_to_check_map.keys():
-            city, street, house = address_key
+        for group_key, group_info in groups_to_fetch_map.items():
+            group_name = group_info['group_name']
+            sample_addr = group_info['sample_address']
+            
+            # If no sample address (group-only subscription), fetch any address from this group
+            if not sample_addr and group_name:
+                try:
+                    cursor = await db_conn.execute("""
+                        SELECT city, street, house
+                        FROM addresses
+                        WHERE provider = ? AND group_name = ?
+                        LIMIT 1
+                    """, (ctx.provider_code, group_name))
+                    addr_row = await cursor.fetchone()
+                    if addr_row:
+                        sample_addr = {
+                            'city': addr_row[0],
+                            'street': addr_row[1],
+                            'house': addr_row[2]
+                        }
+                        logger.debug(f"Found sample address for group {group_name}: {addr_row[0]}, {addr_row[1]}, {addr_row[2]}")
+                    else:
+                        logger.error(f"No addresses found in DB for group {group_name}")
+                        api_results[group_key] = {"error": f"No addresses in database for group {group_name}"}
+                        continue
+                except Exception as e:
+                    logger.error(f"Failed to fetch sample address for group {group_name}: {e}")
+                    api_results[group_key] = {"error": str(e)}
+                    continue
+            
+            if not sample_addr:
+                logger.error(f"No sample address for group {group_key}, skipping")
+                api_results[group_key] = {"error": "No sample address"}
+                continue
+            
+            city = sample_addr['city']
+            street = sample_addr['street']
+            house = sample_addr['house']
             address_str = f"`{city}, {street}, {house}`"
             
-            # Get first user_id for this address (for logging context)
-            user_ids_for_address = addresses_to_check_map[address_key]
-            first_user_id = user_ids_for_address[0] if user_ids_for_address else None
+            # Get first user_id for logging context
+            first_user_group = group_info['user_groups'][0]
+            first_user_id = first_user_group['user_id']
             
             try:
-                # Set user context for parser logs (use first user from list)
-                if first_user_id:
-                    set_user_context(first_user_id)
+                # Set user context for parser logs
+                set_user_context(first_user_id)
                 
-                # === GROUP CACHE OPTIMIZATION (with normalized addresses) ===
-                # Step 1: Get address_id and cached group
-                address_id, cached_group = await get_address_id(
-                    db_conn, city, street, house
-                )
-                
+                # Try group cache first (if group is known)
                 data = None
                 current_hash = None
                 used_cache = False
                 
-                if address_id and cached_group:
-                    logger.debug(f"Address {address_str} [ID:{address_id}] belongs to group {cached_group}")
-                    
-                    # Step 2: Try to get schedule from group cache
-                    group_cache = await get_group_cache(
-                        db_conn, cached_group, ctx.provider_code
-                    )
+                if group_name and not group_key.startswith('unknown_'):
+                    # Try group cache
+                    group_cache = await get_group_cache(db_conn, group_name, ctx.provider_code)
                     
                     if group_cache:
-                        # Cache hit! Use cached data
-                        logger.info(f"✓ Cache HIT for {address_str}, group {cached_group} (age: fresh)")
+                        # Cache hit!
+                        logger.info(f"✓ Group cache HIT for {group_name} (sample: {address_str})")
                         data = group_cache['data']
                         current_hash = group_cache['hash']
                         used_cache = True
-                    else:
-                        # Cache miss or stale - need to fetch from provider
-                        logger.info(f"✗ Cache MISS for {address_str}, group {cached_group} (stale or not found)")
                 
-                # Step 3: Fetch from provider if needed
+                # Fetch from provider if needed
                 if data is None:
-                    logger.debug(f"Calling parser for address {address_str}")
+                    logger.debug(f"Calling parser for {address_str} (group: {group_name or 'unknown'})")
                     
-                    # Use cached_group if available (CEK optimization for parser)
-                    if cached_group and get_cached_group:
-                        data = await get_shutdowns_data(city, street, house, cached_group)
+                    # Use cached_group if available (CEK optimization)
+                    if group_name and get_cached_group:
+                        data = await get_shutdowns_data(city, street, house, group_name)
                     else:
                         data = await get_shutdowns_data(city, street, house)
                     
                     current_hash = get_schedule_hash_compact(data)
                     
-                    # Step 4: Update group cache with fresh data
+                    # Update group cache with fresh data
                     if data.get('group'):
                         group_from_parser = data['group']
                         await update_group_cache(
@@ -367,105 +596,121 @@ async def subscription_checker_task(
                             current_hash, data
                         )
                         logger.debug(f"Updated group cache for {group_from_parser}")
+                        
+                        # Update address group in DB
+                        address_id, _ = await get_address_id(db_conn, city, street, house)
+                        if address_id:
+                            await update_address_group(db_conn, address_id, group_from_parser)
                 
-                # Step 5: Update address group in normalized table
-                if address_id and data and data.get('group'):
-                    await update_address_group(db_conn, address_id, data['group'])
-                
-                
-                # Log parser results for debugging
+                # Log results
                 schedule = data.get("schedule", {}) if data else {}
                 if logger.level <= logging.DEBUG:
                     import json
                     cache_status = "CACHE" if used_cache else "PARSER"
-                    logger.debug(f"{cache_status} returned for {address_str}: hash={current_hash[:16] if current_hash else 'None'}, schedule={json.dumps(schedule, ensure_ascii=False)}")
+                    logger.debug(f"{cache_status} returned for group {group_key}: hash={current_hash[:16] if current_hash else 'None'}")
                 
-                # Update in-memory caches
+                # Update SCHEDULE_DATA_CACHE for alerts to work
+                address_key = (city, street, house)
                 ADDRESS_CACHE[address_key] = {
                     'last_schedule_hash': current_hash,
                     'last_checked': now
                 }
                 SCHEDULE_DATA_CACHE[address_key] = data
                 
-                api_results[address_key] = data
+                api_results[group_key] = data
                 
             except Exception as e:
-                logger.error(f"Error checking address {address_str}: {e}")
-                api_results[address_key] = {"error": str(e)}
+                logger.error(f"Error checking group {group_key} (address {address_str}): {e}")
+                api_results[group_key] = {"error": str(e)}
             finally:
-                # Always clear context after processing address
                 clear_user_context()
 
-
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 4: Process results and send notifications
+        # ═══════════════════════════════════════════════════════════════
         db_updates_success = []
         db_updates_fail = []
 
-        for sub_data in users_to_check:
-            user_id = sub_data['user_id']
-            city = sub_data['city']
-            street = sub_data['street']
-            house = sub_data['house']
-            address_key = (city, street, house)
-            address_str = f"`{city}, {street}, {house}`"
-            interval_hours = sub_data.get('interval_hours', DEFAULT_INTERVAL_HOURS)
+        for group_data in groups_to_check:
+            user_id = group_data['user_id']
+            group_key = group_data['group_key']
+            group_name = group_data['group_name']
+            address_ids = group_data['address_ids']
+            addresses = group_data['addresses']
+            interval_hours = group_data.get('interval_hours', DEFAULT_INTERVAL_HOURS)
+            last_hash = group_data.get('last_schedule_hash')
+            
             interval_delta = timedelta(hours=interval_hours)
             next_check_time = now + interval_delta
-            data_or_error = api_results.get(address_key)
+            
+            data_or_error = api_results.get(group_key)
             
             # Set user context for all logs related to this user's notification
             set_user_context(user_id)
             
             try:
-                # Get address_id for this subscription
-                address_id, _ = await get_address_id(db_conn, city, street, house)
-                if not address_id:
-                    logger.error(f"Failed to get address_id for {address_str}")
-                    continue
-
                 if data_or_error is None:
-                    logger.error(f"Address {address_key} was checked, but result is missing.")
-                    db_updates_fail.append((next_check_time, user_id, address_id))
+                    logger.error(f"Group {group_key} was checked, but result is missing.")
+                    for address_id in address_ids:
+                        db_updates_fail.append((next_check_time, user_id, address_id))
                     continue
 
                 if "error" in data_or_error:
                     error_message = data_or_error['error']
-                    final_message = f"❌ **Помилка перевірки** для {address_str}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
-                    try:
-                        await bot.send_message(chat_id=user_id, text=final_message, parse_mode="Markdown")
-                    except Exception as e:
-                        logger.error(f"Failed to send error message: {e}")
+                    # For grouped errors, show group name if available
+                    error_context = f"черги {format_group_name(group_name)}" if group_name else "групи адрес"
+                    
+                    # IMPORTANT: Do NOT send technical errors to users during automatic checks
+                    # This prevents spamming users when there are temporary parser/server issues
+                    # Errors are logged for debugging, but users won't be notified
+                    logger.warning(
+                        f"Subscription check failed for user {user_id}, {error_context}: {error_message}. "
+                        f"Skipping notification. Next check in {interval_hours}h"
+                    )
+                    
+                    # Note: We do NOT send this message to avoid user confusion:
+                    # final_message = f"❌ **Помилка перевірки** для {error_context}: {error_message}\n*Перевірка буде повторена через {f'{interval_hours:g}'.replace('.', ',')} {get_hours_str(interval_hours)}.*"
 
-                    db_updates_fail.append((next_check_time, user_id, address_id))
+                    for address_id in address_ids:
+                        db_updates_fail.append((next_check_time, user_id, address_id))
                     continue
 
                 data = data_or_error
-                last_hash = sub_data.get('last_schedule_hash')
-                new_hash = ADDRESS_CACHE[address_key]['last_schedule_hash']
+                new_hash = get_schedule_hash_compact(data)
 
                 # Check if there are real changes in schedule
                 schedule = data.get("schedule", {})
                 has_actual_schedule = any(slots for slots in schedule.values() if slots)
                 
-                # Log hash comparison for debugging
+                # Normalize "no schedule" hashes to prevent false change detection
+                # Both "NO_SCHEDULE_FOUND" and "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION" mean empty schedule
+                NO_SCHEDULE_HASHES = {"NO_SCHEDULE_FOUND", "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"}
+                
+                last_hash_is_empty = last_hash in NO_SCHEDULE_HASHES
+                new_hash_is_empty = new_hash in NO_SCHEDULE_HASHES
+                
+                # Log hash comparison
                 if last_hash and new_hash != last_hash:
-                    logger.info(f"Hash changed for {address_str}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
-                    # Log normalized schedule for deep debugging (only when hash changes)
-                    if logger.level <= logging.DEBUG:
-                        from .bot_base import normalize_schedule_for_hash
-                        import json
-                        normalized = normalize_schedule_for_hash(data)
-                        logger.debug(f"Normalized schedule: {json.dumps(normalized, ensure_ascii=False, sort_keys=True)}")
+                    if last_hash_is_empty and new_hash_is_empty:
+                        logger.debug(f"Hash changed but both are 'no schedule' placeholders - treating as no change")
+                    else:
+                        logger.info(f"Hash changed for group {group_key}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
                 
                 # Send notification only if:
-                # 1. Hash changed AND
-                # 2. There is actual schedule OR it's first check (last_hash in special values)
-                should_notify = (
+                # 1. Hash actually changed (excluding no-schedule transitions)
+                # 2. AND there is actual schedule OR this is first check
+                hash_changed = (
                     new_hash != last_hash and 
+                    not (last_hash_is_empty and new_hash_is_empty)  # Don't notify on empty->empty
+                )
+                
+                should_notify = (
+                    hash_changed and 
                     (has_actual_schedule or last_hash in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"))
                 )
                 
                 if should_notify:
-                    group = format_group_name(data.get("group"))
+                    group_display = format_group_name(group_name) if group_name else "невідомо"
                     
                     interval_str = f"{f'{interval_hours:g}'.replace('.', ',')} год"
                     update_header = "🔔 **ОНОВЛЕННЯ ГРАФІКУ!**" if last_hash not in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION") else "🔔 **Графік перевірено**"
@@ -511,8 +756,11 @@ async def subscription_checker_task(
 
                     # Build message parts
                     message_parts = []
-                    message_parts.append(f"{update_header}\nдля {address_str} (інтервал {interval_str})")
-                    message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+                    message_parts.append(f"{update_header} (інтервал {interval_str})")
+                    
+                    # Use format_address_list helper for address display
+                    address_info = format_address_list(addresses, group_display)
+                    message_parts.append(address_info)
                     
                     if diagram_caption:
                         message_parts.append(diagram_caption)
@@ -535,7 +783,6 @@ async def subscription_checker_task(
                     # Send message with photo and caption
                     try:
                         if image_data:
-                            # Telegram allows up to 1024 characters in caption
                             if len(full_message) <= 1024:
                                 image_file = BufferedInputFile(image_data, filename=filename)
                                 await bot.send_photo(
@@ -546,8 +793,8 @@ async def subscription_checker_task(
                                 )
                             else:
                                 # Send photo with short caption and text separately
-                                short_caption = "\n\n".join(message_parts[:3])  # Header + address + diagram
-                                remaining_text = "\n\n".join(message_parts[3:])  # Rest
+                                short_caption = "\n\n".join(message_parts[:3])
+                                remaining_text = "\n\n".join(message_parts[3:])
                                 
                                 image_file = BufferedInputFile(image_data, filename=filename)
                                 await bot.send_photo(
@@ -563,7 +810,6 @@ async def subscription_checker_task(
                                     disable_notification=True
                                 )
                         else:
-                            # No diagram - just send text
                             await bot.send_message(
                                 chat_id=user_id,
                                 text=full_message,
@@ -572,31 +818,69 @@ async def subscription_checker_task(
                     except Exception as e:
                         logger.error(f"Failed to send update notification: {e}")
                     
-                    db_updates_success.append((next_check_time, new_hash, user_id, address_id))
-                    logger.info(f"Notification sent. Hash updated to {new_hash[:8]}.")
+                    # Update all address subscriptions in this group
+                    for address_id in address_ids:
+                        db_updates_success.append((next_check_time, new_hash, user_id, address_id))
+                    
+                    # Also update group subscription if exists
+                    if group_data.get('has_group_sub') and group_name:
+                        db_updates_success.append(('group', next_check_time, new_hash, user_id, group_name))
+                    
+                    logger.info(f"Notification sent for group {group_key}. Hash updated to {new_hash[:8]}.")
                 else:
-                    logger.debug(f"Check for {address_str}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}, last: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash}).")
-                    db_updates_fail.append((next_check_time, user_id, address_id))
+                    logger.debug(f"Check for group {group_key}. No change detected (hash: {new_hash[:16] if new_hash else 'None'}).")
+                    for address_id in address_ids:
+                        db_updates_fail.append((next_check_time, user_id, address_id))
+                    
+                    # Also update group subscription if exists
+                    if group_data.get('has_group_sub') and group_name:
+                        db_updates_fail.append(('group', next_check_time, user_id, group_name))
             
             finally:
-                # Always clear context after processing user
                 clear_user_context()
 
-
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 5: Update database
+        # ═══════════════════════════════════════════════════════════════
         try:
-            if db_updates_success:
+            # Separate address and group subscription updates
+            addr_updates_success = [u for u in db_updates_success if u[0] != 'group']
+            group_updates_success = [(u[1], u[2], u[3], u[4]) for u in db_updates_success if u[0] == 'group']
+            
+            addr_updates_fail = [u for u in db_updates_fail if u[0] != 'group']
+            group_updates_fail = [(u[1], u[2], u[3]) for u in db_updates_fail if u[0] == 'group']
+            
+            # Update address subscriptions
+            if addr_updates_success:
                 await db_conn.executemany("""
                     UPDATE subscriptions 
                     SET next_check = ?, last_schedule_hash = ? 
                     WHERE user_id = ? AND address_id = ?
-                """, db_updates_success)
-            if db_updates_fail:
+                """, addr_updates_success)
+            if addr_updates_fail:
                 await db_conn.executemany("""
                     UPDATE subscriptions 
                     SET next_check = ? 
                     WHERE user_id = ? AND address_id = ?
-                """, db_updates_fail)
+                """, addr_updates_fail)
+            
+            # Update group subscriptions
+            if group_updates_success:
+                await db_conn.executemany("""
+                    UPDATE group_subscriptions 
+                    SET next_check = ?, last_schedule_hash = ? 
+                    WHERE user_id = ? AND group_name = ? AND provider = ?
+                """, [(n, h, u, g, ctx.provider_code) for n, h, u, g in group_updates_success])
+            if group_updates_fail:
+                await db_conn.executemany("""
+                    UPDATE group_subscriptions 
+                    SET next_check = ? 
+                    WHERE user_id = ? AND group_name = ? AND provider = ?
+                """, [(n, u, g, ctx.provider_code) for n, u, g in group_updates_fail])
+            
             await db_conn.commit()
-            logger.debug(f"DB updated for {len(db_updates_success)} success and {len(db_updates_fail)} other checks.")
+            total_success = len(addr_updates_success) + len(group_updates_success)
+            total_fail = len(addr_updates_fail) + len(group_updates_fail)
+            logger.debug(f"DB updated for {total_success} success and {total_fail} other checks.")
         except Exception as e:
              logger.error(f"Failed to batch update subscriptions in DB: {e}", exc_info=True)

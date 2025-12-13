@@ -80,6 +80,15 @@ docker-compose ps
 ### Group caching
 The CEK bot automatically saves the queue (group) number for each address. When rechecking the same address, the parser skips the queue determination step, which significantly speeds up the process.
 
+### Groups (Черги)
+CEK uses the same grouping system as DTEK - 6 main groups with 2 subgroups each:
+- **Groups:** 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 4.2, 5.1, 5.2, 6.1, 6.2
+
+You can:
+- Check schedule by group: `/check 3.1`
+- Subscribe to entire group: `/subscribe 3.1`
+- The bot will automatically determine your group when you check by address
+
 ### 24-hour schedule
 CEK only displays the graph for the current day (24 hours).
 

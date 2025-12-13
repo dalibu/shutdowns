@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#############################################
-# Deployment Script for Multi-Bot Architecture
-# Usage: bash deploy.sh [dtek|cek|all]
-#############################################
+##############################################
+# Safe Deployment Script
+# Runs tests before deploying Docker containers
+##############################################
 
-set -e
+set -e  # Exit on any error
 
 # Colors
 RED='\033[0;31m'
@@ -14,171 +14,122 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-BOT=${1:-all}
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-LOG_DIR="/var/log/shutdowns-deployments"
-LOG_FILE="${LOG_DIR}/deploy-${TIMESTAMP}.log"
+# Detect $DOCKER_COMPOSE command (new vs old)
+if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+    DOCKER_COMPOSE="docker compose"
+elif command -v $DOCKER_COMPOSE &> /dev/null; then
+    DOCKER_COMPOSE="docker-compose"
+else
+    echo -e "${RED}❌ Neither 'docker compose' nor 'docker-compose' found!${NC}"
+    echo -e "${YELLOW}Please install Docker Compose first.${NC}"
+    exit 1
+fi
 
-# Create log directory if it doesn't exist
-mkdir -p "$LOG_DIR"
+# Parse arguments
+BOT_NAME="${1:-all}"  # dtek, cek, or all
+SKIP_TESTS="${2:-false}"  # Set to 'true' to skip tests (use with caution!)
 
-echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║    Multi-Bot Deployment Script         ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
+echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║     Safe Deployment with Tests        ║${NC}"
+echo -e "${BLUE}╚════════════════════════════════════════╝${NC}\n"
 
-# Logging function
-log() {
-    echo -e "$1" | tee -a "$LOG_FILE"
-}
-
-# Backup database function
-backup_db() {
-    local bot_name=$1
-    local db_path=$2
-    
-    if [ -f "$db_path" ]; then
-        log "${YELLOW}💾 Backing up ${bot_name} database...${NC}"
-        cp "$db_path" "${db_path}.backup-${TIMESTAMP}"
-        log "${GREEN}✓ Database backed up${NC}"
-    else
-        log "${YELLOW}⚠ No database found at ${db_path}${NC}"
+# Auto-detect environment
+if [ "$SKIP_TESTS" = "false" ]; then
+    # Check if pytest is available
+    if ! command -v pytest &> /dev/null && ! python3 -m pytest --version &> /dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  pytest not found on this system${NC}"
+        echo -e "${YELLOW}This appears to be a production server without dev dependencies.${NC}\n"
+        echo -e "${BLUE}Assuming tests were run locally/CI before deployment.${NC}"
+        echo -e "${BLUE}Proceeding with deployment...${NC}\n"
+        SKIP_TESTS="auto"
     fi
-}
+fi
 
-# Deploy bot function
+# Step 1: Run tests (if available)
+if [ "$SKIP_TESTS" = "false" ]; then
+    echo -e "${YELLOW}📋 Step 1: Running test suite...${NC}\n"
+    
+    if ! ./run_tests.sh all all; then
+        echo -e "\n${RED}╔════════════════════════════════════════╗${NC}"
+        echo -e "${RED}║  ❌ TESTS FAILED - DEPLOYMENT ABORTED  ║${NC}"
+        echo -e "${RED}╚════════════════════════════════════════╝${NC}\n"
+        echo -e "${RED}Fix failing tests before deploying!${NC}\n"
+        exit 1
+    fi
+    
+    echo -e "\n${GREEN}✅ All tests passed!${NC}\n"
+else
+    echo -e "${YELLOW}⚠️  SKIPPING TESTS (not recommended for production)${NC}\n"
+fi
+
+# Step 2: Deploy
+echo -e "${YELLOW}🚀 Step 2: Deploying containers...${NC}\n"
+
 deploy_bot() {
-    local bot_name=$1
-    local bot_dir=$2
+    local bot=$1
+    local compose_file="${bot}/bot/docker-compose.yml"
     
-    log "\n${BLUE}═══════════════════════════════════════${NC}"
-    log "${BLUE}📦 Deploying ${bot_name} Bot...${NC}"
-    log "${BLUE}═══════════════════════════════════════${NC}\n"
-    
-    # Navigate to bot directory
-    cd "$bot_dir" || {
-        log "${RED}✗ Failed to navigate to ${bot_dir}${NC}"
-        return 1
-    }
-    
-    # Check if .env exists
-    if [ ! -f ".env" ]; then
-        log "${RED}✗ .env file not found in ${bot_dir}${NC}"
-        log "${YELLOW}  Please create .env from .env.example${NC}"
+    if [ ! -f "$compose_file" ]; then
+        echo -e "${RED}❌ Compose file not found: $compose_file${NC}"
         return 1
     fi
     
-    # Stop existing containers
-    log "${BLUE}🛑 Stopping existing containers...${NC}"
-    docker-compose down || true
+    echo -e "${BLUE}Deploying ${bot^^} bot...${NC}"
     
-    # Pull latest code (from parent directory)
-    cd ../..
-    log "${BLUE}📥 Pulling latest code...${NC}"
-    git pull origin main || {
-        log "${YELLOW}⚠ Git pull failed, continuing with local code${NC}"
-    }
+    # Stop old container
+    $DOCKER_COMPOSE -f "$compose_file" down
     
-    # Return to bot directory
-    cd "$bot_dir"
-    
-    # Build new images
-    log "${BLUE}🔨 Building Docker images...${NC}"
-    docker-compose build --no-cache
-    
-    # Start containers
-    log "${BLUE}🚀 Starting containers...${NC}"
-    docker-compose up -d
-    
-    # Wait for container to be healthy
-    log "${BLUE}⏳ Waiting for container to be ready...${NC}"
-    sleep 5
-    
-    # Check container status
-    if docker-compose ps | grep -q "Up"; then
-        log "${GREEN}✓ ${bot_name} bot deployed successfully!${NC}"
+    # Build and start new container
+    if $DOCKER_COMPOSE -f "$compose_file" up --build -d; then
+        echo -e "${GREEN}✅ ${bot^^} bot deployed successfully${NC}\n"
         
-        # Show logs
-        log "${BLUE}📋 Recent logs:${NC}"
-        docker-compose logs --tail=20
+        # Show logs for verification
+        echo -e "${BLUE}Last 20 lines of logs:${NC}"
+        $DOCKER_COMPOSE -f "$compose_file" logs --tail=20
+        echo ""
         
         return 0
     else
-        log "${RED}✗ ${bot_name} bot failed to start${NC}"
-        log "${RED}📋 Error logs:${NC}"
-        docker-compose logs --tail=50
+        echo -e "${RED}❌ ${bot^^} deployment failed${NC}\n"
         return 1
     fi
 }
 
-# Main deployment logic
-main() {
-    local project_root="/opt/shutdowns"
-    
-    # Check if we're in the right directory
-    if [ ! -d "$project_root" ]; then
-        log "${YELLOW}⚠ Project directory not found at ${project_root}${NC}"
-        log "${YELLOW}  Using current directory: $(pwd)${NC}"
-        project_root=$(pwd)
-    fi
-    
-    cd "$project_root"
-    
-    case "$BOT" in
-        dtek)
-            backup_db "DTEK" "${project_root}/dtek/bot/data/dtek_bot.db"
-            deploy_bot "DTEK" "${project_root}/dtek/bot"
-            ;;
-        cek)
-            backup_db "CEK" "${project_root}/cek/bot/data/cek_bot.db"
-            deploy_bot "CEK" "${project_root}/cek/bot"
-            ;;
-        all)
-            log "${GREEN}Deploying all bots...${NC}\n"
-            
-            backup_db "DTEK" "${project_root}/dtek/bot/data/dtek_bot.db"
-            backup_db "CEK" "${project_root}/cek/bot/data/cek_bot.db"
-            
-            deploy_bot "DTEK" "${project_root}/dtek/bot"
-            DTEK_STATUS=$?
-            
-            deploy_bot "CEK" "${project_root}/cek/bot"
-            CEK_STATUS=$?
-            
-            # Summary
-            log "\n${BLUE}═══════════════════════════════════════${NC}"
-            log "${BLUE}📊 Deployment Summary${NC}"
-            log "${BLUE}═══════════════════════════════════════${NC}\n"
-            
-            if [ $DTEK_STATUS -eq 0 ]; then
-                log "${GREEN}✓ DTEK bot: SUCCESS${NC}"
-            else
-                log "${RED}✗ DTEK bot: FAILED${NC}"
-            fi
-            
-            if [ $CEK_STATUS -eq 0 ]; then
-                log "${GREEN}✓ CEK bot: SUCCESS${NC}"
-            else
-                log "${RED}✗ CEK bot: FAILED${NC}"
-            fi
-            
-            if [ $DTEK_STATUS -eq 0 ] && [ $CEK_STATUS -eq 0 ]; then
-                log "\n${GREEN}🎉 All bots deployed successfully!${NC}"
-                exit 0
-            else
-                log "\n${RED}⚠ Some deployments failed. Check logs above.${NC}"
-                exit 1
-            fi
-            ;;
-        *)
-            log "${RED}✗ Invalid bot name: ${BOT}${NC}"
-            log "${YELLOW}Usage: bash deploy.sh [dtek|cek|all]${NC}"
+case "$BOT_NAME" in
+    dtek)
+        deploy_bot "dtek"
+        ;;
+    cek)
+        deploy_bot "cek"
+        ;;
+    all)
+        echo -e "${BLUE}Deploying all bots...${NC}\n"
+        
+        if deploy_bot "dtek" && deploy_bot "cek"; then
+            echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+            echo -e "${GREEN}║   🎉 ALL BOTS DEPLOYED SUCCESSFULLY   ║${NC}"
+            echo -e "${GREEN}╚════════════════════════════════════════╝${NC}\n"
+        else
+            echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+            echo -e "${RED}║      ❌ DEPLOYMENT FAILED              ║${NC}"
+            echo -e "${RED}╚════════════════════════════════════════╝${NC}\n"
             exit 1
-            ;;
-    esac
-    
-    log "\n${GREEN}✓ Deployment completed${NC}"
-    log "${BLUE}Log file: ${LOG_FILE}${NC}\n"
-}
+        fi
+        ;;
+    *)
+        echo -e "${RED}❌ Unknown bot: $BOT_NAME${NC}"
+        echo -e "${YELLOW}Usage: $0 [dtek|cek|all] [skip-tests]${NC}"
+        echo -e "${YELLOW}Examples:${NC}"
+        echo -e "  $0              # Deploy all with tests"
+        echo -e "  $0 dtek         # Deploy DTEK only with tests"
+        echo -e "  $0 all true     # Deploy all, skip tests (not recommended)"
+        exit 1
+        ;;
+esac
 
-# Run main function
-main
+echo -e "${BLUE}Deployment complete!${NC}\n"
+
+# Show running containers
+echo -e "${BLUE}Running containers:${NC}"
+docker ps --filter "name=dtek_bot" --filter "name=cek_bot" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+echo ""

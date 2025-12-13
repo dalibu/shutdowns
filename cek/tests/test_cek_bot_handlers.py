@@ -85,6 +85,52 @@ class TestCekBotHandlers:
                                         mock_get_data.assert_called_once()
                                         mock_send.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_command_subscribe_existing_subscription(self, message, state):
+        """
+        Test /subscribe when user already has a subscription.
+        Regression test for migration 006 - verifies JOIN with addresses table works.
+        """
+        message.text = "/subscribe 4"  # Match the 4.0 interval in mock
+        user_id = 12345
+        
+        # Mock DB connection and cursor
+        mock_db = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_db.execute.return_value = mock_cursor
+        
+        # Setup mock return values for DB queries (updated for migration 006)
+        async def mock_execute_side_effect(query, params=None):
+            cursor = AsyncMock()
+            # Updated for migration 006: user_last_check now needs JOIN with addresses
+            if "FROM user_last_check ulc" in query and "JOIN addresses" in query:
+                # Returns: city, street, house, hash, address_id, group_name
+                cursor.fetchone.return_value = ("Dnipro", "Street", "1", "hash123", 1, "Group 1")
+            elif "SELECT last_schedule_hash, interval_hours FROM subscriptions" in query:
+                # Subscription exists!
+                cursor.fetchone.return_value = ("hash123", 4.0)
+            elif "SELECT notification_lead_time FROM subscriptions" in query:
+                cursor.fetchone.return_value = (15,)
+            elif "SELECT group_name FROM user_last_check" in query:
+                cursor.fetchone.return_value = ("Group 1",)
+            return cursor
+
+        mock_db.execute.side_effect = mock_execute_side_effect
+
+        with patch('cek.bot.bot.HUMAN_USERS', {user_id: True}):
+            with patch('common.handlers.HUMAN_USERS', {user_id: True}):
+                with patch('cek.bot.bot.db_conn', mock_db):
+                    with patch('common.handlers.update_user_activity', new=AsyncMock()):
+                    
+                        await command_subscribe_handler(message, state)
+                    
+                        # Verify that we sent a success message
+                        message.answer.assert_called_once()
+                        args = message.answer.call_args[0]
+                        # Check that the message contains the lead time
+                        assert "Сповіщення за **15 хв.**" in args[0]
+                        assert "Підписка оформлена" in args[0]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

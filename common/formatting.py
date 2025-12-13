@@ -383,6 +383,38 @@ def build_address_error_message(example_address: str) -> str:
     )
 
 
+def format_address_list(addresses: List[Dict[str, str]], group_name: str) -> str:
+    """
+    Formats address information for notifications.
+    
+    For single address: displays address line + group
+    For multiple addresses: displays group + bulleted list of addresses
+    
+    Args:
+        addresses: List of address dicts with keys: city, street, house
+        group_name: Formatted group name
+    
+    Returns:
+        Formatted address string for notification
+    """
+    if not addresses:
+        # No specific addresses - just show group (future feature: group-only subscriptions)
+        return f"👥 Черга: `{group_name}`"
+    
+    if len(addresses) == 1:
+        # Single address - traditional format
+        addr = addresses[0]
+        return f"📍 Адреса: `{addr['city']}, {addr['street']}, {addr['house']}`\n👥 Черга: `{group_name}`"
+    
+    # Multiple addresses - show group + list
+    parts = [f"👥 Черга: `{group_name}`"]
+    parts.append("📍 Ваші адреси в цій черзі:")
+    for addr in addresses:
+        parts.append(f"   • `{addr['city']}, {addr['street']}, {addr['house']}`")
+    
+    return "\n".join(parts)
+
+
 def build_group_error_message(city: str, street: str, house: str) -> str:
     """
     Builds error message when group cannot be determined for address.
