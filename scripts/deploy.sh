@@ -79,8 +79,12 @@ deploy_bot() {
     # Stop old container
     $DOCKER_COMPOSE -f "$compose_file" down
     
-    # Build and start new container
-    if $DOCKER_COMPOSE -f "$compose_file" up --build -d; then
+    # Build new container (no cache to ensure fresh code)
+    echo -e "${BLUE}Building with --no-cache to ensure fresh code...${NC}"
+    $DOCKER_COMPOSE -f "$compose_file" build --no-cache
+    
+    # Start new container
+    if $DOCKER_COMPOSE -f "$compose_file" up -d; then
         echo -e "${GREEN}✅ ${bot^^} bot deployed successfully${NC}\n"
         
         # Show logs for verification
