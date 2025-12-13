@@ -340,17 +340,31 @@ async def delete_user_address(
     user_id: int,
     address_id: int
 ) -> bool:
-    """Deletes an address from user's address book."""
+    """
+    Deletes an address from user's address book.
+    Also deletes any subscription for this address.
+    """
     if not conn:
         return False
     
     try:
+        # First, delete any subscription for this address
+        await conn.execute(
+            "DELETE FROM subscriptions WHERE user_id = ? AND address_id = ?",
+            (user_id, address_id)
+        )
+        
+        # Then delete the address from user's address book
         cursor = await conn.execute(
             "DELETE FROM user_addresses WHERE id = ? AND user_id = ?",
             (address_id, user_id)
         )
         await conn.commit()
-        return cursor.rowcount > 0
+        
+        deleted = cursor.rowcount > 0
+        if deleted:
+            logging.info(f"Deleted address {address_id} and its subscription for user {user_id}")
+        return deleted
     except Exception as e:
         logging.error(f"Failed to delete user address: {e}")
         return False

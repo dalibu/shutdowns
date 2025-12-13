@@ -398,26 +398,42 @@ async def handle_callback_address_info(callback: CallbackQuery, ctx: BotContext)
 
 
 async def handle_callback_address_delete(callback: CallbackQuery, ctx: BotContext) -> None:
-    """Delete address from address book."""
+    """Delete address from address book and associated subscription."""
     user_id = callback.from_user.id
     address_id = int(callback.data.split(":", 1)[1])
     logger = ctx.logger or logging.getLogger(__name__)
+    db_conn = ctx.db_conn
     
     await callback.answer()
     
-    address = await get_address_by_id(ctx.db_conn, user_id, address_id)
+    address = await get_address_by_id(db_conn, user_id, address_id)
     if not address:
         await callback.message.edit_text("❌ Адреса не знайдена.")
         return
     
     city, street, house = address['city'], address['street'], address['house']
-    success = await delete_user_address(ctx.db_conn, user_id, address_id)
+    
+    # Check if there's a subscription for this address
+    has_subscription = False
+    try:
+        async with db_conn.execute(
+            "SELECT id FROM subscriptions WHERE user_id = ? AND address_id = ?",
+            (user_id, address_id)
+        ) as cursor:
+            has_subscription = await cursor.fetchone() is not None
+    except Exception:
+        pass
+    
+    success = await delete_user_address(db_conn, user_id, address_id)
     
     if success:
-        logger.info(f"Deleted address: {city}, {street}, {house}")
-        await callback.message.edit_text(
-            f"🗑️ **Адресу видалено:** `{city}, {street}, {house}`"
-        )
+        logger.info(f"Deleted address: {city}, {street}, {house}, had_subscription={has_subscription}")
+        
+        message = f"🗑️ **Адресу видалено:** `{city}, {street}, {house}`"
+        if has_subscription:
+            message += "\n\n✅ Підписку на цю адресу також видалено."
+        
+        await callback.message.edit_text(message)
     else:
         await callback.message.edit_text("❌ Не вдалося видалити адресу.")
 
