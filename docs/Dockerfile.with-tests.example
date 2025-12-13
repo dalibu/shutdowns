@@ -1,0 +1,59 @@
+# Example: Multi-stage Dockerfile with testing
+# This would replace dtek/bot/Dockerfile
+
+# ===== STAGE 1: Testing =====
+FROM python:3.12-slim as tester
+
+WORKDIR /app
+
+# Install test dependencies
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# Copy all code for testing
+COPY common/ ./common/
+COPY dtek/ ./dtek/
+COPY resources/ ./resources/
+
+# Run tests - build will FAIL if tests don't pass
+RUN python -m pytest dtek/tests/ common/tests/ -v --tb=short || \
+    (echo "❌ Tests failed! Build aborted." && exit 1)
+
+# ===== STAGE 2: Production =====
+FROM python:3.12-slim as production
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    fonts-dejavu-core \
+    wget \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy only production requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Chromium for parser
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only necessary code (no tests/)
+COPY common/ ./common/
+COPY dtek/parser/ ./dtek/parser/
+COPY dtek/__init__.py ./dtek/
+COPY dtek/data_source.py ./dtek/
+COPY dtek/bot/bot.py ./dtek/bot/
+COPY dtek/bot/entrypoint.sh ./dtek/bot/
+COPY dtek/resources/ ./resources/
+
+RUN chmod +x ./dtek/bot/entrypoint.sh
+
+# Create data directory
+RUN mkdir -p /data
+
+# Entry point
+CMD ["./dtek/bot/entrypoint.sh"]
