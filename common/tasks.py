@@ -682,13 +682,30 @@ async def subscription_checker_task(
                 schedule = data.get("schedule", {})
                 has_actual_schedule = any(slots for slots in schedule.values() if slots)
                 
+                # Normalize "no schedule" hashes to prevent false change detection
+                # Both "NO_SCHEDULE_FOUND" and "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION" mean empty schedule
+                NO_SCHEDULE_HASHES = {"NO_SCHEDULE_FOUND", "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"}
+                
+                last_hash_is_empty = last_hash in NO_SCHEDULE_HASHES
+                new_hash_is_empty = new_hash in NO_SCHEDULE_HASHES
+                
                 # Log hash comparison
                 if last_hash and new_hash != last_hash:
-                    logger.info(f"Hash changed for group {group_key}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
+                    if last_hash_is_empty and new_hash_is_empty:
+                        logger.debug(f"Hash changed but both are 'no schedule' placeholders - treating as no change")
+                    else:
+                        logger.info(f"Hash changed for group {group_key}: {last_hash[:16] if last_hash and len(last_hash) >= 16 else last_hash} → {new_hash[:16]}")
                 
-                # Send notification only if hash changed AND there is actual schedule
-                should_notify = (
+                # Send notification only if:
+                # 1. Hash actually changed (excluding no-schedule transitions)
+                # 2. AND there is actual schedule OR this is first check
+                hash_changed = (
                     new_hash != last_hash and 
+                    not (last_hash_is_empty and new_hash_is_empty)  # Don't notify on empty->empty
+                )
+                
+                should_notify = (
+                    hash_changed and 
                     (has_actual_schedule or last_hash in (None, "NO_SCHEDULE_FOUND_AT_SUBSCRIPTION"))
                 )
                 
