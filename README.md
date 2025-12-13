@@ -74,6 +74,31 @@ docker-compose up -d
 
 See [cek/bot/README.md](cek/bot/README.md) for detailed instructions.
 
+## Management Scripts
+
+Convenient scripts for managing bot containers:
+
+```bash
+# Deploy with tests (recommended)
+./scripts/deploy.sh              # All bots
+./scripts/deploy.sh dtek         # DTEK only
+
+# Stop bots
+./scripts/stop.sh                # Stop all
+./scripts/stop.sh dtek           # Stop DTEK only
+./scripts/stop.sh all true       # Stop all + DELETE data ⚠️
+
+# Restart bots
+./scripts/restart.sh             # Restart all
+./scripts/restart.sh cek         # Restart CEK only
+
+# Monitor
+./scripts/monitor.sh             # Health check
+./scripts/logs.sh                # Tail all logs
+```
+
+See [docs/SAFE_DEPLOYMENT.md](docs/SAFE_DEPLOYMENT.md) for details.
+
 ## Bot Features
 
 Both bots support:
