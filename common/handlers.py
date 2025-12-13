@@ -1409,7 +1409,7 @@ async def handle_subscribe_command(
         # After migration 006, user_last_check only has address_id
         # Need to JOIN with addresses to get city, street, house
         cursor = await db_conn.execute("""
-            SELECT a.city, a.street, a.house, ulc.last_hash 
+            SELECT a.city, a.street, a.house, ulc.last_hash, ulc.address_id 
             FROM user_last_check ulc
             JOIN addresses a ON a.id = ulc.address_id
             WHERE ulc.user_id = ?
@@ -1418,7 +1418,7 @@ async def handle_subscribe_command(
         if not row:
             await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.", parse_mode="Markdown")
             return
-        city, street, house, hash_from_check = row
+        city, street, house, hash_from_check, address_id = row
     except Exception as e:
         logger.error(f"Failed to fetch last_check from DB: {e}")
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.", parse_mode="Markdown")
@@ -1474,10 +1474,15 @@ async def handle_subscribe_command(
             if sub_row[1] == interval_hours:
                 exists_msg = build_subscription_exists_message(city, street, house, interval_display, new_lead_time)
                 await message.answer(exists_msg)
-                # Fetch group name if available
+                # Fetch group name if available (after migration 006, group_name is in addresses table)
                 group = None
                 try:
-                    async with db_conn.execute("SELECT group_name FROM user_last_check WHERE user_id = ?", (user_id,)) as cur:
+                    async with db_conn.execute("""
+                        SELECT a.group_name 
+                        FROM user_last_check ulc
+                        JOIN addresses a ON a.id = ulc.address_id
+                        WHERE ulc.user_id = ?
+                    """, (user_id,)) as cur:
                         row = await cur.fetchone()
                         if row:
                             group = row[0]
@@ -1501,19 +1506,11 @@ async def handle_subscribe_command(
         kiev_tz = pytz.timezone('Europe/Kiev')
         next_check_time = datetime.now(kiev_tz)
         
-        # Extract group from last check (after migration 006, group_name is in addresses table)
-        cursor_group = await db_conn.execute("""
-            SELECT a.group_name 
-            FROM user_last_check ulc
-            JOIN addresses a ON a.id = ulc.address_id
-            WHERE ulc.user_id = ?
-        """, (user_id,))
-        row_group = await cursor_group.fetchone()
-        group = row_group[0] if row_group and row_group[0] else None
-        
+        # After migration 006, subscriptions table uses address_id instead of city/street/house
+        # address_id was fetched earlier from user_last_check JOIN
         await db_conn.execute(
-            "INSERT OR REPLACE INTO subscriptions (user_id, city, street, house, interval_hours, next_check, last_schedule_hash, notification_lead_time, group_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, city, street, house, interval_hours, next_check_time, hash_to_use, new_lead_time, group)
+            "INSERT OR REPLACE INTO subscriptions (user_id, address_id, interval_hours, next_check, last_schedule_hash, notification_lead_time) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, address_id, interval_hours, next_check_time, hash_to_use, new_lead_time)
         )
         await db_conn.commit()
         
