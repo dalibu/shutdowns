@@ -201,19 +201,45 @@ async def alert_checker_task(
 
         try:
             # Fetch subscriptions grouped by (user_id, group_name)
+            # Includes BOTH address subscriptions AND direct group subscriptions
             cursor = await db_conn.execute("""
                 SELECT 
-                    s.user_id,
-                    COALESCE(a.group_name, 'unknown_' || a.id) as group_key,
-                    a.group_name,
-                    GROUP_CONCAT(a.id, '|') as address_ids,
-                    GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
-                    MIN(s.notification_lead_time) as notification_lead_time,
-                    MIN(s.last_alert_event_start) as last_alert_event_start
-                FROM subscriptions s
-                JOIN addresses a ON a.id = s.address_id
-                WHERE s.notification_lead_time > 0
-                GROUP BY s.user_id, group_key
+                    user_id,
+                    group_key,
+                    group_name,
+                    address_ids,
+                    addresses,
+                    notification_lead_time,
+                    last_alert_event_start
+                FROM (
+                    -- Address-based subscriptions
+                    SELECT 
+                        s.user_id,
+                        COALESCE(a.group_name, 'unknown_' || a.id) as group_key,
+                        a.group_name,
+                        GROUP_CONCAT(a.id, '|') as address_ids,
+                        GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
+                        MIN(s.notification_lead_time) as notification_lead_time,
+                        MIN(s.last_alert_event_start) as last_alert_event_start
+                    FROM subscriptions s
+                    JOIN addresses a ON a.id = s.address_id
+                    WHERE s.notification_lead_time > 0
+                    GROUP BY s.user_id, group_key
+                    
+                    UNION ALL
+                    
+                    -- Direct group subscriptions
+                    SELECT 
+                        gs.user_id,
+                        gs.group_name as group_key,
+                        gs.group_name,
+                        NULL as address_ids,
+                        NULL as addresses,
+                        gs.notification_lead_time,
+                        gs.last_alert_event_start
+                    FROM group_subscriptions gs
+                    WHERE gs.notification_lead_time > 0
+                )
             """)
             rows = await cursor.fetchall()
             
@@ -244,14 +270,32 @@ async def alert_checker_task(
                                 'house': parts[2]
                             })
                 
-                # Use first address as sample for alert checking
-                if not addresses:
-                    continue
+                # Get sample address for alert checking
+                if addresses:
+                    # Address subscription - use first address
+                    sample = addresses[0]
+                    city = sample['city']
+                    street = sample['street']
+                    house = sample['house']
+                else:
+                    # Group subscription - fetch any address from this group
+                    if not group_name:
+                        continue
                     
-                sample = addresses[0]
-                city = sample['city']
-                street = sample['street']
-                house = sample['house']
+                    try:
+                        addr_cursor = await db_conn.execute(
+                            "SELECT city, street, house FROM addresses WHERE group_name = ? LIMIT 1",
+                            (group_name,)
+                        )
+                        addr_row = await addr_cursor.fetchone()
+                        if not addr_row:
+                            logger.warning(f"No addresses found for group {group_name}, skipping alert check")
+                            continue
+                        
+                        city, street, house = addr_row
+                    except Exception as e:
+                        logger.error(f"Failed to fetch sample address for group {group_name}: {e}")
+                        continue
                 
                 # Get user info for logging
                 try:

@@ -118,7 +118,8 @@ class TestDtekBotHandlers:
         
         async def mock_execute_side_effect(query, params=None):
             cursor = AsyncMock()
-            if "SELECT city, street, house, last_hash FROM user_last_check" in query:
+            # Updated for migration 006: user_last_check now needs JOIN with addresses
+            if "FROM user_last_check ulc" in query and "JOIN addresses" in query:
                 cursor.fetchone.return_value = ("Dnipro", "Street", "1", "hash123")
             elif "SELECT last_schedule_hash, interval_hours FROM subscriptions" in query:
                 # Subscription exists!

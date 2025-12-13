@@ -82,12 +82,25 @@ Both bots support:
 - 📖 **Address Book** - Save multiple addresses for quick access (`/addresses` command)
 - 📊 **Visual Diagrams** - Rotating circular clock-face visualization with triangle hour marker
 - 🔔 **Multi-Subscriptions** - Subscribe to multiple addresses simultaneously
+- 👥 **Group Subscriptions** - Subscribe to entire groups (e.g., `/subscribe 3.1`) for notifications across all addresses in that group
 - ⚠️ **Alerts** - Notifications N minutes before power events
 - 🤖 **CAPTCHA Protection** - Bot protection
 - 💾 **Local Database** - SQLite with migration support
 - 📈 **Statistics** - Admin-only `/stats` command provides usage summary and CSV export
 - ⚡ **Group-Based Caching** - Intelligent caching reduces provider load by 90-99%
 - 🗄️ **Normalized Database** - Efficient address storage eliminates duplication
+
+### Groups (Черги)
+
+Both DTEK and CEK use the same 12-group system:
+- **6 main groups** with **2 subgroups** each
+- **Groups:** 1.1, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 4.2, 5.1, 5.2, 6.1, 6.2
+
+**Features:**
+- Check by group: `/check 3.1` - instant response from cache
+- Subscribe to group: `/subscribe 3.1` - get notified when group schedule changes
+- Auto-grouping: Bot determines group when you check by address
+- Consolidated notifications: One message per group (no duplicates)
 
 ### Provider-Specific Features
 
@@ -302,6 +315,7 @@ This project was refactored from a centralized architecture (single bot + API) t
 
 Detailed technical documentation is available in the `docs/` directory:
 
+- **[GROUP_CHECK_FEATURE.md](docs/GROUP_CHECK_FEATURE.md)** - Group-based checking and subscriptions
 - **[CACHING_AND_SUBSCRIPTIONS.md](docs/CACHING_AND_SUBSCRIPTIONS.md)** - Architecture of group-based caching and automatic subscription checks
 - **[DATA_SOURCES.md](docs/DATA_SOURCES.md)** - Pluggable data source architecture
 - **[CURRENT_OUTAGE_TESTING.md](docs/CURRENT_OUTAGE_TESTING.md)** - Emergency outage detection and handling

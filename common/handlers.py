@@ -35,6 +35,7 @@ from common.bot_base import (
     is_address_subscribed,
     remove_subscription_by_id,
     remove_all_subscriptions,
+    remove_group_subscription,  # For group subscription removal
     build_address_selection_keyboard,
     build_subscription_selection_keyboard,
     build_address_management_keyboard,
@@ -313,11 +314,9 @@ async def handle_callback_unsubscribe(callback: CallbackQuery, ctx: BotContext) 
                 if success:
                     from .formatting import format_group_name
                     group_name = sub['group_name']
-                    remaining = len(subs) - 1
-                    remaining_text = f"\n\n_Залишилось підписок: {remaining}_" if remaining > 0 else ""
                     logger.info(f"Unsubscribed from group {group_name}")
                     await callback.message.edit_text(
-                        f"🚫 **Підписку скасовано** для черги: `{format_group_name(group_name)}`{remaining_text}",
+                        f"🚫 **Підписку скасовано** для черги: `{format_group_name(group_name)}`",
                         parse_mode="Markdown"
                     )
                 else:
@@ -336,11 +335,9 @@ async def handle_callback_unsubscribe(callback: CallbackQuery, ctx: BotContext) 
                 success = await remove_subscription_by_id(ctx.db_conn, user_id, sub_id)
                 if success:
                     city, street, house = sub['city'], sub['street'], sub['house']
-                    remaining = len(subs) - 1
-                    remaining_text = f"\n\n_Залишилось підписок: {remaining}_" if remaining > 0 else ""
                     logger.info(f"Unsubscribed from {city}, {street}, {house}")
                     await callback.message.edit_text(
-                        f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`{remaining_text}",
+                        f"🚫 **Підписку скасовано** для адреси: `{city}, {street}, {house}`",
                         parse_mode="Markdown"
                     )
                 else:
@@ -606,7 +603,13 @@ async def send_schedule_response(
 
         # Build message parts
         message_parts = []
-        message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+        
+        # Show address line only for real addresses, not for group-only checks
+        # Group checks have city like "Черга 3.1" with empty street/house
+        if street or house:  # Real address
+            message_parts.append(f"📍 Адреса: `{city}, {street}, {house}`\n👥 Черга: `{group}`")
+        else:  # Group-only check
+            message_parts.append(f"👥 Черга: `{group}`")
         
         # Add current outage warning if exists
         if outage_warning:
@@ -1402,15 +1405,22 @@ async def handle_subscribe_command(
     # Original address subscription logic continues...
     city, street, house, hash_from_check = None, None, None, None
     try:
-        cursor = await db_conn.execute("SELECT city, street, house, last_hash FROM user_last_check WHERE user_id = ?", (user_id,))
+        # After migration 006, user_last_check only has address_id
+        # Need to JOIN with addresses to get city, street, house
+        cursor = await db_conn.execute("""
+            SELECT a.city, a.street, a.house, ulc.last_hash 
+            FROM user_last_check ulc
+            JOIN addresses a ON a.id = ulc.address_id
+            WHERE ulc.user_id = ?
+        """, (user_id,))
         row = await cursor.fetchone()
         if not row:
-            await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.")
+            await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.", parse_mode="Markdown")
             return
         city, street, house, hash_from_check = row
     except Exception as e:
         logger.error(f"Failed to fetch last_check from DB: {e}")
-        await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.")
+        await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.", parse_mode="Markdown")
         return
 
     logger.info(f"Command /subscribe for address: {city}, {street}, {house}")
