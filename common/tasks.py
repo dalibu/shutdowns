@@ -386,7 +386,7 @@ async def subscription_checker_task(
                     GROUP_CONCAT(a.id, '|') as address_ids,
                     GROUP_CONCAT(a.city || '::' || a.street || '::' || a.house, '|') as addresses,
                     MIN(s.interval_hours) as interval_hours,
-                    MIN(s.last_schedule_hash) as last_schedule_hash
+                    MAX(s.last_schedule_hash) as last_schedule_hash
                 FROM subscriptions s
                 JOIN addresses a ON a.id = s.address_id
                 WHERE s.next_check <= ?
