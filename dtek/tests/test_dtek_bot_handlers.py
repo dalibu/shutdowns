@@ -120,7 +120,8 @@ class TestDtekBotHandlers:
             cursor = AsyncMock()
             # Updated for migration 006: user_last_check now needs JOIN with addresses
             if "FROM user_last_check ulc" in query and "JOIN addresses" in query:
-                cursor.fetchone.return_value = ("Dnipro", "Street", "1", "hash123")
+                # Returns: city, street, house, hash, address_id, group_name
+                cursor.fetchone.return_value = ("Dnipro", "Street", "1", "hash123", 1, "Group 1")
             elif "SELECT last_schedule_hash, interval_hours FROM subscriptions" in query:
                 # Subscription exists!
                 cursor.fetchone.return_value = ("hash123", 4.0)

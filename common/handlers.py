@@ -1407,9 +1407,9 @@ async def handle_subscribe_command(
     city, street, house, hash_from_check = None, None, None, None
     try:
         # After migration 006, user_last_check only has address_id
-        # Need to JOIN with addresses to get city, street, house
+        # Need to JOIN with addresses to get city, street, house, group_name
         cursor = await db_conn.execute("""
-            SELECT a.city, a.street, a.house, ulc.last_hash, ulc.address_id 
+            SELECT a.city, a.street, a.house, ulc.last_hash, ulc.address_id, a.group_name 
             FROM user_last_check ulc
             JOIN addresses a ON a.id = ulc.address_id
             WHERE ulc.user_id = ?
@@ -1418,7 +1418,7 @@ async def handle_subscribe_command(
         if not row:
             await message.answer("❌ **Помилка.** Спочатку вам потрібно перевірити графік за допомогою команди `/check Місто, Вулиця, Будинок`.", parse_mode="Markdown")
             return
-        city, street, house, hash_from_check, address_id = row
+        city, street, house, hash_from_check, address_id, group = row
     except Exception as e:
         logger.error(f"Failed to fetch last_check from DB: {e}")
         await message.answer("❌ **Помилка БД** при спробі знайти ваш останній запит.", parse_mode="Markdown")
