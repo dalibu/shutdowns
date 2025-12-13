@@ -41,6 +41,7 @@ from common.bot_base import (
     build_address_management_keyboard,
     get_schedule_hash_compact,
     parse_address_from_text,
+    detect_check_input_type,  # For group detection in /check
     get_group_cache,
     update_group_cache,
     get_group_for_address,
