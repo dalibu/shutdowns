@@ -1501,11 +1501,13 @@ async def handle_subscribe_command(
         kiev_tz = pytz.timezone('Europe/Kiev')
         next_check_time = datetime.now(kiev_tz)
         
-        # Extract group from last check
-        cursor_group = await db_conn.execute(
-            "SELECT group_name FROM user_last_check WHERE user_id = ?",
-            (user_id,)
-        )
+        # Extract group from last check (after migration 006, group_name is in addresses table)
+        cursor_group = await db_conn.execute("""
+            SELECT a.group_name 
+            FROM user_last_check ulc
+            JOIN addresses a ON a.id = ulc.address_id
+            WHERE ulc.user_id = ?
+        """, (user_id,))
         row_group = await cursor_group.fetchone()
         group = row_group[0] if row_group and row_group[0] else None
         
